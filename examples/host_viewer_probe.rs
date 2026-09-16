@@ -14,8 +14,9 @@ use std::{error::Error, net::SocketAddr, time::Duration};
 async fn main() -> Result<(), Box<dyn Error>> {
     let address: SocketAddr = std::env::args()
         .nth(1)
-        .ok_or("usage: host_viewer_probe <ip:port>")?
+        .ok_or("usage: host_viewer_probe <ip:port> [password]")?
         .parse()?;
+    let password = std::env::args().nth(2);
     let mut session = ViewerSession::connect_direct(
         address,
         ViewerIdentity::LegacyUnverified,
@@ -51,7 +52,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     loop {
         match session.recv().await? {
-            ViewerEvent::Challenge => session.login(request.clone(), None).await?,
+            ViewerEvent::Challenge => {
+            session
+                .login(request.clone(), password.as_deref().map(str::as_bytes))
+                .await?
+        }
             ViewerEvent::LoginError(error) if error == "No Password Access" => {
                 eprintln!("awaiting explicit local approval");
             }
