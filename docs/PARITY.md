@@ -31,8 +31,8 @@ limit · **no** deliberately absent.
 | VP8 / VP9 / AV1 | **no** | `viewer.rs` advertises `ability_vp9/vp8/av1 = 0` deliberately |
 | Colour contract incl. HDR10 / HLG / scRGB classification | yes | `src/media_color.rs` |
 | HDR from a Windows desktop source | **no** (documented gap) | Desktop Duplication exposes no mastering/MaxCLL metadata; `MODERN_RUNTIME.md` states it is not fabricated |
-| Frame cadence policy | **differs** | Same 8 s window, same Windows host, same client: engine 467 frames / 10.83 MB vs original 162 frames / 0.96 MB. Dropping the engine host to `--bitrate 1000000` cut payload to 2.02 MB but frame count stayed at 414 (53 fps), so the gap is two separate things: encoder bitrate and timer-driven output on an idle desktop. The capture layer itself never fabricates a frame (`next_texture()` returns `Ok(None)` on `DXGI_ERROR_WAIT_TIMEOUT`), so the suppression belongs in the producer loop above it |
-| Idle/change suppression, bitrate adaptation | **no** | unchanged desktop still costs ~53-60 fps of encode; no rate controller in `src/`. A requested 1 Mbit/s produced ~2.0 Mbit/s over 8 s (8 keyframes included) |
+| Frame cadence policy | **differs, by design** | `WindowsPublisher::next_unit` is capture-change driven (`next_texture()` returns `Ok(None)` on `DXGI_ERROR_WAIT_TIMEOUT`) and then thins to the negotiated fps by PTS; no timer re-encodes a cached frame. Same host and desktop: engine 467 frames / 10.83 MB vs original 162 frames / 0.96 MB in 8 s, and 414 frames / 2.02 MB at `--bitrate 1000000`. The original additionally compares frame content and suppresses unchanged pixels; this engine has no such stage by design (no copy/staging), so the equivalent signal has to come from DXGI itself (`AccumulatedFrames` / `LastPresentTime` are already exposed natively) |
+| Content-change suppression, rate control | **no** | capture-level change and PTS thinning exist, but unchanged pixels are still encoded; a requested 1 Mbit/s produced ~2.0 Mbit/s over 8 s (8 keyframes included). No rate controller in `src/` |
 
 ## Feature services
 
