@@ -261,6 +261,28 @@ impl AttemptPolicy for NoPasswordAttempts {
     fn outcome(&mut self, _: bool, _: bool) {}
 }
 
+/// Bounded password attempts for a host that has a password configured. The
+/// fail-closed policy above stays in place when it has none.
+struct BoundedPasswordAttempts {
+    remaining: u32,
+}
+impl AttemptPolicy for BoundedPasswordAttempts {
+    fn allow(&mut self, second_factor: bool) -> Result<(), &'static str> {
+        if second_factor {
+            return Err("2FA verification unsupported");
+        }
+        if self.remaining == 0 {
+            return Err("Wrong Password");
+        }
+        Ok(())
+    }
+    fn outcome(&mut self, _: bool, accepted: bool) {
+        if !accepted {
+            self.remaining = self.remaining.saturating_sub(1);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Encoders {
     h264: bool,
@@ -422,7 +444,11 @@ async fn authenticate(
             epoch,
         }),
         second_factor: Box::new(NoSecondFactor),
-        attempts: Box::new(NoPasswordAttempts),
+        attempts: if configured_password.is_some() {
+            Box::new(BoundedPasswordAttempts { remaining: 3 })
+        } else {
+            Box::new(NoPasswordAttempts)
+        },
     };
     let identity = HostIdentity::Signed {
         id: options.id.clone(),
