@@ -34,6 +34,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
 pub struct HostOptions {
     pub listen: SocketAddr,
     pub id: String,
@@ -383,14 +384,21 @@ async fn serve(state: Arc<State>, options: HostOptions) -> Result<(), HostError>
             s.sent_units = 0;
             s.sent_bytes = 0;
         });
-        let outcome = peer(state.clone(), &options, codecs, socket).await;
-        state.clear_request();
-        if let Err(error) = outcome {
-            state.update(|s| s.error = Some(error));
-            if error == HostError::ReclamationUnconfirmed {
-                return Err(error);
+        // Each accepted peer runs on its own task: a second viewer must not wait
+        // for the first session to end. The snapshot is shared, so its counters
+        // describe whichever session last updated them, not a per-peer view.
+        let session_options = options.clone();
+        let session_state = state.clone();
+        tokio::spawn(async move {
+            let outcome = peer(session_state.clone(), &session_options, codecs, socket).await;
+            session_state.clear_request();
+            if let Err(error) = outcome {
+                session_state.update(|s| s.error = Some(error));
+                if error == HostError::ReclamationUnconfirmed {
+                    session_state.cancel.cancel();
+                }
             }
-        }
+        });
     }
 }
 
