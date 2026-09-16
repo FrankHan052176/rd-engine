@@ -22,6 +22,7 @@ mod windows {
     struct Cli {
         listen: SocketAddr,
         id: String,
+        password: Option<String>,
         backend: PublisherBackend,
         output: usize,
         codec: CodecSelection,
@@ -36,6 +37,7 @@ mod windows {
             Self {
                 listen: "0.0.0.0:21118".parse().unwrap(),
                 id: "rd-engine-windows-host".into(),
+                password: None,
                 backend: PublisherBackend::Auto,
                 output: 0,
                 codec: CodecSelection::Auto,
@@ -62,6 +64,7 @@ mod windows {
                         .map_err(|_| "invalid --listen".to_string())?
                 }
                 "--id" => cli.id = value(&mut args, &arg)?,
+                "--password" => cli.password = Some(value(&mut args, &arg)?),
                 "--backend" => {
                     cli.backend = match value(&mut args, &arg)?.as_str() {
                         "auto" => PublisherBackend::Auto,
@@ -214,6 +217,7 @@ mod windows {
         let host = Host::start(HostOptions {
             listen: cli.listen,
             id: cli.id,
+            password: cli.password.clone(),
             signing_key,
             width: display.width,
             height: display.height,

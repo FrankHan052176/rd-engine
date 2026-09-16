@@ -44,6 +44,8 @@ pub struct HostOptions {
     pub fps: u32,
     pub bitrate: i64,
     pub platform: String,
+    /// Optional shared secret; when set the peer may authenticate with it.
+    pub password: Option<String>,
     pub publisher_backend: PublisherBackend,
     pub output_index: usize,
     pub codec_selection: CodecSelection,
@@ -331,6 +333,7 @@ async fn serve(state: Arc<State>, options: HostOptions) -> Result<(), HostError>
         fps: options.fps,
         bitrate: options.bitrate,
         platform: options.platform.clone(),
+        password: options.password.clone(),
         publisher_backend: options.publisher_backend,
         output_index: options.output_index,
         codec_selection: options.codec_selection,
@@ -391,6 +394,13 @@ async fn authenticate(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
+    let configured_password = options
+        .password
+        .as_deref()
+        .filter(|password| !password.is_empty());
+    let salted_passwords = configured_password
+        .map(|password| vec![crate::authentication::salted_password(password.as_bytes(), &salt)])
+        .unwrap_or_default();
     let config = HostAuthConfig {
         accepted_targets: vec![
             options.id.clone(),
@@ -398,8 +408,12 @@ async fn authenticate(
             local.to_string(),
         ],
         salt,
-        passwords: Passwords::from_salted(Vec::new()),
-        policy: PrimaryPolicy::ClickOnly,
+        passwords: Passwords::from_salted(salted_passwords),
+        policy: if configured_password.is_some() {
+            PrimaryPolicy::PasswordOrClick
+        } else {
+            PrimaryPolicy::ClickOnly
+        },
         ceiling: Permissions::default(),
         password_permissions: Permissions::default(),
         peer_info: peer_info(options, codecs),
