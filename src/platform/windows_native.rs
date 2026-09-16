@@ -915,7 +915,10 @@ impl NativeNvenc {
             gop_length: config
                 .fps_numerator
                 .get()
-                .div_ceil(config.fps_denominator.get()),
+                .div_ceil(config.fps_denominator.get())
+                // Keyframes are requestable (RefreshVideo -> request_keyframe), so a
+                // one-second IDR period only spends bitrate on recovery nobody asked for.
+                .saturating_mul(5),
             color: vui(config.encoded_color).map_err(NativeNvencOpenError::plain)?,
             hdr_static: hdr_static(config.encoded_color.hdr_static)
                 .map_err(NativeNvencOpenError::plain)?,
