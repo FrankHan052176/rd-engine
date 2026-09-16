@@ -357,7 +357,9 @@ extern "C" RD_NVENC_API rd_nvenc_status RD_NVENC_CALL rd_nvenc_create(void *devp
         cfg.rcParams.zeroReorderDelay = 1;
         cfg.rcParams.averageBitRate = d->bitrate_bps;
         cfg.rcParams.maxBitRate = d->bitrate_bps;
-        cfg.rcParams.vbvBufferSize = (uint32_t)((uint64_t)d->bitrate_bps * d->fps_den / d->fps_num);
+        // One second of budget: a single frame of VBV cannot absorb an IDR, so CBR
+  // overshoots on every keyframe instead of averaging over the window.
+  cfg.rcParams.vbvBufferSize = (uint32_t)d->bitrate_bps;
         if (!cfg.rcParams.vbvBufferSize) {
             cfg.rcParams.vbvBufferSize = 1;
         }
