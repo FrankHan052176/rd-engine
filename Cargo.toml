@@ -17,7 +17,9 @@ default = ["windows-modern-producer"]
 windows-modern-producer = []
 
 [dependencies]
-hbb_common = { path = "../../libs/hbb_common" }
+# Wire definitions, framing and crypto stay authoritative in the shared crate;
+# pinned to the revision this engine was developed against.
+hbb_common = { git = "https://github.com/FrankHan052176/hbb_common", rev = "cd80a9990224bc0f307b0c7da05d67e65f3865d9" }
 tokio = { version = "=1.44.2", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
 tokio-util = { version = "=0.7.15", features = ["codec", "rt"] }
 
