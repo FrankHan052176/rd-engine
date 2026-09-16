@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .transpose()?
         .unwrap_or(20);
 
+    let connected_at = tokio::time::Instant::now();
     let mut session = ViewerSession::connect_direct(
         address,
         ViewerIdentity::LegacyUnverified,
@@ -85,6 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             ViewerEvent::LoginError(error) => return Err(error.into()),
             ViewerEvent::Authorized(info) => {
+                println!("auth_ms={}", connected_at.elapsed().as_millis());
                 let display = info.displays.first();
                 println!(
                     "authorized: peer={} platform={} display={}x{}",
@@ -106,6 +108,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     misc_message.set_refresh_video(true);
     refresh.set_misc(misc_message);
     parts.writer.send(&refresh).await?;
+    let refresh_at = tokio::time::Instant::now();
+    let mut first_frame_ms: Option<u128> = None;
+    let mut previous_frame_at: Option<tokio::time::Instant> = None;
+    let (mut gap_min, mut gap_max, mut gap_sum, mut gap_count) = (f64::MAX, 0.0f64, 0.0f64, 0usize);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
     let (mut frame_count, mut key_count, mut encoded_bytes) = (0usize, 0usize, 0usize);
@@ -132,6 +138,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     _ => None,
                 };
                 if let Some((codec, frames)) = units {
+                    if first_frame_ms.is_none() {
+                        first_frame_ms = Some(refresh_at.elapsed().as_millis());
+                    }
+                    if let Some(previous) = previous_frame_at {
+                        let gap = previous.elapsed().as_secs_f64() * 1000.0;
+                        gap_min = gap_min.min(gap);
+                        gap_max = gap_max.max(gap);
+                        gap_sum += gap;
+                        gap_count += 1;
+                    }
+                    previous_frame_at = Some(tokio::time::Instant::now());
                     for unit in &frames.frames {
                         frame_count += 1;
                         encoded_bytes += unit.data.len();
@@ -167,6 +184,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "media: {first} | frames={frame_count} key={key_count} encoded_bytes={encoded_bytes}"
         ),
         None => println!("media: none received within {seconds}s"),
+    }
+    if let Some(first_frame_ms) = first_frame_ms {
+        let average = gap_sum / gap_count.max(1) as f64;
+        println!(
+            "timing: first_frame_ms={first_frame_ms} gap_ms min={:.2} avg={:.2} max={:.2} samples={gap_count}",
+            if gap_min == f64::MAX { 0.0 } else { gap_min },
+            average,
+            gap_max
+        );
     }
     let mut close = Message::new();
     let mut reason = Misc::new();
