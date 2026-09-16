@@ -849,6 +849,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 [[package]]
 name = "hbb_common"
 version = "0.1.0"
+source = "git+https://github.com/FrankHan052176/hbb_common?rev=cd80a9990224bc0f307b0c7da05d67e65f3865d9#cd80a9990224bc0f307b0c7da05d67e65f3865d9"
 dependencies = [
  "anyhow",
  "async-recursion",
