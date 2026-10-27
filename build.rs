@@ -508,10 +508,16 @@ fn link(found: &Found, target: &Target) {
             // and a Windows link takes the MSVC CRT and the Win32 import
             // libraries instead: `m` and `pthread` are not libraries that
             // exist there, so they must never be named on that target.
-            if !matches!(target.os.as_str(), "macos" | "ios" | "windows") {
-                for library in ["m", "pthread"] {
-                    println!("cargo:rustc-link-lib={library}");
-                }
+            // Android's bionic keeps the pthread API in libc and ships no
+            // libpthread for the linker to find (`ld.lld: unable to find
+            // library -lpthread`), so only libm is named there.
+            let private_libraries: &[&str] = match target.os.as_str() {
+                "macos" | "ios" | "windows" => &[],
+                "android" => &["m"],
+                _ => &["m", "pthread"],
+            };
+            for library in private_libraries {
+                println!("cargo:rustc-link-lib={library}");
             }
             "static"
         }

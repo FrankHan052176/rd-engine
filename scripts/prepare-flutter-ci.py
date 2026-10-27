@@ -108,11 +108,22 @@ def prepare(checkout, output, platform):
             add_build_setting(project, "DEAD_CODE_STRIPPING = NO;", blocks=6, missing=3)
             replace(project, '\t\t\t\t\t"-framework",\n\t\t\t\t\t"\\\"video_player_avfoundation\\\"",\n', "", count=3)
             replace(project, '"-ObjC",', '"-ObjC",\n\t\t\t\t\t"-framework", "Security",\n\t\t\t\t\t"-framework", "SystemConfiguration",\n\t\t\t\t\t"-framework", "CoreFoundation",', count=3)
-        # The official generated C header is not a source blob. These runners
-        # only call this C entry point; Dart uses the locked generated bindings.
-        # Its real signature is native/frb/src/c_entry_points.rs (not upstream's).
-        (output / platform / "Runner/bridge_generated.h").write_text(
-            "#pragma once\n#include <stdbool.h>\nbool rustdesk_core_main(void);\n", encoding="utf-8")
+        # The official generated C header is not a source blob. The Swift runners
+        # call the C entry points below; Dart uses the locked generated bindings.
+        # Real signatures are in native/frb/src/c_entry_points.rs.
+        header = ["#pragma once", "#include <stdbool.h>", "#include <stdint.h>",
+                  "bool rustdesk_core_main(void);",
+                  # Upstream's FRB header defines this to reference every wire_*
+                  # symbol so a static link cannot drop them. Here the FRB code is
+                  # kept by -force_load (iOS) or lives in the embedded dylib (macOS).
+                  "static inline int64_t dummy_method_to_enforce_bundling(void) { return 0; }"]
+        if platform == "macos":
+            # Upstream's dock re-open hook acts only in its `--server` process role,
+            # which the engine does not have (rustdesk_core_main always starts the UI).
+            header.append("static inline void handle_applicationShouldOpenUntitledFile(void) {}")
+        else:
+            header.append("const uint8_t *session_get_rgba(const char *session_uuid_str, int display);")
+        (output / platform / "Runner/bridge_generated.h").write_text("\n".join(header) + "\n", encoding="utf-8")
     elif platform == "android":
         gradle = output / "android/app/build.gradle"
         replace(gradle, 'it.workingDir = new File("../..")',

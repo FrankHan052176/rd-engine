@@ -54,7 +54,11 @@ def dependencies(platform, target, triplet):
     else:
         run(["bash", vcpkg / "bootstrap-vcpkg.sh", "-disableMetrics"], env=env)
         exe = vcpkg / "vcpkg"
-    ports = [f"libvpx:{triplet}", f"libsodium:{triplet}", f"zlib:{triplet}"]
+    ports = [f"libvpx:{triplet}", f"zlib:{triplet}"]
+    if platform != "ios":
+        ports.append(f"libsodium:{triplet}")
+    # iOS: the vendored libsodium-sys has its own iOS configure (--host=arm-apple-darwin10).
+    # vcpkg's libsodium port passes host==build there, so its probes try to run arm64 programs.
     if platform == "android":
         ports.append(f"openssl:{triplet}")  # reqwest's native-tls is also enabled
     run([exe, "install", *ports,
@@ -62,9 +66,10 @@ def dependencies(platform, target, triplet):
     prefix = vcpkg / "installed" / triplet
     vpx = require(prefix / "lib" / ("vpx.lib" if platform == "windows" else "libvpx.a"))
     require(prefix / "include/vpx/vpx_decoder.h")
-    require(prefix / "lib" / ("libsodium.lib" if platform == "windows" else "libsodium.a"))
-    env.update({"LIBVPX_PREFIX": str(prefix), "LIBVPX_STATIC": "1",
-                "SODIUM_LIB_DIR": str(prefix / "lib"), "VCPKG_ROOT": str(vcpkg),
+    if platform != "ios":
+        require(prefix / "lib" / ("libsodium.lib" if platform == "windows" else "libsodium.a"))
+        env["SODIUM_LIB_DIR"] = str(prefix / "lib")
+    env.update({"LIBVPX_PREFIX": str(prefix), "LIBVPX_STATIC": "1", "VCPKG_ROOT": str(vcpkg),
                 "CMAKE_TOOLCHAIN_FILE": str(vcpkg / "scripts/buildsystems/vcpkg.cmake"),
                 "VCPKG_TARGET_TRIPLET": triplet, "CMAKE_POLICY_VERSION_MINIMUM": "3.5"})
     # Pinned zlib 1.3.2 names the Windows static-md library zs.lib.
@@ -112,6 +117,13 @@ def dependencies(platform, target, triplet):
 
 
 def build(platform, target, triplet, client):
+    if platform == "windows":
+        # Git Bash puts Git\usr\bin first; its coreutils link.exe then shadows
+        # MSVC's linker ("/usr/bin/link: extra operand ...") for every rustc link.
+        git_coreutils = os.path.join("git", "usr", "bin")
+        os.environ["PATH"] = os.pathsep.join(
+            entry for entry in os.environ["PATH"].split(os.pathsep)
+            if not os.path.normpath(entry).lower().endswith(git_coreutils))
     env, vpx = dependencies(platform, target, triplet)
     run(["cargo", "build", "--locked", "--release", "--manifest-path", ROOT / "native/frb/Cargo.toml",
          "--target", target], env=env)

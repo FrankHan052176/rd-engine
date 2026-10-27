@@ -45,7 +45,7 @@ Vendored crate: ironrdp-pdu 0.9.0
 Trees: native/vnc native/windows-input native/windows-decoder native/frb vendor/ironrdp-pdu vendor/rustdesk vendor/libsodium-sys src/official_account vendor/secret-service src/lan vendor/default-net src/host src/host.rs src/authentication.rs src/session.rs src/platform/windows_input.rs
 Files: 1166
 2fba693dff6e382963acb6a8882edca6affa9177c79f0eed9578f3e728fb38ba  native/frb/CLIENT_SURFACE.md
-a2c592bc8a7b5b16cfab1756af30b148d8b4a781c053fa868c006d58594e11f8  native/frb/Cargo.lock
+6c51e185b6b52f0e800d22f89d65e30f02fda30087497aa1cd1a8708a0ba3f9f  native/frb/Cargo.lock
 d02de59783408a5875620ce1e77ef308afe80d152564173131ecb2b14a67965b  native/frb/Cargo.toml
 625c3c695bf8b20b9333d19d3ea878a79f333d4a3810ceb4be5808eba5e6fa3d  native/frb/UPSTREAM.txt
 40893a4c7eadd145b5f7f1dc39f87ce15f4140c1e83228d83a1806d5a97c19b7  native/frb/build-windows.ps1
