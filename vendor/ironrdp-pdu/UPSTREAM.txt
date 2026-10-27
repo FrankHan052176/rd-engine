@@ -1,0 +1,13 @@
+Source: https://static.crates.io/crates/ironrdp-pdu/ironrdp-pdu-0.9.0.crate
+Version: ironrdp-pdu 0.9.0
+SHA-256: 4ccd1179a4d106df1930347701388b5c79bc3725fa7dab4438d57db0d9d19347
+Git revision: 11a0810cfbbabd8b8023875a05e3041216d4b01b
+Git path: crates/ironrdp-pdu
+License and attribution: unchanged upstream LICENSE-* and package metadata.
+
+Only source change: src/input/fast_path.rs, FastPathInputEvent::encode.
+Add the missing MouseEventRel(pdu) => pdu.encode(dst)? delegation.
+The published implementation encodes its type and includes its payload size,
+but omits the payload. Reuse the existing upstream MouseRelPdu encoder; do not
+implement another wire encoder. See relative-input.patch for the complete diff.
+All three owning Cargo workspaces select this same patched release.

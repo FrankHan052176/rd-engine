@@ -1,0 +1,553 @@
+/// Check if we should use raw TCP proxy for API calls.
+/// Returns true if USE_RAW_TCP_FOR_API builtin option is "Y", WebSocket is off,
+/// and the target URL belongs to the configured non-public API host.
+#[inline]
+fn should_use_raw_tcp_for_api(url: &str) -> bool {
+    get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y"
+        && !use_ws()
+        && is_tcp_proxy_api_target(url)
+}
+
+#[inline]
+fn should_use_tcp_proxy_for_api_url(url: &str, api_url: &str) -> bool {
+    if api_url.is_empty() || is_public(api_url) {
+        return false;
+    }
+
+    let target_host = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
+    let api_host = url::Url::parse(api_url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
+
+    matches!((target_host, api_host), (Some(target), Some(api)) if target == api)
+}
+
+#[inline]
+fn get_tcp_proxy_addr() -> String {
+    check_port(Config::get_rendezvous_server(), RENDEZVOUS_PORT)
+}
+
+/// Send an HTTP request via the rendezvous server's TCP proxy using protobuf.
+/// Connects with `connect_tcp` + `secure_tcp`, sends `HttpProxyRequest`,
+/// receives `HttpProxyResponse`.
+///
+/// The entire operation (connect + handshake + send + receive) is wrapped in
+/// an overall timeout of `CONNECT_TIMEOUT + READ_TIMEOUT` so that a stall at
+/// any stage cannot block the caller indefinitely.
+async fn tcp_proxy_request(
+    method: &str,
+    url: &str,
+    body: &[u8],
+    headers: Vec<HeaderEntry>,
+) -> ResultType<HttpProxyResponse> {
+    let tcp_addr = get_tcp_proxy_addr();
+    if tcp_addr.is_empty() {
+        bail!("No rendezvous server configured for TCP proxy");
+    }
+
+    let parsed = url::Url::parse(url)?;
+    let path = if let Some(query) = parsed.query() {
+        format!("{}?{}", parsed.path(), query)
+    } else {
+        parsed.path().to_string()
+    };
+
+    log::debug!(
+        "Sending {} {} via TCP proxy to {}",
+        method,
+        parsed.path(),
+        tcp_addr
+    );
+
+    let overall_timeout = CONNECT_TIMEOUT + READ_TIMEOUT;
+    timeout(overall_timeout, async {
+        let mut conn = socket_client::connect_tcp(&*tcp_addr, CONNECT_TIMEOUT).await?;
+        let key = crate::get_key(true).await;
+        secure_tcp_silent(&mut conn, &key).await?;
+
+        let mut req = HttpProxyRequest::new();
+        req.method = method.to_uppercase();
+        req.path = path;
+        req.headers = headers.into();
+        req.body = Bytes::from(body.to_vec());
+
+        let mut msg_out = RendezvousMessage::new();
+        msg_out.set_http_proxy_request(req);
+        conn.send(&msg_out).await?;
+
+        match conn.next().await {
+            Some(Ok(bytes)) => {
+                let msg_in = RendezvousMessage::parse_from_bytes(&bytes)?;
+                match msg_in.union {
+                    Some(rendezvous_message::Union::HttpProxyResponse(resp)) => Ok(resp),
+                    _ => bail!("Unexpected response from TCP proxy"),
+                }
+            }
+            Some(Err(e)) => bail!("TCP proxy read error: {}", e),
+            None => bail!("TCP proxy connection closed without response"),
+        }
+    })
+    .await?
+}
+
+/// Build HeaderEntry list from "Key: Value" style header string (used by post_request).
+/// If the caller supplies a Content-Type header it overrides the default `application/json`.
+fn parse_simple_header(header: &str) -> Vec<HeaderEntry> {
+    let mut entries = Vec::new();
+    let mut has_content_type = false;
+    if !header.is_empty() {
+        let tmp: Vec<&str> = header.splitn(2, ": ").collect();
+        if tmp.len() == 2 {
+            if tmp[0].eq_ignore_ascii_case("Content-Type") {
+                has_content_type = true;
+            }
+            entries.push(HeaderEntry {
+                name: tmp[0].into(),
+                value: tmp[1].into(),
+                ..Default::default()
+            });
+        }
+    }
+    if !has_content_type {
+        entries.insert(
+            0,
+            HeaderEntry {
+                name: "Content-Type".into(),
+                value: "application/json".into(),
+                ..Default::default()
+            },
+        );
+    }
+    entries
+}
+
+fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
+    if !resp.error.is_empty() {
+        bail!("TCP proxy error: {}", resp.error);
+    }
+
+    let mut response_headers = Map::new();
+    for entry in resp.headers.iter() {
+        response_headers.insert(entry.name.to_lowercase(), json!(entry.value));
+    }
+
+    let mut result = Map::new();
+    result.insert("status_code".to_string(), json!(resp.status));
+    result.insert("headers".to_string(), Value::Object(response_headers));
+    result.insert(
+        "body".to_string(),
+        json!(String::from_utf8_lossy(&resp.body)),
+    );
+
+    serde_json::to_string(&result).map_err(|e| anyhow!("Failed to serialize response: {}", e))
+}
+
+fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
+    let v: Value = serde_json::from_str(header)?;
+    if let Value::Object(obj) = v {
+        Ok(obj
+            .iter()
+            .map(|(key, value)| HeaderEntry {
+                name: key.clone(),
+                value: value.as_str().unwrap_or_default().into(),
+                ..Default::default()
+            })
+            .collect())
+    } else {
+        Err(anyhow!("HTTP header information parsing failed!"))
+    }
+}
+
+/// Returns (status_code, body_text). Separating status so the wrapper can decide on fallback.
+async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u16, String)> {
+    let proxy_conf = Config::get_socks();
+    let tls_url = get_url_for_tls(url, &proxy_conf);
+    let tls_type = get_cached_tls_type(tls_url);
+    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
+    let response = post_request_(
+        url,
+        tls_url,
+        body.to_owned(),
+        header,
+        tls_type,
+        danger_accept_invalid_cert,
+        danger_accept_invalid_cert,
+    )
+    .await?;
+    let status = response.status().as_u16();
+    let text = response.text().await?;
+    Ok((status, text))
+}
+
+/// POST request with raw TCP proxy support.
+/// - If `USE_RAW_TCP_FOR_API` is "Y" and WS is off, goes directly through TCP proxy.
+/// - Otherwise tries HTTP first; on connection failure or 5xx status,
+///   falls back to TCP proxy if WS is off.
+/// - 4xx responses are returned as-is (server is reachable, business logic error).
+/// - If fallback also fails, returns the original HTTP result (text or error).
+pub async fn post_request(url: String, body: String, header: &str) -> ResultType<String> {
+    with_tcp_proxy_fallback(
+        &url,
+        "POST",
+        post_request_http(&url, &body, header),
+        post_request_via_tcp_proxy(&url, &body, header),
+    )
+    .await
+}
+
+#[async_recursion]
+async fn post_request_(
+    url: &str,
+    tls_url: &str,
+    body: String,
+    header: &str,
+    tls_type: Option<TlsType>,
+    danger_accept_invalid_cert: Option<bool>,
+    original_danger_accept_invalid_cert: Option<bool>,
+) -> ResultType<reqwest::Response> {
+    let mut req = create_http_client_async(
+        tls_type.unwrap_or(TlsType::Rustls),
+        danger_accept_invalid_cert.unwrap_or(false),
+    )
+    .post(url);
+    if !header.is_empty() {
+        let tmp: Vec<&str> = header.split(": ").collect();
+        if tmp.len() == 2 {
+            req = req.header(tmp[0], tmp[1]);
+        }
+    }
+    req = req.header("Content-Type", "application/json");
+    let to = std::time::Duration::from_secs(12);
+    if tls_type.is_some() && danger_accept_invalid_cert.is_some() {
+        // This branch is used to reduce a `clone()` when both `tls_type` and
+        // `danger_accept_invalid_cert` are cached.
+        match req.body(body.clone()).timeout(to).send().await {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => Err(anyhow!("{:?}", e)),
+        }
+    } else {
+        match req.body(body.clone()).timeout(to).send().await {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                if (tls_type.is_none() || danger_accept_invalid_cert.is_none()) && e.is_request() {
+                    if danger_accept_invalid_cert.is_none() {
+                        log::warn!(
+                            "HTTP request failed: {:?}, try again, danger accept invalid cert",
+                            e
+                        );
+                        post_request_(
+                            url,
+                            tls_url,
+                            body,
+                            header,
+                            tls_type,
+                            Some(true),
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    } else {
+                        log::warn!("HTTP request failed: {:?}, try again with native-tls", e);
+                        post_request_(
+                            url,
+                            tls_url,
+                            body,
+                            header,
+                            Some(TlsType::NativeTls),
+                            original_danger_accept_invalid_cert,
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    }
+                } else {
+                    Err(anyhow!("{:?}", e))
+                }
+            }
+        }
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn post_request_sync(url: String, body: String, header: &str) -> ResultType<String> {
+    post_request(url, body, header).await
+}
+
+#[async_recursion]
+async fn get_http_response_async(
+    url: &str,
+    tls_url: &str,
+    method: &str,
+    body: Option<String>,
+    header: &str,
+    tls_type: Option<TlsType>,
+    danger_accept_invalid_cert: Option<bool>,
+    original_danger_accept_invalid_cert: Option<bool>,
+) -> ResultType<reqwest::Response> {
+    let http_client = create_http_client_async(
+        tls_type.unwrap_or(TlsType::Rustls),
+        danger_accept_invalid_cert.unwrap_or(false),
+    );
+    let normalized_method = method.to_ascii_lowercase();
+    let mut http_client = match normalized_method.as_str() {
+        "get" => http_client.get(url),
+        "post" => http_client.post(url),
+        "put" => http_client.put(url),
+        "delete" => http_client.delete(url),
+        _ => return Err(anyhow!("The HTTP request method is not supported!")),
+    };
+    for entry in parse_json_header_entries(header)? {
+        http_client = http_client.header(entry.name, entry.value);
+    }
+
+    if tls_type.is_some() && danger_accept_invalid_cert.is_some() {
+        if let Some(b) = body {
+            http_client = http_client.body(b);
+        }
+        match http_client
+            .timeout(std::time::Duration::from_secs(12))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => Err(anyhow!("{:?}", e)),
+        }
+    } else {
+        if let Some(b) = body.clone() {
+            http_client = http_client.body(b);
+        }
+
+        match http_client
+            .timeout(std::time::Duration::from_secs(12))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                if (tls_type.is_none() || danger_accept_invalid_cert.is_none()) && e.is_request() {
+                    if danger_accept_invalid_cert.is_none() {
+                        log::warn!(
+                            "HTTP request failed: {:?}, try again, danger accept invalid cert",
+                            e
+                        );
+                        get_http_response_async(
+                            url,
+                            tls_url,
+                            method,
+                            body,
+                            header,
+                            tls_type,
+                            Some(true),
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    } else {
+                        log::warn!("HTTP request failed: {:?}, try again with native-tls", e);
+                        get_http_response_async(
+                            url,
+                            tls_url,
+                            method,
+                            body,
+                            header,
+                            Some(TlsType::NativeTls),
+                            original_danger_accept_invalid_cert,
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    }
+                } else {
+                    Err(anyhow!("{:?}", e))
+                }
+            }
+        }
+    }
+}
+
+/// Returns (status_code, json_string) so the caller can inspect the status
+/// without re-parsing the serialized JSON.
+async fn http_request_http(
+    url: &str,
+    method: &str,
+    body: Option<String>,
+    header: &str,
+) -> ResultType<(u16, String)> {
+    let proxy_conf = Config::get_socks();
+    let tls_url = get_url_for_tls(url, &proxy_conf);
+    let tls_type = get_cached_tls_type(tls_url);
+    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
+    let response = get_http_response_async(
+        url,
+        tls_url,
+        method,
+        body,
+        header,
+        tls_type,
+        danger_accept_invalid_cert,
+        danger_accept_invalid_cert,
+    )
+    .await?;
+    // Serialize response headers
+    let mut response_headers = Map::new();
+    for (key, value) in response.headers() {
+        response_headers.insert(key.to_string(), json!(value.to_str().unwrap_or("")));
+    }
+
+    let status_code = response.status().as_u16();
+    let response_body = response.text().await?;
+
+    // Construct the JSON object
+    let mut result = Map::new();
+    result.insert("status_code".to_string(), json!(status_code));
+    result.insert("headers".to_string(), Value::Object(response_headers));
+    result.insert("body".to_string(), json!(response_body));
+
+    // Convert map to JSON string
+    let json_str = serde_json::to_string(&result)
+        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+    Ok((status_code, json_str))
+}
+
+/// HTTP request with raw TCP proxy support.
+#[tokio::main(flavor = "current_thread")]
+pub async fn http_request_sync(
+    url: String,
+    method: String,
+    body: Option<String>,
+    header: String,
+) -> ResultType<String> {
+    with_tcp_proxy_fallback(
+        &url,
+        &method,
+        http_request_http(&url, &method, body.clone(), &header),
+        http_request_via_tcp_proxy(&url, &method, body.as_deref(), &header),
+    )
+    .await
+}
+
+/// General HTTP request via TCP proxy. Header is a JSON string (used by http_request_sync).
+/// Returns a JSON string with status_code, headers, body (same format as http_request_sync).
+async fn http_request_via_tcp_proxy(
+    url: &str,
+    method: &str,
+    body: Option<&str>,
+    header: &str,
+) -> ResultType<String> {
+    let headers = parse_json_header_entries(header)?;
+    let body_bytes = body.unwrap_or("").as_bytes();
+
+    let resp = tcp_proxy_request(method, url, body_bytes, headers).await?;
+    http_proxy_response_to_json(resp)
+}
+
+async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> ResultType<()> {
+    // Skip additional encryption when using WebSocket connections (wss://)
+    // as WebSocket Secure (wss://) already provides transport layer encryption.
+    // This doesn't affect the end-to-end encryption between clients,
+    // it only avoids redundant encryption between client and server.
+    if use_ws() {
+        return Ok(());
+    }
+    let rs_pk = get_rs_pk(key);
+    let Some(rs_pk) = rs_pk else {
+        bail!("Handshake failed: invalid public key from rendezvous server");
+    };
+    match timeout(READ_TIMEOUT, conn.next()).await? {
+        Some(Ok(bytes)) => {
+            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
+                match msg_in.union {
+                    Some(rendezvous_message::Union::KeyExchange(ex)) => {
+                        if ex.keys.len() != 1 {
+                            bail!("Handshake failed: invalid key exchange message");
+                        }
+                        let their_pk_b = sign::verify(&ex.keys[0], &rs_pk)
+                            .map_err(|_| anyhow!("Signature mismatch in key exchange"))?;
+                        let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(
+                            get_pk(&their_pk_b)
+                                .context("Wrong their public length in key exchange")?,
+                        );
+                        let mut msg_out = RendezvousMessage::new();
+                        msg_out.set_key_exchange(KeyExchange {
+                            keys: vec![asymmetric_value, symmetric_value],
+                            ..Default::default()
+                        });
+                        timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
+                        conn.set_key(key);
+                        if log_on_success {
+                            log::info!("Connection secured");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn secure_tcp_silent(conn: &mut Stream, key: &str) -> ResultType<()> {
+    secure_tcp_impl(conn, key, false).await
+}
+
+#[inline]
+fn get_pk(pk: &[u8]) -> Option<[u8; 32]> {
+    if pk.len() == 32 {
+        let mut tmp = [0u8; 32];
+        tmp[..].copy_from_slice(&pk);
+        Some(tmp)
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn get_rs_pk(str_base64: &str) -> Option<sign::PublicKey> {
+    if let Ok(pk) = crate::decode64(str_base64) {
+        get_pk(&pk).map(|x| sign::PublicKey(x))
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn decode64<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
+    #[allow(deprecated)]
+    base64::decode(input)
+}
+
+pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbox::Key) {
+    let their_pk_b = box_::PublicKey(their_pk_b);
+    let (our_pk_b, out_sk_b) = box_::gen_keypair();
+    let key = secretbox::gen_key();
+    let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
+    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b);
+    (Vec::from(our_pk_b.0).into(), sealed_key.into(), key)
+}

@@ -1,6 +1,6 @@
 //! One-shot real-device host smoke. Receives compressed AUs only; no pixels,
 //! credential, peer key, automatic approval or compatibility claim is recorded.
-use hbb_common::message_proto::{
+use base::message_proto::{
     self as proto, LoginRequest, Message, Misc, OptionMessage, SupportedDecoding, message, misc,
     option_message::BoolOption, supported_decoding::PreferCodec, video_frame,
 };

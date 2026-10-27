@@ -1,0 +1,65 @@
+Pinned vcpkg overlay for libvpx
+===============================
+Upstream: https://github.com/rustdesk/rustdesk
+Revision: 092a961b629d318fe290eeafac0cd214a1e9deeb
+Path: res/vcpkg/libvpx/
+Port version: libvpx 1.15.2 ("version": "1.15.2" in the vendored vcpkg.json)
+License: the port files are upstream rustdesk build input (AGPL-3.0), and the
+library they provision is libvpx 1.15.2 under BSD-3-Clause. vcpkg installs
+libvpx's own LICENSE into the package (vcpkg_install_copyright in
+portfile.cmake); nothing in this directory is relicensed or modified.
+
+Vendored scope
+--------------
+The six files below are the exact bytes of that revision's overlay, unmodified;
+the SHA-256 values are the digests of those upstream bytes.
+
+  91fa52aa8ef9c49a667e7f5de710fc47bdb1248f377132159bc610e70319ca8e  0003-add-uwp-v142-and-v143-support.patch
+  3a7edcb553b1191b48696fc5a56ad5a43ae0cedb658ca42ba07473fa32bbc209  0004-remove-library-suffixes.patch
+  11a4f47267cff61c8ac18c60091482c63df44bf0edea489c67608fdd53073316  portfile.cmake
+  72681c6ae8cdda847854e728a8e7b4f1ebf6d7a83da2fbcf4ec66fa163850262  unofficial-libvpx-config.cmake.in
+  05dc986d13aa44ac0d85f08bc2198efa25df707ba1ebbc6975cce9aaa7d7cc0a  vcpkg.json
+  acf70fc877efe7c3e0eded8ff9e16cb798bf5e56a127bc8c6e00bf231258095e  vpx.pc.in
+
+Why it is vendored
+------------------
+The Windows kernel needs a target-matched static libvpx that a Cargo build can
+link by name. vcpkg's built-in libvpx port builds a library whose Windows file
+name carries a CRT/config suffix, so `cargo:rustc-link-lib=static=vpx` cannot
+address it. Two of the vendored files remove that difference:
+
+- 0004-remove-library-suffixes.patch: libvpx's MSVC project sets TargetName to
+  `${name}${lib_sfx}${config_suffix}`; the patch sets it to `${name}`, which is
+  what makes the installed static library a single `vpx.lib`.
+- 0003-add-uwp-v142-and-v143-support.patch: the same overlay's UWP/toolset
+  support, kept because it is part of the pinned port the upstream Windows
+  build uses; this project installs the desktop triplet only.
+
+portfile.cmake deliberately uses libvpx's own install target, so the install
+layout is the one `build.rs` verifies: `include/vpx/vpx_decoder.h`,
+`lib/vpx.lib` and `lib/pkgconfig/vpx.pc`.
+
+How it is consumed
+------------------
+`.github/workflows/windows.yml` checks out microsoft/vcpkg at the commit
+native/frb/UPSTREAM.txt and native/frb/UPSTREAM.lock both pin
+(9e593bb18ea69cc5095e012465dcd675a822ed0d), installs
+`libvpx:x64-windows-static-md` with `--overlay-ports` pointing at this parent
+directory, asserts those three installed files exist, and exports
+`LIBVPX_PREFIX` to the features that link it. `scripts/sync-client-to-windows.sh`
+takes `REMOTE_LIBVPX_PREFIX` for the same purpose on a Windows host the operator
+provisions.
+
+What this directory is not
+--------------------------
+It is provisioning, not a decoder: no VP8/VP9 code lives here and none is
+vendored from libvpx. The decoder is the engine's own
+(`src/platform/vpx_decoder.rs`) and it links whatever install
+`LIBVPX_PREFIX`/pkg-config names, verified by its own build script.
+
+Not verified here: no vcpkg install, Cargo build, link or test was run while
+adding this directory. The Windows workflow is where the port is installed,
+where `include/vpx/vpx_decoder.h`, `lib/vpx.lib` and `lib/pkgconfig/vpx.pc` are
+checked, and where the linked VP8/VP9 probe test is executed; until a Windows
+runner reports that pass, the static library name, the triplet layout and the
+probe evidence are static statements, not observed ones.

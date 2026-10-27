@@ -1,1 +1,6 @@
 /target/
+/native/frb/target/
+/native/frb/dart/.dart_tool/
+/native/frb/dart/build/
+/native/ohos_napi/target/
+/.build-deps/

@@ -1,0 +1,50 @@
+--- a/src/blocking/collection.rs
++++ b/src/blocking/collection.rs
+@@ -142,6 +142,34 @@
+         replace: bool,
+         content_type: &str,
+     ) -> Result<Item<'a>, Error> {
++        self.create_item_with_prompt_policy(label, attributes, secret, replace, content_type, true)
++    }
++
++    /// Create an item without unlocking the collection or executing an authorization prompt.
++    ///
++    /// Returns `Error::Locked` for a locked collection and `Error::Prompt` if the
++    /// provider requires interaction. A prompt response is never treated as creation.
++    pub fn create_item_no_prompt(
++        &'a self,
++        label: &str,
++        attributes: HashMap<&str, &str>,
++        secret: &[u8],
++        replace: bool,
++        content_type: &str,
++    ) -> Result<Item<'a>, Error> {
++        self.ensure_unlocked()?;
++        self.create_item_with_prompt_policy(label, attributes, secret, replace, content_type, false)
++    }
++
++    fn create_item_with_prompt_policy(
++        &'a self,
++        label: &str,
++        attributes: HashMap<&str, &str>,
++        secret: &[u8],
++        replace: bool,
++        content_type: &str,
++        allow_prompt: bool,
++    ) -> Result<Item<'a>, Error> {
+         let secret_struct = format_secret(self.session, secret, content_type)?;
+ 
+         let mut properties: HashMap<&str, Value> = HashMap::new();
+@@ -153,6 +181,12 @@
+         let created_item = self
+             .collection_proxy
+             .create_item(properties, secret_struct, replace)?;
++
++        if !allow_prompt
++            && (created_item.item.as_str() == "/" || created_item.prompt.as_str() != "/")
++        {
++            return Err(Error::Prompt);
++        }
+ 
+         // This prompt handling is practically identical to create_collection
+         let item_path: ObjectPath = {

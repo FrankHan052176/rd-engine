@@ -3,16 +3,20 @@
 //! common.rs get_next_nonkeyexchange_msg. No UDP/KCP/WebSocket/proxy or account
 //! token route is implied. No password enters this module.
 //!
+//! The `registration` submodule is the other half of the same rendezvous service:
+//! the host's UDP registration/heartbeat, the controller routes hbbs hands it, and
+//! the presence query. It reuses these endpoint, framing and address helpers and
+//! leaves the dialer below unchanged.
+//!
 //! hbbs signs IdPk (peer ID + Ed25519 PEER key); that peer then signs its
 //! ephemeral box key in SignedId. These two signing keys are not interchangeable.
 //! Missing/bad evidence terminates, never a compatibility/TOFU fallback.
 use crate::handshake::{self, Established, Security, ViewerIdentity};
 use hbb_common::{
     AddrMangle,
-    message_proto::IdPk,
     protobuf::Message as _,
     rendezvous_proto::{
-        ConnType, NatType, PunchHoleRequest, RelayResponse, RendezvousMessage, RequestRelay,
+        ConnType, IdPk, NatType, PunchHoleRequest, RelayResponse, RendezvousMessage, RequestRelay,
         rendezvous_message,
     },
     sodiumoxide::{self, crypto::sign},
@@ -25,8 +29,15 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::TcpSocket,
+    net::{TcpSocket, TcpStream},
     time::{Instant, timeout, timeout_at},
+};
+
+mod registration;
+pub use registration::{
+    HostRouteKind, IdentityConflict, IncomingHostRoute, PresenceConfig, PresenceState,
+    RegistrationConfig, RegistrationFailure, RegistrationState, RouteRequirements, ServerRefusal,
+    StopReason, query_presence, run_host_registration,
 };
 
 /// No Debug: caller configuration contains identities and a trust anchor.
@@ -190,7 +201,7 @@ fn valid_address(address: SocketAddr) -> bool {
 /// whitespace, ambiguous IPv6+port, zero port or malformed DNS labels. Bare
 /// IPv6 means the complete address with the default port; an explicit IPv6 port
 /// must use brackets. No DNS is performed during validation.
-fn endpoint(name: &str, default_port: u16) -> io::Result<String> {
+pub fn endpoint(name: &str, default_port: u16) -> io::Result<String> {
     if name.is_empty()
         || name.len() > 1024
         || name.chars().any(|c| c.is_whitespace() || c.is_control())
@@ -283,6 +294,16 @@ async fn server_dial(name: &str, default_port: u16, deadline: Instant) -> io::Re
 }
 
 async fn dial(remote: SocketAddr, local: Option<SocketAddr>) -> io::Result<FramedStream> {
+    let stream = dial_socket(remote, local).await?;
+    let local = stream.local_addr()?;
+    let mut wire = FramedStream::from(stream, local);
+    wire.0
+        .codec_mut()
+        .set_max_packet_length(handshake::AUTH_MAX_RECORD_BYTES);
+    Ok(wire)
+}
+
+async fn dial_socket(remote: SocketAddr, local: Option<SocketAddr>) -> io::Result<TcpStream> {
     if !valid_address(remote) {
         return Err(invalid("Invalid route address"));
     }
@@ -309,12 +330,7 @@ async fn dial(remote: SocketAddr, local: Option<SocketAddr>) -> io::Result<Frame
     socket.bind(local)?;
     let stream = socket.connect(remote).await?;
     stream.set_nodelay(true)?;
-    let local = stream.local_addr()?;
-    let mut wire = FramedStream::from(stream, local);
-    wire.0
-        .codec_mut()
-        .set_max_packet_length(handshake::AUTH_MAX_RECORD_BYTES);
-    Ok(wire)
+    Ok(stream)
 }
 
 async fn send(wire: &mut FramedStream, message: &RendezvousMessage) -> io::Result<()> {
@@ -555,7 +571,8 @@ async fn connect(
                 return Err(invalid("Relay request refused"));
             }
             let key = peer_key(response.pk(), &config)?;
-            let relay = relay_name(&config, &response.relay_server)?;
+            // This UUID was paired with the advertised relay, not a configured override.
+            let relay = endpoint(&response.relay_server, 21117)?;
             drop(wire);
             join_relay(&config, &relay, response.uuid, key, deadline).await
         }

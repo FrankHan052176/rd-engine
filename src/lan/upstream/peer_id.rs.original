@@ -1,0 +1,13 @@
+// Align the maximum length of the peer id to the maximum length of the peer id in the server.
+const MAX_UNTRUSTED_PEER_ID_LEN: usize = 253;
+const UNTRUSTED_PEER_ID_FORBIDDEN_CHARS: &[char] = &['"', '<', '>', '/', '\\', '|', '?', '*'];
+
+// Shared validation for peer/connect ids that cross untrusted boundaries before
+// they are stored or written into command/script contexts.
+pub fn is_valid_untrusted_peer_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_UNTRUSTED_PEER_ID_LEN
+        && !id.chars().any(|ch| {
+            ch.is_control() || ch.is_whitespace() || UNTRUSTED_PEER_ID_FORBIDDEN_CHARS.contains(&ch)
+        })
+}

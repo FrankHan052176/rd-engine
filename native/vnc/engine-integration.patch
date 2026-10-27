@@ -1,0 +1,197 @@
+--- a/src/libvncclient/rfbclient.c
++++ b/src/libvncclient/rfbclient.c
+@@ -36,6 +36,7 @@
+ #endif
+ #include <errno.h>
+ #include <rfb/rfbclient.h>
++#include "rd_vnc_hooks.h"
+ #ifdef WIN32
+ #undef socklen_t
+ #endif
+@@ -422,6 +423,7 @@
+     reason = malloc(reasonLen+1);
+     if (!reason || !ReadFromRFBServer(client, reason, reasonLen)) { free(reason); return; }
+     reason[reasonLen]=0;
++    rd_vnc_reason(client, reason);
+     rfbClientLog("VNC connection failed: %s\n",reason);
+     free(reason);
+ }
+@@ -434,6 +436,7 @@
+     if (!ReadFromRFBServer(client, (char *)&authResult, 4)) return FALSE;
+ 
+     authResult = rfbClientSwap32IfLE(authResult);
++    rd_vnc_auth_result(client, authResult);
+ 
+     switch (authResult) {
+     case rfbVncAuthOK:
+@@ -476,6 +479,7 @@
+ 
+     if (count==0)
+     {
++        rd_vnc_fail(client, RD_VNC_REFUSED);
+         rfbClientLog("List of security types is ZERO, expecting an error to follow\n");
+         ReadReason(client);
+         return FALSE;
+@@ -483,10 +487,12 @@
+ 
+     rfbClientLog("We have %d security types to read\n", count);
+     authScheme=0;
++    /* Engine policy: prefer authenticated VNC when both baseline types exist. */
++    if (!ReadFromRFBServer(client, (char *)tAuth, count)) return FALSE;
++    if (!subAuth) rd_vnc_prefer_security(tAuth, count);
+     /* now, we have a list of available security types to read ( uint8_t[] ) */
+     for (loop=0;loop<count;loop++)
+     {
+-        if (!ReadFromRFBServer(client, (char *)&tAuth[loop], 1)) return FALSE;
+         rfbClientLog("%d) Received security type %d\n", loop, tAuth[loop]);
+ 
+ 		switch (tAuth[loop]) {
+@@ -549,6 +555,7 @@
+     }
+     if (authScheme==0)
+     {
++        rd_vnc_fail(client, RD_VNC_SECURITY);
+         memset(buf1, 0, sizeof(buf1));
+         for (loop=0;loop<count;loop++)
+         {
+@@ -969,19 +976,14 @@
+   uint32_t subAuthScheme;
+   rfbClientInitMsg ci;
+ 
+-  /* if the connection is immediately closed, don't report anything, so
+-       that pmw's monitor can make test connections */
+-
+-  if (client->listenSpecified)
+-    errorMessageOnReadFailure = FALSE;
+ 
+   if (!ReadFromRFBServer(client, pv, sz_rfbProtocolVersionMsg)) return FALSE;
+ 
+-  errorMessageOnReadFailure = TRUE;
+ 
+   pv[sz_rfbProtocolVersionMsg] = 0;
+ 
+   if (sscanf(pv,rfbProtocolVersionFormat,&major,&minor) != 2) {
++    rd_vnc_fail(client, RD_VNC_VERSION);
+     rfbClientLog("Not a valid VNC server (%s)\n",pv);
+     return FALSE;
+   }
+@@ -989,6 +991,10 @@
+ 
+   DefaultSupportedMessages(client);
+   client->major = major;
++  if (major < 3 || (major == 3 && minor < 3)) {
++    rd_vnc_fail(client, RD_VNC_VERSION);
++    return FALSE;
++  }
+   client->minor = minor;
+ 
+   /* fall back to viewer supported version */
+@@ -1046,10 +1052,12 @@
+   
+   rfbClientLog("Selected Security Scheme %d\n", authScheme);
+   client->authScheme = authScheme;
++  if (!rd_vnc_allow_security(client, authScheme)) return FALSE;
+   
+   switch (authScheme) {
+ 
+   case rfbConnFailed:
++    rd_vnc_fail(client, RD_VNC_REFUSED);
+     ReadReason(client);
+     return FALSE;
+ 
+@@ -2244,6 +2252,7 @@
+         if ((rect.r.x + rect.r.w > client->width) ||
+ 	    (rect.r.y + rect.r.h > client->height))
+ 	    {
++              rd_vnc_fail(client, RD_VNC_GEOMETRY);
+ 	      rfbClientLog("Rect too large: %dx%d at (%d, %d)\n",
+ 	  	  rect.r.w, rect.r.h, rect.r.x, rect.r.y);
+ 	      return FALSE;
+--- a/src/libvncclient/sockets.c
++++ b/src/libvncclient/sockets.c
+@@ -37,6 +37,7 @@
+ #include <fcntl.h>
+ #include <assert.h>
+ #include <rfb/rfbclient.h>
++#include "rd_vnc_hooks.h"
+ #include "sockets.h"
+ #include "tls.h"
+ #include "sasl.h"
+@@ -60,7 +61,7 @@
+  */
+ 
+ rfbBool
+-ReadFromRFBServer(rfbClient* client, char *out, unsigned int n)
++rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
+ {
+   const int USECS_WAIT_PER_RETRY = 100000;
+   int retries = 0;
+@@ -169,6 +170,7 @@
+ 	    return FALSE;
+ 	  }
+ 	} else {
++          rd_vnc_fail(client, RD_VNC_CLOSED);
+ 	  if (errorMessageOnReadFailure) {
+ 	    rfbClientLog("VNC server closed connection\n");
+ 	  }
+@@ -218,6 +220,7 @@
+ 	    return FALSE;
+ 	  }
+ 	} else {
++          rd_vnc_fail(client, RD_VNC_CLOSED);
+ 	  if (errorMessageOnReadFailure) {
+ 	    rfbClientLog("VNC server closed connection\n");
+ 	  }
+@@ -247,7 +250,7 @@
+  */
+ 
+ rfbBool
+-WriteToRFBServer(rfbClient* client, const char *buf, unsigned int n)
++rd_vnc_write_upstream(rfbClient* client, const char *buf, unsigned int n)
+ {
+   fd_set fds;
+   int i = 0;
+--- a/src/libvncclient/vncviewer.c
++++ b/src/libvncclient/vncviewer.c
+@@ -38,6 +38,7 @@
+ #include <string.h>
+ #include <time.h>
+ #include <rfb/rfbclient.h>
++#include "rd_vnc_hooks.h"
+ #include "tls.h"
+ #if defined(LIBVNCSERVER_HAVE_LIBZ) && defined(LIBVNCSERVER_HAVE_LIBJPEG)
+ #include "turbojpeg.h"
+@@ -113,7 +114,11 @@
+ /* messages */
+ 
+ static rfbBool CheckRect(rfbClient* client, int x, int y, int w, int h) {
+-  return x + w <= client->width && y + h <= client->height;
++  rfbBool valid = x >= 0 && y >= 0 && w >= 0 && h >= 0 &&
++    w <= client->width && h <= client->height &&
++    x <= client->width - w && y <= client->height - h;
++  if (!valid) rd_vnc_fail(client, RD_VNC_GEOMETRY);
++  return valid;
+ }
+ 
+ static void FillRectangle(rfbClient* client, int x, int y, int w, int h, uint32_t colour) {
+--- a/include/rfb/rfbclient.h
++++ b/include/rfb/rfbclient.h
+@@ -39,6 +39,8 @@
+ #endif
+ #endif
+ 
++#include <rfb/rfbconfig.h>
++
+ #if defined(ANDROID) || defined(LIBVNCSERVER_HAVE_ANDROID)
+ #include <arpa/inet.h>
+ #include <sys/select.h>
+@@ -471,7 +473,9 @@
+ 	 * Mutex to protect concurrent TLS read/write.
+ 	 * For internal use only.
+ 	 */
++#if defined(LIBVNCSERVER_HAVE_LIBPTHREAD) || defined(LIBVNCSERVER_HAVE_WIN32THREADS)
+ 	MUTEX(tlsRwMutex);
++#endif
+ 
+ 	rfbBool requestedResize;
+         /**

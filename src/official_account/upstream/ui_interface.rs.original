@@ -1,0 +1,61 @@
+#[derive(Debug, Clone, Serialize)]
+pub struct LoginDeviceInfo {
+    pub os: String,
+    pub r#type: String,
+    pub name: String,
+}
+
+#[inline]
+pub fn http_request(url: String, method: String, body: Option<String>, header: String) {
+    // Respond to concurrent requests for resources
+    let current_request = ASYNC_HTTP_STATUS.clone();
+    current_request
+        .lock()
+        .unwrap()
+        .insert(url.clone(), " ".to_owned());
+    std::thread::spawn(move || {
+        let res = match crate::http_request_sync(url.clone(), method, body, header) {
+            Err(err) => {
+                log::error!("{}", err);
+                err.to_string()
+            }
+            Ok(text) => text,
+        };
+        current_request.lock().unwrap().insert(url, res);
+    });
+}
+
+#[inline]
+pub fn get_async_http_status(url: String) -> Option<String> {
+    match ASYNC_HTTP_STATUS.lock().unwrap().get(&url) {
+        None => None,
+        Some(_str) => Some(_str.to_string()),
+    }
+}
+
+#[inline]
+pub fn get_api_server() -> String {
+    crate::get_api_server(
+        get_option("api-server"),
+        get_option("custom-rendezvous-server"),
+    )
+}
+
+#[inline]
+pub fn get_login_device_info() -> LoginDeviceInfo {
+    LoginDeviceInfo {
+        // std::env::consts::OS is better than whoami::platform() here.
+        os: std::env::consts::OS.to_owned(),
+        r#type: "client".to_owned(),
+        name: crate::common::hostname(),
+    }
+}
+
+#[inline]
+pub fn get_login_device_info_json() -> String {
+    serde_json::to_string(&get_login_device_info()).unwrap_or("{}".to_string())
+}
+
+    static ref ASYNC_HTTP_STATUS : Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+
+const INIT_ASYNC_JOB_STATUS: &str = " ";

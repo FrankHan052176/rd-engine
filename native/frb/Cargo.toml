@@ -1,0 +1,62 @@
+[package]
+name = "rd-engine-flutter"
+version = "0.1.0"
+# Edition 2021 on purpose. flutter_rust_bridge 1.80 generates code whose
+# attributes (no_mangle and friends) edition 2024 requires to be written
+# `unsafe(...)`, so the generated file cannot live in the engine's 2024 crate.
+# This crate is where both the API module and the generated file live, which is
+# also the shape the official client uses.
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+# Independent kernel-artifact workspace; depends on the shared engine below.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# Both outputs reuse the same shared engine and its real Windows producer, and
+# this crate is the one place `software-vpx` is selected: the official client's
+# frame path here is the CPU RGBA event, so the kernel is built with the
+# software VP8/VP9 backend on. The root crate's default features are unchanged
+# and no other output inherits this. A target where `build.rs` resolves no
+# libvpx still builds: the feature then compiles to named refusals and claims
+# nothing (src/platform/vpx_decoder.rs), and `RD_LIBVPX_PROVENANCE` records why.
+rd-engine = { path = "../..", features = ["windows-modern-producer", "software-vpx", "official-account"] }
+# Pinned to the version the official client pins, so both generate one shape.
+flutter_rust_bridge = { version = "=1.80.1", features = ["uuid"] }
+anyhow = "1"
+# The client's own bridge takes the licence key, the compiled public service
+# key, the log macros and the log file from hbb_common. The pin is the engine's,
+# so one copy of it is built for both.
+hbb_common = { path = "../../vendor/rustdesk/libs/hbb_common" }
+base = { path = "../../vendor/rustdesk/libs/base" }
+# `SessionID`, the id every session call carries: the same crate the client's own
+# bridge names, and the version line hbb_common already resolves.
+uuid = { version = "1", features = ["v4"] }
+# Official client's physical-key vocabulary and platform/HID conversions.
+rdev = { git = "https://github.com/rustdesk-org/rdev", rev = "23e24dd6b35452a495dae0ae6d99395e9755ab0f" }
+# The client's event dialect is JSON, and so is the option store's.
+serde_json = "1"
+# Typed, bounded host/CM messages; the version is already selected by the lock.
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "=0.11.0"
+# Authenticated local named pipes; no additional Windows service or injector.
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Pinned official runner startup: JavaVM/NDK context and hosted TLS verifier.
+jni = { version = "=0.21.1", default-features = false }
+ndk-context = "=0.1.1"
+
+[patch.crates-io]
+ironrdp-pdu = { path = "../../vendor/ironrdp-pdu" }
+# Independent workspaces must retain the shared engine's platform dependency patch.
+libsodium-sys = { path = "../../vendor/libsodium-sys" }
+webrtc = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }
+webrtc-util = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }
+webrtc-sctp = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }

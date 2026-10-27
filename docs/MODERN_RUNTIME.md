@@ -2,18 +2,17 @@
 
 ## Scope and ownership
 
-The replacement is `crates/rd-engine`, not another policy around the legacy
-`Connection`, `VideoService`, `VideoHandler` or QoS loop. Those remain in this
-isolated checkout as reference code while the replacement is built. They are not
-dependencies of the new engine. The M3 HAR/ArkTS integration calls only this
-replacement engine for its modern routes; the legacy runtime remains reference
-code rather than a fallback.
+The shared engine is owned by `rd-engine/src`. It produces a HarmonyOS-only HAR
+through `native/ohos_napi` for Resk and non-HarmonyOS FRB artifacts through
+`native/frb` for the official RustDesk Flutter client. It does not ship its own
+Flutter application. `R_RustDesk-Flutter` remains the separate HarmonyOS port of
+the official client, with its own upstream-derived kernel and release chain.
 
 Upstream protobuf messages, packet framing and mature cryptographic primitives
 remain authoritative. Existing field meanings, authentication compatibility,
 identity and permission decisions must not be repurposed for media features.
-HAR stays the thin platform/N-API boundary; ArkUI owns UI and lifecycle, never a
-second protocol implementation.
+HAR and FRB stay thin platform boundaries; their clients own UI and platform
+lifecycle, never a second protocol implementation.
 
 ## Runtime layout
 
@@ -41,8 +40,8 @@ second protocol implementation.
 2. A usable bidirectional SDR remote-desktop session through the new engine,
    with input/permissions, disconnect/reconnect and display lifecycle working.
 3. Platform zero-copy capture/codec/display providers and remaining service
-   compatibility. Replace the HAR runtime entry, then rebuild through Core → HAR
-   → ArkTS; do not claim integration while only a library has been built.
+   compatibility. Rebuild engine → HAR → Resk and engine → FRB → the pinned
+   official non-HarmonyOS Flutter client; a library build alone proves neither.
 4. HDR with explicit compatible profile, bit depth, transfer, primaries, range
    and metadata handling. An H265 capability bit alone never enables HDR. Missing
    peer capability means no HDR claim; a separately negotiated SDR session is not
@@ -55,6 +54,27 @@ second protocol implementation.
 Codec throughput, desktop-capture throughput and presentation throughput are
 different gates. A platform capture API limit must be reported as such; it cannot
 be bypassed by reporting codec-only test-pattern throughput as screen sharing.
+
+## Session frame-rate ownership
+
+The connecting client owns the session target through `LoginRequest.option.custom_fps`.
+The host has no independent FPS setting or cap: requests from 1 through 240 are
+used exactly; missing/zero uses rd-engine's default of 60, while negative or
+above-240 requests fail with `InvalidFrameRate`. These are engine policies, not
+protobuf-mandated defaults. Changing a running viewer's target requires reconnecting.
+
+Startup codec discovery performs a real initialization at 1 FPS, followed by
+checked teardown. This conservative probe is not a throughput guarantee or proof
+that driver modes are monotonic. Each authenticated session opens its publisher
+at its own resolved target and reports actual initialization failures without
+silently lowering the rate or repeating frames.
+
+`HostSnapshot.client_requested_fps` and `fps` describe the most recently begun
+session attempt: 0/0 before any attempt, 0/60 for an unspecified request, and
+120/120 for an explicit 120 request. They are not measurements or aggregate rates
+for all peers. Host sent-unit and compressed-payload byte counters remain
+cumulative across peers; receive, presentation submission and physical scanout
+must be measured separately.
 
 ## Windows producer boundary
 

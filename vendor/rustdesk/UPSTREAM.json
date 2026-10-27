@@ -1,0 +1,549 @@
+{
+  "schema": 1,
+  "repositories": {
+    "rustdesk": {
+      "url": "https://github.com/rustdesk/rustdesk",
+      "revision": "092a961b629d318fe290eeafac0cd214a1e9deeb"
+    },
+    "hbb_common": {
+      "url": "https://github.com/rustdesk/hbb_common",
+      "revision": "daf84c2df33b3d5861d9a36600773638559d072c"
+    }
+  },
+  "integration": {
+    "patch": "ohos-and-pins.patch",
+    "purpose": "Preserve OHOS platform behavior, add checked host identity storage and deadline-guarded password/options/local CM policy commits, and pin dependencies to the official source revision.",
+    "scope": "Only imported libraries, not the official application runtime. base owns client messages; hbb_common owns shared configuration and transport.",
+    "original_hashes": "files records original upstream Git blobs before the integration patch."
+  },
+  "files": {
+    "LICENCE": {
+      "git_blob": "0ad25db4bd1d86c452db3f9602ccdbe172438f52",
+      "repository": "rustdesk"
+    },
+    "libs/base/Cargo.toml": {
+      "git_blob": "2890f00e37de750c2e25ebdbb60014e607785a79",
+      "repository": "rustdesk"
+    },
+    "libs/base/build.rs": {
+      "git_blob": "96deaa15b030d4766186ea744be733df1fe64b88",
+      "repository": "rustdesk"
+    },
+    "libs/base/examples/system_message.rs": {
+      "git_blob": "e4446e807d78ab454f811938013b317ca4225f8a",
+      "repository": "rustdesk"
+    },
+    "libs/base/protos/message.proto": {
+      "git_blob": "1276deaa8c457911dab08381b39dd90231e3ae24",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/config/keys.rs": {
+      "git_blob": "ce38c2c989769ede3e836367c6b2a762b08adc9d",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/config/mod.rs": {
+      "git_blob": "703bc087268f40ffac22f9fb39e88dee3cc08537",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/fs.rs": {
+      "git_blob": "1adb590779726977745c85ed637812ecdf87bd68",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/keyboard.rs": {
+      "git_blob": "10979f520e9476eeb9eb07dc6e3b26870d3c9af5",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/lib.rs": {
+      "git_blob": "4389428b4b632edfb1d02b59251f410343b54e02",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/platform/linux.rs": {
+      "git_blob": "aa1228ca696f1a5a2748a54d94e59ce5b006e05e",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/platform/linux/wayland_probe.rs": {
+      "git_blob": "9a9370224014434fc947043570df0aef290c8204",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/platform/macos.rs": {
+      "git_blob": "2df8b528b77d6e0bec6c4a1f85ea3926ea05c804",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/platform/mod.rs": {
+      "git_blob": "728f6c8c5b72af9a378d3f9675ce438a6617c33d",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/platform/windows.rs": {
+      "git_blob": "7481631ace17b8259d5f58d7859ad7713af59a91",
+      "repository": "rustdesk"
+    },
+    "libs/base/src/protos/mod.rs": {
+      "git_blob": "57d9b68fe341415d77af4a107a2d8ab5a72a25eb",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.gitattributes": {
+      "git_blob": "176a458f94e0ea5272ce67c36bf30b6be9caf623",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.github/ISSUE_TEMPLATE/bug_report.md": {
+      "git_blob": "a5a2f77a5c7583551f6a656517a3c2af87be661a",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.github/ISSUE_TEMPLATE/feature_request.md": {
+      "git_blob": "4cd9c3fc1065ed99b288ce2daa26dc3c231d96bd",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.github/ISSUE_TEMPLATE/question.md": {
+      "git_blob": "ef240a0525e3921e7d1874d8c316907003769036",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.gitignore": {
+      "git_blob": "0e497c2069b67f158d109efd27472b09df6bb14b",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.travis.yml": {
+      "git_blob": "0152a83c758ea4cf679a1ca913492ac63b35d746",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/.vscode/launch.json": {
+      "git_blob": "123e0bc4275110e1d829067de0af37755c78158f",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/Cargo.toml": {
+      "git_blob": "c47409d1e4da994f1804d0d5477ddd459d711fcf",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/LICENSE": {
+      "git_blob": "d4b9c099baa3a3b9f397567aea4d4bd96131e520",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/README.md": {
+      "git_blob": "df6ca799756e857cc3e1c4742265e6e96ed9f95a",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/appveyor.yml": {
+      "git_blob": "5ad7bc2496945706ad329e17090eaa9371c8cef1",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/build.rs": {
+      "git_blob": "6672b22a8c03993f8d5fb3b569d25f51eebf76e7",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/examples/dsl.rs": {
+      "git_blob": "e58ec44725cee8e5ac8e5ae79df9ed5ee65772c7",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/examples/key.rs": {
+      "git_blob": "9a4da34d520b0592dfc8f8b18ac5244d1c1c44bc",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/examples/keyboard.rs": {
+      "git_blob": "c9a12cd3a3831eec627b1904d48d2f7e0eb2ca15",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/examples/mouse.rs": {
+      "git_blob": "4e73df1c0b950416e39982d9f01c17fe842c6295",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/examples/timer.rs": {
+      "git_blob": "92ded3dbbe6b8c62cd9a3f037deb06a5d7e20158",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/rustfmt.toml": {
+      "git_blob": "b2715b26833aa685b5ca2d43bcc9cb947eacebf3",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/dsl.rs": {
+      "git_blob": "dfb8adbb6225684f76d515df246885eb6504615e",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/lib.rs": {
+      "git_blob": "ec91068c0ceeddcf04c628595f37241d569f7692",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/linux/mod.rs": {
+      "git_blob": "1f73004ad31bf6e1aabd93659b501eead39a6a31",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/linux/nix_impl.rs": {
+      "git_blob": "ffb07ea9adee6b38f36d1d44e05b12dfbd929c04",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/linux/xdo.rs": {
+      "git_blob": "7796904f9b6b080a155281afa4a0d8bacf49e684",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/macos/keycodes.rs": {
+      "git_blob": "540d0e18586ee6594071db6f89dc9abb84bff86e",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/macos/macos_impl.rs": {
+      "git_blob": "20f5d0cbf42153d9b85a1954f02a16a887566f9b",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/macos/mod.rs": {
+      "git_blob": "f9aebb511acba465944c0cbd2e60d9e9c462a5b2",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/win/keycodes.rs": {
+      "git_blob": "500582bf00b9110cdc75ed7c012d82af49029297",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/win/mod.rs": {
+      "git_blob": "4ec95ee396822aedd898913ccc013137f946c746",
+      "repository": "rustdesk"
+    },
+    "libs/enigo/src/win/win_impl.rs": {
+      "git_blob": "41aca472c28e8135511b60411ebdb80be9223620",
+      "repository": "rustdesk"
+    },
+    "libs/hbb_common/.gitignore": {
+      "git_blob": "693699042b1a8ccf697636d3cd34b200f3a8278b",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/Cargo.toml": {
+      "git_blob": "8e1735690310dd12d6f34b8edfb024280740bc95",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/build.rs": {
+      "git_blob": "43e3282435c210c15e8f698d28db308a960f74fd",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/examples/config.rs": {
+      "git_blob": "95169df8e2cb2d78d20996c75794ce5d7b947bc6",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/examples/webrtc.rs": {
+      "git_blob": "2c993caa16cbdfa2a3b9f74eeac0d76d8b129d4f",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/examples/webrtc_echo.rs": {
+      "git_blob": "ba20cc7055d9e964aa54cd8614775feae1e828d5",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/protos/rendezvous.proto": {
+      "git_blob": "f87882385ee40d9c809208ff5f0ebc151f66a329",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/bytes_codec.rs": {
+      "git_blob": "5bd5590c1420fb446ca9520d213fa0ee1317f230",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/compress.rs": {
+      "git_blob": "8bdd01f9d4edacaef28a4638487b65bf329d0d55",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/config.rs": {
+      "git_blob": "6fe1004558f154a4128d83ac8dea0892142d8c59",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/config/permanent_password.rs": {
+      "git_blob": "5fbca254269fae15cfb1562237e9013b26dbadcd",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/fingerprint.rs": {
+      "git_blob": "2d8985e38a42339da765701aacb61c23e8eb9592",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/lib.rs": {
+      "git_blob": "20dfa4312471de81483536056972433b52c6a6cc",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/log_throttle.rs": {
+      "git_blob": "b8043ff93ea9e81621f6d5178605d920a8149c5c",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/mem.rs": {
+      "git_blob": "618194a40c2e5654838c0f62df752aad9d3724e3",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/password_security.rs": {
+      "git_blob": "3f5f32430a977d4355a925b946be58f91eeb92a4",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/protos/mod.rs": {
+      "git_blob": "57d9b68fe341415d77af4a107a2d8ab5a72a25eb",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/proxy.rs": {
+      "git_blob": "d3b8a76d29cf7545366174954b8883dc75798aaf",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/rx_probe.rs": {
+      "git_blob": "520fa38671135c96c862808711020edbdc5751f8",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/sh.rs": {
+      "git_blob": "c6e4bb37be13a0f10d8e707d6fe3af2078ca0b5a",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/socket_client.rs": {
+      "git_blob": "9178b74b5df3fccc8ba670840a00d8abe46fbc50",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/stream.rs": {
+      "git_blob": "d714fbcefd0cbf4e11597f2d075dd3a3c2182118",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/tcp.rs": {
+      "git_blob": "2296edb1d3b941d27ff353f997c25b4773b00ce7",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/tls.rs": {
+      "git_blob": "b0862369bc99ce5a8bb1274f060abb7de78b0161",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/udp.rs": {
+      "git_blob": "fbdf332f3058efd1d26697ff73ecec03f53a5632",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/verifier.rs": {
+      "git_blob": "9f628549e1b82f3d486ea596b19032ac96b64f24",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/webrtc.rs": {
+      "git_blob": "5bdbdcae0888d80aae8247405ee120a2d6520621",
+      "repository": "hbb_common"
+    },
+    "libs/hbb_common/src/websocket.rs": {
+      "git_blob": "7bf21084090c0e85a6bfa950260c1955a56e324d",
+      "repository": "hbb_common"
+    },
+    "libs/scrap/.gitignore": {
+      "git_blob": "5e10219a107019febef736f8bf8e448d392eda5b",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/Cargo.toml": {
+      "git_blob": "1cc1ff619f370906035680dc6549d90d4603483d",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/README.md": {
+      "git_blob": "5809cb844ebb8ab3d85272549b759e6de8189366",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/build.rs": {
+      "git_blob": "cdee4d5ecdc10f40be4f744551333fd9559e6aac",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/benchmark.rs": {
+      "git_blob": "74b3b5b86b157f5546b96892a4614c316f6ad95a",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/capture_mag.rs": {
+      "git_blob": "179cef73e634630d6c67807fd46f6f64a5ec10db",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/ffplay.rs": {
+      "git_blob": "aa65bd961e47799abb039b2fef638cc10ff52b90",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/list.rs": {
+      "git_blob": "af5bb4559a633450b9df86bed13763d98f194967",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/record-screen.rs": {
+      "git_blob": "ca620608adbe56c13a5a775d36f7db536a6750cc",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/examples/screenshot.rs": {
+      "git_blob": "9190d74f56b359ff31a4d61785910e4d14a4804a",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/android/ffi.rs": {
+      "git_blob": "26f6a50f4ec4db3089b36c19b0dc9d079d0b5816",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/android/mod.rs": {
+      "git_blob": "9040395fa3ba5a6e5d0c208ab1d84992ec28bceb",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/bindings/aom_ffi.h": {
+      "git_blob": "bc4077b7ba075a1e6b1f52b07fd94214fb2070c1",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/bindings/vpx_ffi.h": {
+      "git_blob": "cd44f9865abf064fb56c408b68331ab11f365a65",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/bindings/yuv_ffi.h": {
+      "git_blob": "1ea24ef0bc460b04486aedfc529d2d05fcc917f4",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/android.rs": {
+      "git_blob": "49956fcce61791d71c76851a259c248ff7ba903e",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/aom.rs": {
+      "git_blob": "c33a0a387def5af1a827715797301a3a298cfc46",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/camera.rs": {
+      "git_blob": "e31a37a27ed5dc2e0ec563d79391aac901af7e23",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/codec.rs": {
+      "git_blob": "606a4be4bc6b0a1300c4a7c8ffe4cb7f598b7dbb",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/convert.rs": {
+      "git_blob": "40c17e5bad265880d39ce78c4f280adda1f1d145",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/drm_reader.rs": {
+      "git_blob": "3d19c6c419efc247fddf83fb90f95e53d14c8715",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/drm_render.rs": {
+      "git_blob": "6df6ea61d2d71227c5d1e149fcbe81ab37727d92",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/drmtap_dl.rs": {
+      "git_blob": "0312c75bbce8e56a414fab8205012c2ee8ddd212",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/dxgi.rs": {
+      "git_blob": "3cf816eb4a52209f150b0e7cd1bd4f9be77272ac",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/hwcodec.rs": {
+      "git_blob": "9cf3367ba4e1ef09b7034f54393cb4391e532045",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/linux.rs": {
+      "git_blob": "ba5e8e7fff26eb66ee753bb8041c289ece429b00",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/mediacodec.rs": {
+      "git_blob": "8ec5e6b8fb9bfbb12991dcd18c06de2d950a99c6",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/mod.rs": {
+      "git_blob": "8c14db13b8aeb2d451f8c1e9712bf0db7a64007f",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/quartz.rs": {
+      "git_blob": "b6a63e82649da4940ced62f971d26fd5c6b89025",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/record.rs": {
+      "git_blob": "08a086ecd25c529636a52a5b0e3f6aa0e04aff6b",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/vpx.rs": {
+      "git_blob": "d627dcf6c0a70511e0438b5663c7d9618934ff49",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/vpxcodec.rs": {
+      "git_blob": "0478f7fa38fbe3da5acb33b94b782e6f48633182",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/vram.rs": {
+      "git_blob": "3c140abb3db7a148ff5706190509617d8568628c",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/wayland.rs": {
+      "git_blob": "30b5f4d541b71c28d74a4b7f0274943524b4ff1f",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/common/x11.rs": {
+      "git_blob": "2a7c19c47d9166e366219f90be94090142201063",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/dxgi/gdi.rs": {
+      "git_blob": "30440643b36d6ae5d7a9f723737b25a82596c3b0",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/dxgi/mag.rs": {
+      "git_blob": "313e1c6944cceac88dff29f01600b655ede51abf",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/dxgi/mod.rs": {
+      "git_blob": "77ae70cd03d4bc65fcb4ae9e7c625fbd189d13d1",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/lib.rs": {
+      "git_blob": "77070d1a2dba09f483a8b76342d75a28f7be5564",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/capturer.rs": {
+      "git_blob": "cf442c2b47f5f4812b7d5f7987ba97731100510c",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/config.rs": {
+      "git_blob": "d5f992f0b1854acc7bf7e4a69ea3904e1d1f0472",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/display.rs": {
+      "git_blob": "137d648cf01ea91081c13ecc99380f990ef68932",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/ffi.rs": {
+      "git_blob": "c55bc8c699a19aa98a457d3a623986ae52e1a329",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/frame.rs": {
+      "git_blob": "0886e63236fc2094cf09a1e7d156d74a27d4a681",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/quartz/mod.rs": {
+      "git_blob": "c10203294ba9bd6ee4a77a74d9993ae666764120",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland.rs": {
+      "git_blob": "341f2b8002baef650d0614f2eab7dd6f800d2e4b",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/README.md": {
+      "git_blob": "3ea8ae1306a17925c1df0cc5d94556ecc9edfc25",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/capturable.rs": {
+      "git_blob": "070b66799a4a6540692d89ef65c2fcc5c558e3a7",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/display.rs": {
+      "git_blob": "6ff4177ccea3374bab158f5c84a3938af9caa1f5",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/pipewire.rs": {
+      "git_blob": "57b1166411a40c7e3db2784f48647740b0905543",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/remote_desktop_portal.rs": {
+      "git_blob": "22ccddc2e0b712716374b941f3396c9eba4dff44",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/request_portal.rs": {
+      "git_blob": "c2314a312a6361e22d90ef4da6d391ef2762c8d3",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/wayland/screencast_portal.rs": {
+      "git_blob": "a8f7a911b247450f927514ef18eb48c4434aca48",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/capturer.rs": {
+      "git_blob": "550bfb346f1a7ede932ef45fd98dbb78d80600ae",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/display.rs": {
+      "git_blob": "0bc18b3b8702e91bb69311cfa3c1cadca69c6178",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/ffi.rs": {
+      "git_blob": "370ce78b70bd765cce1cc7156dab15248f8f7eaa",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/iter.rs": {
+      "git_blob": "f800d5aa8ae65736ed30ce9a29867415c0c08894",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/mod.rs": {
+      "git_blob": "382d1f6a2f79ec180aee690835b9221a6f823eb5",
+      "repository": "rustdesk"
+    },
+    "libs/scrap/src/x11/server.rs": {
+      "git_blob": "7ae145d4091676b400fcc25cf8e76bb16d2c8228",
+      "repository": "rustdesk"
+    }
+  }
+}

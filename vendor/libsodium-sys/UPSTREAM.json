@@ -1,0 +1,3907 @@
+{
+  "schema": 1,
+  "package": {
+    "name": "libsodium-sys",
+    "version": "0.2.7",
+    "links": "sodium",
+    "native_library_version": "1.0.18"
+  },
+  "repositories": {
+    "sodiumoxide": {
+      "url": "https://github.com/FrankHan052176/sodiumoxide",
+      "revision": "a09de89d843f88a7bfccd80266150fe5d33e1eee",
+      "tree": "4918683a0053fa5b3ca2bcbd9ef9bdaed3aca82e",
+      "source_subdirectory": "libsodium-sys"
+    },
+    "libsodium": {
+      "url": "https://github.com/jedisct1/libsodium",
+      "revision": "8acd22717f6af798b1ed5fd275e2b4c789425cf5",
+      "tree": "287f1150212f0d899aa241d0ad8005e73a943c8b",
+      "gitlink": {
+        "repository": "sodiumoxide",
+        "path": "libsodium-sys/libsodium",
+        "mode": "160000",
+        "revision": "8acd22717f6af798b1ed5fd275e2b4c789425cf5"
+      },
+      "gitmodules_blob": "57dd1f6d634dc079b597d0c97e30cb0728f9bfd7"
+    }
+  },
+  "integration": {
+    "patch": "archive-directory-lock.patch",
+    "patch_sha256": "d3ddff88a87d7ffd566c3dddf543024ce6161e8c417a8e7c0e97a39d15f3f6cd",
+    "purpose": "Preserve archive extraction locking without hard links and exclude macOS AppleDouble metadata from object collection on ExFAT.",
+    "scope": "Only libsodium/build-aux/ltmain.sh archive extraction locking and extracted-object collection change. Cargo.toml, build.rs, Rust API/FFI bindings, cryptographic implementation, configure, target selection and independent compiler locking remain upstream-exact.",
+    "original_hashes": "files records every included source file original Git blob and mode before applying the one local patch.",
+    "changes": [
+      {
+        "path": "libsodium/build-aux/ltmain.sh",
+        "original_git_blob": "0f0a2da3f9dd10627626bf9725b332d95f314393",
+        "patched_git_blob": "3ef25acded48cd9aaed52f3aefeec15d29c22373",
+        "original_lines": [
+          5093,
+          5099,
+          5101,
+          5190
+        ],
+        "delta": [
+          "Replace ln \"$progpath\" \"$lockfile\" acquisition with atomic mkdir \"$lockfile\"; retain lock_old_archive_extraction, opt_dry_run, the wait message and retry interval.",
+          "On extraction failure, capture stat=$? before cleanup, remove the directory only when archive locking is enabled, and exit with the saved extraction status even if cleanup fails.",
+          "On normal completion, replace rm -f \"$lockfile\" with rmdir \"$lockfile\", retaining the existing archive-lock and dry-run guards.",
+          "Exclude ._* AppleDouble metadata sidecars when collecting extracted .o/.lo files so archive members remain real object files on non-native macOS filesystems."
+        ]
+      }
+    ]
+  },
+  "source_closure": {
+    "acquisition": "Read exact Git trees and git archive objects from the existing Cargo checkout without modifying its worktree, index, object store or configuration. Each selected archive member was checked against SHA-1(\"blob \" + decimal byte length + NUL + original bytes) before extraction.",
+    "included_files": 566,
+    "sodiumoxide_files": 12,
+    "libsodium_files": 554,
+    "original_source_bytes": 17269677,
+    "preserved_build_inputs": [
+      "Original crate manifest, build.rs, src/lib.rs and generated src/sodium_bindings.rs.",
+      "All six pinned MinGW/MSVC native Windows dependency libraries selected by build.rs; these are upstream dependency assets, not historical packaged engine binaries.",
+      "Pinned libsodium C/header sources, configure/Autotools inputs, all recursive Makefile inputs and build helpers, platform build scripts and generated Visual Studio projects.",
+      "Pinned libsodium/test remains inside this dependency because unchanged native build.rs invokes make check; cross builds retain make all. No upstream tests are copied into engine tests and no new tests are added.",
+      "Original OHOS configure/toolchain/link behavior and all other build.rs environment/target branches remain untouched."
+    ],
+    "omissions": "Only the optional files listed in omitted_files are excluded from the selected upstream crate/submodule. The surrounding sodiumoxide workspace/application is not vendored; Git administration and Cargo checkout markers are not source inputs."
+  },
+  "licenses": [
+    {
+      "component": "libsodium-sys",
+      "expression": "MIT OR Apache-2.0",
+      "files": [
+        "LICENSE-MIT",
+        "LICENSE-APACHE"
+      ]
+    },
+    {
+      "component": "libsodium",
+      "expression": "ISC",
+      "files": [
+        "libsodium/LICENSE"
+      ]
+    },
+    {
+      "component": "GNU Libtool archive helper",
+      "expression": "GPL-2.0-or-later WITH Libtool-exception",
+      "files": [
+        "libsodium/build-aux/ltmain.sh"
+      ],
+      "notice": "The original copyright, license and special distribution exception at the start of the script are retained unchanged."
+    }
+  ],
+  "license_notice": "Original source/build-helper copyright and third-party license notices are retained verbatim. The component summaries do not replace individual file terms.",
+  "files": {
+    "Cargo.toml": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/Cargo.toml",
+      "git_blob": "0425b2108d2c01ac6b1e5b126167f09275363217",
+      "git_mode": "100644"
+    },
+    "LICENSE-APACHE": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/LICENSE-APACHE",
+      "git_blob": "11069edd79019f7dafbe3138841cf289209270dd",
+      "git_mode": "100644"
+    },
+    "LICENSE-MIT": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/LICENSE-MIT",
+      "git_blob": "a8baa98d2153c1ff5696891fb70c0e2ea740d004",
+      "git_mode": "100644"
+    },
+    "build.rs": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/build.rs",
+      "git_blob": "75536298aca5aa8308968eb8fb77e57f61b22456",
+      "git_mode": "100644"
+    },
+    "libsodium/AUTHORS": {
+      "repository": "libsodium",
+      "source_path": "AUTHORS",
+      "git_blob": "f4a4b9d88289663ae7ac218cdf709e7fd5b30f31",
+      "git_mode": "100644"
+    },
+    "libsodium/ChangeLog": {
+      "repository": "libsodium",
+      "source_path": "ChangeLog",
+      "git_blob": "9388fd1018f4e5b09956e4d1f03e6abc5878ea5d",
+      "git_mode": "100644"
+    },
+    "libsodium/LICENSE": {
+      "repository": "libsodium",
+      "source_path": "LICENSE",
+      "git_blob": "5336e429ee078a5ed009839758214c9ce71805c3",
+      "git_mode": "100644"
+    },
+    "libsodium/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "Makefile.am",
+      "git_blob": "1f43ff31788530c3095bcf912300569a7d77235b",
+      "git_mode": "100644"
+    },
+    "libsodium/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "Makefile.in",
+      "git_blob": "12b5d7aeda87b6a2c7c2a6d6a85a363655962916",
+      "git_mode": "100644"
+    },
+    "libsodium/THANKS": {
+      "repository": "libsodium",
+      "source_path": "THANKS",
+      "git_blob": "a4b6e70f88a18518d86cf4b8cabc5a9839116a95",
+      "git_mode": "100644"
+    },
+    "libsodium/aclocal.m4": {
+      "repository": "libsodium",
+      "source_path": "aclocal.m4",
+      "git_blob": "e642dc96f7583946c591f9856c4827b863f4ef0c",
+      "git_mode": "100644"
+    },
+    "libsodium/autogen.sh": {
+      "repository": "libsodium",
+      "source_path": "autogen.sh",
+      "git_blob": "a93defa904d30711078dcb731d6638881ed8e8d0",
+      "git_mode": "100755"
+    },
+    "libsodium/build-aux/compile": {
+      "repository": "libsodium",
+      "source_path": "build-aux/compile",
+      "git_blob": "23fcba011321a3a2b3b94a8abb13201dbdd1faa5",
+      "git_mode": "100755"
+    },
+    "libsodium/build-aux/config.guess": {
+      "repository": "libsodium",
+      "source_path": "build-aux/config.guess",
+      "git_blob": "7f748177972d7a9b754fe92d49e2ff1c3bceb859",
+      "git_mode": "100644"
+    },
+    "libsodium/build-aux/config.sub": {
+      "repository": "libsodium",
+      "source_path": "build-aux/config.sub",
+      "git_blob": "90bb8aeda63842a27931741f77f33a5bd3c20af7",
+      "git_mode": "100644"
+    },
+    "libsodium/build-aux/depcomp": {
+      "repository": "libsodium",
+      "source_path": "build-aux/depcomp",
+      "git_blob": "6b391623c4bf023255fdbc8eceb7acf110e5fa79",
+      "git_mode": "100755"
+    },
+    "libsodium/build-aux/install-sh": {
+      "repository": "libsodium",
+      "source_path": "build-aux/install-sh",
+      "git_blob": "ec298b53740270ce82b326c4c2deaa5dcdec4596",
+      "git_mode": "100755"
+    },
+    "libsodium/build-aux/ltmain.sh": {
+      "repository": "libsodium",
+      "source_path": "build-aux/ltmain.sh",
+      "git_blob": "0f0a2da3f9dd10627626bf9725b332d95f314393",
+      "git_mode": "100644"
+    },
+    "libsodium/build-aux/missing": {
+      "repository": "libsodium",
+      "source_path": "build-aux/missing",
+      "git_blob": "8d0eaad250fc1ea8f3728338c1b016596cedfc60",
+      "git_mode": "100755"
+    },
+    "libsodium/build-aux/test-driver": {
+      "repository": "libsodium",
+      "source_path": "build-aux/test-driver",
+      "git_blob": "9759384aa72c4e4a80362a046b3e71d496e15651",
+      "git_mode": "100755"
+    },
+    "libsodium/builds/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "builds/Makefile.am",
+      "git_blob": "23dfe9d2336fc3d76cfc9df6c6d3e40614b6e92b",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "builds/Makefile.in",
+      "git_blob": "efdd705e6e543f2e29fe651b252cff40b535a6db",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/build/buildall.bat": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/build/buildall.bat",
+      "git_blob": "4f0b421103be5a731cb0530f356a24e6cd0ac640",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/build/buildbase.bat": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/build/buildbase.bat",
+      "git_blob": "b68cd2ca84e5751f8ebef380e93117ab0ef65fda",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Common.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Common.props",
+      "git_blob": "72588d6e3b4b6971c9741b041eb57f767da12620",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DLL.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DLL.props",
+      "git_blob": "b5aa1f07fef1e2fc7d3454f11d77db3f857da5f4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Debug.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Debug.props",
+      "git_blob": "6fa7419626ca31787c25284edc7e78598dda87a7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugDEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugDEXE.props",
+      "git_blob": "fe8b577f74dbc4f29462f073a08ccdf7251cff83",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugDLL.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugDLL.props",
+      "git_blob": "a451d0bf497378c8c1fd5e118a8caa8ea9953eb0",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugLEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugLEXE.props",
+      "git_blob": "7fa92c035f1c044600a466be35c398ebd3a5f95b",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugLIB.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugLIB.props",
+      "git_blob": "c5f101282747e712ec75df43173dcd6f7df71773",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugLTCG.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugLTCG.props",
+      "git_blob": "42b22ffe2ac04d6974b0b54de1fc0a82c7db3dcb",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/DebugSEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/DebugSEXE.props",
+      "git_blob": "2615ffcfffc31955b7e60adfa138bb1413d4d9d0",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/EXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/EXE.props",
+      "git_blob": "354906458aeca5b18f9aa124bcb21077298b1c58",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/LIB.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/LIB.props",
+      "git_blob": "3835777cf453eff38255ef136da360c8f34366b3",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/LTCG.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/LTCG.props",
+      "git_blob": "02292938c5650678bbde43228c389fb359ba9bdc",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Link.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Link.props",
+      "git_blob": "db15fbb40be2c0acd3f46d5982f623cf3c1690db",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Messages.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Messages.props",
+      "git_blob": "06a1ab0907f0a16522ffcc03c6dae0ebc33e5a58",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Output.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Output.props",
+      "git_blob": "492876cface62b89166050e72141c110b0a346b3",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Release.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Release.props",
+      "git_blob": "1c5415bcb4c5c7c37f38f0025e817246275600b3",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseDEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseDEXE.props",
+      "git_blob": "73deeae93970bb4d226bd6487b5b85c57405ab0a",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseDLL.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseDLL.props",
+      "git_blob": "2071b33f62e5b2780c2fe2040f32ef155ad84667",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseLEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseLEXE.props",
+      "git_blob": "beb73ef2748e732f6bc26a0f2fa023442134d5d2",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseLIB.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseLIB.props",
+      "git_blob": "2b250d57959d910467373ab15ddd1024d352db9a",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseLTCG.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseLTCG.props",
+      "git_blob": "1814c6f3d649dc13d905b82d1cfc6c6804b21385",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/ReleaseSEXE.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/ReleaseSEXE.props",
+      "git_blob": "2f5600a0683ea5e8ae1edee8cbca13d0059a3aef",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/Win32.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/Win32.props",
+      "git_blob": "09eb5e405a51fde3f89700f503d00581aebb0c24",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/properties/x64.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/properties/x64.props",
+      "git_blob": "c139a2aba58bf75ee7a278564c54170363c507c8",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/resource.h": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/resource.h",
+      "git_blob": "d42b43ecc2b40ee6b0a32ab5511a12eed06085a7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/resource.rc": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/resource.rc",
+      "git_blob": "feb27d5aa00d466fb505ef15e8b26aef39d0a5d6",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/version.h": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/version.h",
+      "git_blob": "174d9921ed114456dc5cb819ce7a0a28a8c7bfd5",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium.sln",
+      "git_blob": "8225f8b7640401d65c91d924294d05fe87e6743a",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium/libsodium.vcxproj",
+      "git_blob": "123ded8ac0100d71cb54ea455af51091cfe95343",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2010/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2010/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium.sln",
+      "git_blob": "1dc1340028ada114ae84ba74cf8082327bd251ab",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium/libsodium.vcxproj",
+      "git_blob": "38de00704f8d23d724ac79d5b67e794c892e9aef",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2012/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2012/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium.sln",
+      "git_blob": "a1074b93784f25b91286fbc44967caad222b1444",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium/libsodium.vcxproj",
+      "git_blob": "e63f6aa26d3214c6a59c4927753215f1370efd0c",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2013/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2013/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium.sln",
+      "git_blob": "6259e4135737260e3df1eaf8dd50e6c2ef3e2fa1",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium/libsodium.vcxproj",
+      "git_blob": "24fcca6dcee5980eacea4ff3c6df15d8658465a5",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2015/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2015/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium.sln",
+      "git_blob": "0f3f73069541b013ae6fadf2db072ecce611dc62",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium/libsodium.vcxproj",
+      "git_blob": "9c9e3a5b4dec68bbef5fdeecde3c2e90314a1f43",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2017/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2017/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium.import.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium.import.props",
+      "git_blob": "b3d7e4fd88d8688705914f5396d2a41c930490e4",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium.import.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium.import.xml",
+      "git_blob": "dbcf4e5ab06541c4f4d379cd2318350166fe6452",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium.sln",
+      "git_blob": "0f3f73069541b013ae6fadf2db072ecce611dc62",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium/libsodium.props": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium/libsodium.props",
+      "git_blob": "5a23903c4aabb5745a43330b282c50b93299106d",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium/libsodium.vcxproj",
+      "git_blob": "06d4f3d3bef795fc8306c40dadeb8d2c8706cbdd",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium/libsodium.vcxproj.filters",
+      "git_blob": "4967e5b16d4eab735a17e0180b3efcada1821f90",
+      "git_mode": "100644"
+    },
+    "libsodium/builds/msvc/vs2019/libsodium/libsodium.xml": {
+      "repository": "libsodium",
+      "source_path": "builds/msvc/vs2019/libsodium/libsodium.xml",
+      "git_blob": "808ccb9fec1e4111fcf4f35fafae4431398cacf7",
+      "git_mode": "100644"
+    },
+    "libsodium/configure": {
+      "repository": "libsodium",
+      "source_path": "configure",
+      "git_blob": "3dbf7220fa7c61d8603d94bc3dcf0e2e74378686",
+      "git_mode": "100755"
+    },
+    "libsodium/configure.ac": {
+      "repository": "libsodium",
+      "source_path": "configure.ac",
+      "git_blob": "f280c414fe6b6c5ff038836de5072b9974b69ad1",
+      "git_mode": "100644"
+    },
+    "libsodium/contrib/Findsodium.cmake": {
+      "repository": "libsodium",
+      "source_path": "contrib/Findsodium.cmake",
+      "git_blob": "076ff37003577694e67d6639f438b2ab79aaeb19",
+      "git_mode": "100644"
+    },
+    "libsodium/contrib/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "contrib/Makefile.am",
+      "git_blob": "2cfe522488494021841f8cc5649e8c7aae820f23",
+      "git_mode": "100644"
+    },
+    "libsodium/contrib/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "contrib/Makefile.in",
+      "git_blob": "46854f46ff4d5b01458d35ac11555b1e59b9feef",
+      "git_mode": "100644"
+    },
+    "libsodium/dist-build/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "dist-build/Makefile.am",
+      "git_blob": "fe7961d326751063db0f46c6ef6e1d66b05a7334",
+      "git_mode": "100644"
+    },
+    "libsodium/dist-build/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "dist-build/Makefile.in",
+      "git_blob": "fcfd94dd737732bbe232a861fabfd9700d0fea13",
+      "git_mode": "100644"
+    },
+    "libsodium/dist-build/android-arm.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-arm.sh",
+      "git_blob": "eb97828c6befc527be576ef7341deccc69a0517e",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-armv7-a.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-armv7-a.sh",
+      "git_blob": "a872508207459ddac9a8b4a0bab0778d74375275",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-armv8-a.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-armv8-a.sh",
+      "git_blob": "1bf13ae871d2c59cf3ef65896c2abebbaf6f4f88",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-build.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-build.sh",
+      "git_blob": "ece1d01d2c52fe67462972b38b0d509043940088",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-mips32.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-mips32.sh",
+      "git_blob": "ab5f6314e7b6f4ae55ea65e7110739f90a453ba4",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-mips64.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-mips64.sh",
+      "git_blob": "75dd6eaad4075d0cd1a061823a68038313b06d5e",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-x86.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-x86.sh",
+      "git_blob": "f21fe472e8a4b0c2083e7e34d5c16cac440579f5",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/android-x86_64.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/android-x86_64.sh",
+      "git_blob": "9f2b4f0aa5a777837b8b763dbef2e15158e30103",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/apple-xcframework.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/apple-xcframework.sh",
+      "git_blob": "cf86e0886dc25d28df1feb5e37946632c9ce2fc9",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/emscripten-symbols.def": {
+      "repository": "libsodium",
+      "source_path": "dist-build/emscripten-symbols.def",
+      "git_blob": "b1761c5d31d9d70197462aff84bd180f6c31a9b1",
+      "git_mode": "100644"
+    },
+    "libsodium/dist-build/emscripten.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/emscripten.sh",
+      "git_blob": "afe8aa1f01ebf8c53f651aac27bba721581458a5",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/generate-emscripten-symbols.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/generate-emscripten-symbols.sh",
+      "git_blob": "873307d21f8b27b6697decd0c63a04ee163be2a0",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/ios.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/ios.sh",
+      "git_blob": "ef1848ff18ddeba23d5026c1b7c535118de6b31f",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/msys2-win32.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/msys2-win32.sh",
+      "git_blob": "dcc9ee06a09ff0a4a57cebc725f703e39c41752b",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/msys2-win64.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/msys2-win64.sh",
+      "git_blob": "0b38d6dd28e62bfdfa826f523d7abbc6e865da41",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/osx.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/osx.sh",
+      "git_blob": "b7ff1bd5b2d2c47259e72c73f5d98a07abcfd570",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/wasm32-wasi.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/wasm32-wasi.sh",
+      "git_blob": "aa19e207b0518568419f5f6c650ca92a22b4b027",
+      "git_mode": "100755"
+    },
+    "libsodium/dist-build/watchos.sh": {
+      "repository": "libsodium",
+      "source_path": "dist-build/watchos.sh",
+      "git_blob": "60ab4b4eadf0a979fea806f9a27702e6c06a98e4",
+      "git_mode": "100755"
+    },
+    "libsodium/libsodium-uninstalled.pc.in": {
+      "repository": "libsodium",
+      "source_path": "libsodium-uninstalled.pc.in",
+      "git_blob": "068a9c6bbd3c7c840e13fd68dc62b73769ad35b3",
+      "git_mode": "100644"
+    },
+    "libsodium/libsodium.pc.in": {
+      "repository": "libsodium",
+      "source_path": "libsodium.pc.in",
+      "git_blob": "6c2b43aa1c48c4fb8ba7b0d8f6cab115919ca779",
+      "git_mode": "100644"
+    },
+    "libsodium/libsodium.sln": {
+      "repository": "libsodium",
+      "source_path": "libsodium.sln",
+      "git_blob": "f5808c662c5ec0adec22e9d964bfff03fa49e698",
+      "git_mode": "100644"
+    },
+    "libsodium/libsodium.vcxproj": {
+      "repository": "libsodium",
+      "source_path": "libsodium.vcxproj",
+      "git_blob": "ff6afe4be5cae3625774b6d0d449da4505f0a0d3",
+      "git_mode": "100644"
+    },
+    "libsodium/libsodium.vcxproj.filters": {
+      "repository": "libsodium",
+      "source_path": "libsodium.vcxproj.filters",
+      "git_blob": "a13d68ce56532f460bd0b1614ae5246140d6d9e6",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_add_fortify_source.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_add_fortify_source.m4",
+      "git_blob": "b88d496fb5705f8f78e7791fd11e49c9d6d23a3f",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_catchable_abrt.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_catchable_abrt.m4",
+      "git_blob": "140ab856157ebae95ce1344563f4c31f7d0adf08",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_catchable_segv.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_catchable_segv.m4",
+      "git_blob": "ec3ca4b698ace12c0721e3c3a47c0d2bda31795c",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_compile_flag.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_compile_flag.m4",
+      "git_blob": "b030331745e77b11cf7dc7eab6818c6a16bf0293",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_define.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_define.m4",
+      "git_blob": "20ba808682b655c20ab0e5de13f62ea161acf5d1",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_gnu_make.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_gnu_make.m4",
+      "git_blob": "4c761ea0338b8e6b10ff096aa8fe5c30f1d1d67a",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_check_link_flag.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_check_link_flag.m4",
+      "git_blob": "06af181b9d5465d1d879a372e0d14670829edfe9",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_pthread.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_pthread.m4",
+      "git_blob": "5fbf9fe0d68616042f87a8365190211cb8ccfbf1",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_tls.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_tls.m4",
+      "git_blob": "51edee8f7dbaccd6a351099854b66f2a05e46f3d",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ax_valgrind_check.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ax_valgrind_check.m4",
+      "git_blob": "876f887689f6b02e118ef40646ca73f37db601bf",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ld-output-def.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ld-output-def.m4",
+      "git_blob": "59895bc24492a7e91b1c900595ba2d62da5cdcfa",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/libtool.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/libtool.m4",
+      "git_blob": "a3bc337b79ad3d2bd26f0c10644e55db74e70448",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ltoptions.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ltoptions.m4",
+      "git_blob": "94b082976667c0c9edf2e9ff7a668c1fd7d997bf",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ltsugar.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ltsugar.m4",
+      "git_blob": "48bc9344a4d661e116be1483d5520753875b2bd1",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/ltversion.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/ltversion.m4",
+      "git_blob": "fa04b52a3bf868bd57e7ba796d64385a51e7ec5a",
+      "git_mode": "100644"
+    },
+    "libsodium/m4/lt~obsolete.m4": {
+      "repository": "libsodium",
+      "source_path": "m4/lt~obsolete.m4",
+      "git_blob": "c6b26f88f6c3c1a052afa6314ba2adf832d785ee",
+      "git_mode": "100644"
+    },
+    "libsodium/msvc-scripts/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "msvc-scripts/Makefile.am",
+      "git_blob": "16481929aa8d44a22efcd3f6476da80afce2d281",
+      "git_mode": "100644"
+    },
+    "libsodium/msvc-scripts/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "msvc-scripts/Makefile.in",
+      "git_blob": "3a790e731d5cd18ee3dbc1f053c8880dd16258be",
+      "git_mode": "100644"
+    },
+    "libsodium/msvc-scripts/process.bat": {
+      "repository": "libsodium",
+      "source_path": "msvc-scripts/process.bat",
+      "git_blob": "291679e4edc8b629d681f313230c1f5d2f77cdf7",
+      "git_mode": "100755"
+    },
+    "libsodium/msvc-scripts/rep.vbs": {
+      "repository": "libsodium",
+      "source_path": "msvc-scripts/rep.vbs",
+      "git_blob": "3611f6ca65eb92fd50c6d751e66ea4b016a93023",
+      "git_mode": "100644"
+    },
+    "libsodium/msvc-scripts/sodium.props": {
+      "repository": "libsodium",
+      "source_path": "msvc-scripts/sodium.props",
+      "git_blob": "41e1e471ba3364c2fbbbf6c1dc0cca152098c233",
+      "git_mode": "100644"
+    },
+    "libsodium/src/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "src/Makefile.am",
+      "git_blob": "64445045e6aabc1e7379a2961f298dc807a867f2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "src/Makefile.in",
+      "git_blob": "568eda22d9a7e1713fd51eb66107746190938183",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/Makefile.am",
+      "git_blob": "92de4fd3ea8ce207e600edff744f1ccfd7d1b9ba",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/Makefile.in",
+      "git_blob": "661cfacc7958dffc23b886d5823e6df3eefe1c0a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_aead/aes256gcm/aesni/aead_aes256gcm_aesni.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_aead/aes256gcm/aesni/aead_aes256gcm_aesni.c",
+      "git_blob": "69707a685d1b812e382526ef053ad814cb58c15d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_aead/chacha20poly1305/sodium/aead_chacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_aead/chacha20poly1305/sodium/aead_chacha20poly1305.c",
+      "git_blob": "c354087975e2af943c4b4715a0b9b623d4766e43",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_aead/xchacha20poly1305/sodium/aead_xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_aead/xchacha20poly1305/sodium/aead_xchacha20poly1305.c",
+      "git_blob": "07e3655731df4962d9d740605de35b3c3af3f541",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_auth/crypto_auth.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_auth/crypto_auth.c",
+      "git_blob": "d061c8c1c55c8ff5133bef29278578efa323f316",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_auth/hmacsha256/auth_hmacsha256.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_auth/hmacsha256/auth_hmacsha256.c",
+      "git_blob": "a951e932b85afa399c1034c3fb945536d4d31387",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_auth/hmacsha512/auth_hmacsha512.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_auth/hmacsha512/auth_hmacsha512.c",
+      "git_blob": "018d7a4e87e608343a9dfce1a930205f08c53bd6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_auth/hmacsha512256/auth_hmacsha512256.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_auth/hmacsha512256/auth_hmacsha512256.c",
+      "git_blob": "432d6dbee5693605298907fe4973030f24345458",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/crypto_box.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/crypto_box.c",
+      "git_blob": "7e4f00bd1532f846e7e52da86810a9e40608aeea",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/crypto_box_easy.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/crypto_box_easy.c",
+      "git_blob": "deb40b408342f210d98b499b924dc023f6445a0b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/crypto_box_seal.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/crypto_box_seal.c",
+      "git_blob": "e01d64980820122a943b82af3b2ffcfe8c47b42a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/curve25519xchacha20poly1305/box_curve25519xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/curve25519xchacha20poly1305/box_curve25519xchacha20poly1305.c",
+      "git_blob": "5e2532eab7ab96bba644cc451333cbd87fb710fe",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/curve25519xchacha20poly1305/box_seal_curve25519xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/curve25519xchacha20poly1305/box_seal_curve25519xchacha20poly1305.c",
+      "git_blob": "0240f036c45496f74a62650d727cb57f5651b019",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_box/curve25519xsalsa20poly1305/box_curve25519xsalsa20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_box/curve25519xsalsa20poly1305/box_curve25519xsalsa20poly1305.c",
+      "git_blob": "4c1d62ed430e5b501faab5c5151b0201fe04af0d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/core_ed25519.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/core_ed25519.c",
+      "git_blob": "bb0bda4e6b4e2e269b65801a5ef8c77e7c3fcb3e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/core_ristretto255.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/core_ristretto255.c",
+      "git_blob": "cad3c8027d2cbffa2a764b870e333165ec4dae2a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c",
+      "git_blob": "9624f80cef5caa00dfd3b05d6aa9130870e0789a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_25_5/base.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_25_5/base.h",
+      "git_blob": "e18530bbb174cc6c57fbd5c66b3fb1e5e3696632",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_25_5/base2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_25_5/base2.h",
+      "git_blob": "90a1457eab04a1cc22ec0656024b61b7cd12fa49",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_25_5/constants.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_25_5/constants.h",
+      "git_blob": "dd6da1b87403a34d849495c1b150d0a12b26cb56",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_25_5/fe.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_25_5/fe.h",
+      "git_blob": "f216669e4e0d1f5b604f562364e9075f8b0b8fb1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_51/base.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_51/base.h",
+      "git_blob": "6b3b833e7a6c2ac19537c298804678101eb7be84",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_51/base2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_51/base2.h",
+      "git_blob": "d088241657ac15776d379387c0aba839084706fc",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_51/constants.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_51/constants.h",
+      "git_blob": "24e5cb5ebbe1780ad75a6041f8e51670ef9bdd37",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/ed25519/ref10/fe_51/fe.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/ed25519/ref10/fe_51/fe.h",
+      "git_blob": "de876264c87c7a3117353c0c11d74890bd263a65",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/hchacha20/core_hchacha20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/hchacha20/core_hchacha20.c",
+      "git_blob": "39ab26a6da894e75cc648a5868fd663237ffdcc2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/hsalsa20/core_hsalsa20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/hsalsa20/core_hsalsa20.c",
+      "git_blob": "37c4923af6fbea99dc5f92d6423d2a8b40e71d18",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/hsalsa20/ref2/core_hsalsa20_ref2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/hsalsa20/ref2/core_hsalsa20_ref2.c",
+      "git_blob": "1d1220fee237f94a0a4f49b93af1ddf3ef7a625d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_core/salsa/ref/core_salsa_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_core/salsa/ref/core_salsa_ref.c",
+      "git_blob": "c023378c6b2895e191a66ad69264f66f37e77183",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/generichash_blake2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/generichash_blake2.c",
+      "git_blob": "781d4c584e2f9ccf40d04341096f3268dcf1bcec",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2.h",
+      "git_blob": "c7433c32c8aeed6e9226572810ce6904374af226",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-avx2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-avx2.c",
+      "git_blob": "7cb41fb6e7ef77ee3cdf28c8f03e301213491c3f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-avx2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-avx2.h",
+      "git_blob": "7c11321b9232930b60aebfc943b846e0c17ff4ff",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ref.c",
+      "git_blob": "5fb356f39ba47ccabf74bda7912407056b106405",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-sse41.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-sse41.c",
+      "git_blob": "9e5c0c5081d4aed4ed5c978eddb47aade57512a6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-sse41.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-sse41.h",
+      "git_blob": "ac78e5bb1e9fa992200b1892b1d8cc65060191e6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.c",
+      "git_blob": "5684bc88e662cf5f49dc4514bfdd3558a1a2e2aa",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.h",
+      "git_blob": "9a7164fe2541a1b3aa2fa43271f5be979a75a8d6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-avx2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-avx2.h",
+      "git_blob": "12a5d1890c326884cc9ad68c49d5969f157dd264",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-sse2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-sse2.h",
+      "git_blob": "8e67421acafc507decfc28ba519c4a56bc4c6590",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-sse41.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-load-sse41.h",
+      "git_blob": "31745fc139d21010a214729b1b7f904df4a5e469",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/blake2b-ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/blake2b-ref.c",
+      "git_blob": "a1beacf3c09ea393ea9cd97e94a3c8fe974785f2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/blake2b/ref/generichash_blake2b.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/blake2b/ref/generichash_blake2b.c",
+      "git_blob": "7a8598c7937aaeb2e9ac0f75b5e5d7b7d49dfaef",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_generichash/crypto_generichash.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_generichash/crypto_generichash.c",
+      "git_blob": "a9a14e999af2c66357a70d809f6f6c49afc288bf",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_hash/crypto_hash.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_hash/crypto_hash.c",
+      "git_blob": "855c560ba5ee5b575c149707ba2b4d905f9687a4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_hash/sha256/cp/hash_sha256_cp.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_hash/sha256/cp/hash_sha256_cp.c",
+      "git_blob": "264054f98bfcb26d47aa82d8a6ec8593a4d58c96",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_hash/sha256/hash_sha256.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_hash/sha256/hash_sha256.c",
+      "git_blob": "e729c811e6fb8d909b67a9e1609c18818c07d41c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_hash/sha512/cp/hash_sha512_cp.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_hash/sha512/cp/hash_sha512_cp.c",
+      "git_blob": "8e0f36fb6b40da4fbf418dbef16b85fcf17670c5",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_hash/sha512/hash_sha512.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_hash/sha512/hash_sha512.c",
+      "git_blob": "ba842b8bd4feb1b6b0e8fd5b7a5ca0fe1e05d604",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_kdf/blake2b/kdf_blake2b.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_kdf/blake2b/kdf_blake2b.c",
+      "git_blob": "2a690c9ac8c2091c52536f611e3d63832064f80c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_kdf/crypto_kdf.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_kdf/crypto_kdf.c",
+      "git_blob": "b215d99ae62871e8e5581b084c1901971a497394",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_kx/crypto_kx.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_kx/crypto_kx.c",
+      "git_blob": "9f0c3aef05f0e9f01727df0431c8df55a6f0d874",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/crypto_onetimeauth.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/crypto_onetimeauth.c",
+      "git_blob": "93567aae0b9a12f70f901b4515302973f2708433",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.c",
+      "git_blob": "e798072f84c4804d51c5c1cc19d9ca8fbf77d905",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.h",
+      "git_blob": "d6474b3af4f502a893c331fb653df82c962f27c5",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna32.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna32.h",
+      "git_blob": "cef64480483bec0b131a4463ea39cda5dd70baa6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna64.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna64.h",
+      "git_blob": "2475bfa1a0aaaa1e31d11f90c80b9d3d67ac4af7",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.c",
+      "git_blob": "d5e2efa29769a3ce925c0cb5592b6b3b975c9ce2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.h",
+      "git_blob": "243eadd50b17444dceccf106de3558d6f545c799",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/sse2/poly1305_sse2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/sse2/poly1305_sse2.c",
+      "git_blob": "e80c961d98202ae5bf5d0408f46ef463fde76c83",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_onetimeauth/poly1305/sse2/poly1305_sse2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_onetimeauth/poly1305/sse2/poly1305_sse2.h",
+      "git_blob": "9177cad487ab72aa379968a591830024b27885ac",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-core.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-core.c",
+      "git_blob": "90c6d073c60e3cac96a2e78a20db5cfa84090885",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-core.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-core.h",
+      "git_blob": "2fd7f41cb9f02fae1b2b685bdeafdafd061d7a21",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-encoding.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-encoding.c",
+      "git_blob": "6a80afe04eac3c9aff9b02f4ca44c66433ffbbce",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-encoding.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-encoding.h",
+      "git_blob": "c35fbf42d0ac526eb9dc52599a389cf1af65c6af",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-fill-block-avx2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-fill-block-avx2.c",
+      "git_blob": "ab400ded908b01d3fcea0b7c1e675fecea292776",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-fill-block-avx512f.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-fill-block-avx512f.c",
+      "git_blob": "d0d7c8c8c09cae132851f063939ae822ebe5feb3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-fill-block-ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-fill-block-ref.c",
+      "git_blob": "567895d8515ba1ed51b249686a3656faaecfc841",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2-fill-block-ssse3.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2-fill-block-ssse3.c",
+      "git_blob": "36eac24fa1f323e6a8e09b5a3265b4b9a689426d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2.c",
+      "git_blob": "c6277fc8e075369d3c9ab8708cacd27186926d39",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/argon2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/argon2.h",
+      "git_blob": "3b05daac37eda92988158e2973fbcc8faa0a1f8b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blake2b-long.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blake2b-long.c",
+      "git_blob": "f0364aca87dd8aaf550fef429f9a82f7000444c2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blake2b-long.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blake2b-long.h",
+      "git_blob": "3d6d77552195ee22a80a9b0ab136a15572b90d8d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blamka-round-avx2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blamka-round-avx2.h",
+      "git_blob": "f3dfa0f506add29b6ddb33bd8beb1b4f463ff989",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blamka-round-avx512f.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blamka-round-avx512f.h",
+      "git_blob": "9a822402d897ca74349302b6eecd809b8dfe285f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blamka-round-ref.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blamka-round-ref.h",
+      "git_blob": "7a2c6eb20e5e9f6694a597dd3d7342928d79f9ce",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/blamka-round-ssse3.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/blamka-round-ssse3.h",
+      "git_blob": "98a47b93f8b096c8d25061bb5d2b17ef84ec28ef",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/pwhash_argon2i.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/pwhash_argon2i.c",
+      "git_blob": "f9e9a39096736eec7ceeb38cc5bebedb25443392",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/argon2/pwhash_argon2id.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/argon2/pwhash_argon2id.c",
+      "git_blob": "d641a6172ea92915ab4845196c92489c1391670f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/crypto_pwhash.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/crypto_pwhash.c",
+      "git_blob": "a229b9f798cc7f3c98f0eb77a560efeae53cc580",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt-common.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt-common.c",
+      "git_blob": "c4dd46a2874ad3c25ed051838e7afb77d481357d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt.h",
+      "git_blob": "eee7b8b1f847f9a95818b10e1e7a9d760f1eaf9e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/nosse/pwhash_scryptsalsa208sha256_nosse.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/nosse/pwhash_scryptsalsa208sha256_nosse.c",
+      "git_blob": "9f5b9a5e215855d94f3bfc99e726111fc63d0350",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.c",
+      "git_blob": "bcf7da553a1d86c953e01da2b593d90c7dba1f97",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.h",
+      "git_blob": "962b43311ddeaffc2438cadec83b97e32ac0cccb",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/pwhash_scryptsalsa208sha256.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/pwhash_scryptsalsa208sha256.c",
+      "git_blob": "6f0cb6bc7ed9a5b68fc5aa77372b82c9a077f066",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/scrypt_platform.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/scrypt_platform.c",
+      "git_blob": "890517f797b0dfb5e980a9f8b0b6544a40d4a2f0",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_pwhash/scryptsalsa208sha256/sse/pwhash_scryptsalsa208sha256_sse.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_pwhash/scryptsalsa208sha256/sse/pwhash_scryptsalsa208sha256_sse.c",
+      "git_blob": "ee2aa5119f8725f583c5f4983d31d440fe7c4591",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/crypto_scalarmult.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/crypto_scalarmult.c",
+      "git_blob": "9afffce8a9f2a9d1a63ad48bf468bfb9408253f1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.c",
+      "git_blob": "9eaf0235fac113761df85aca5e50ec14827c5c65",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.h",
+      "git_blob": "ea52a62a69a5ecc4eec28d8b809b03c187f8f12c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/consts.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/consts.S",
+      "git_blob": "67f1f0183e7c0eb5e10b94ccb971ecff482a9122",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/consts_namespace.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/consts_namespace.h",
+      "git_blob": "9f81fa61c4a552922bee68f5255403e9b24a766e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/curve25519_sandy2x.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/curve25519_sandy2x.c",
+      "git_blob": "0f8f8b13c31f2b9c809ec5016e2bd8ea51bc4938",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/curve25519_sandy2x.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/curve25519_sandy2x.h",
+      "git_blob": "f02d98018772dd825697799a6c6f4966b091be3d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe.h",
+      "git_blob": "b1115f869110dfa720d767dfaba4735dc713862a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51.h",
+      "git_blob": "8e3f199b24668c4360f7ad9599319cc24d32c56c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_invert.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_invert.c",
+      "git_blob": "ec9bb1a91f668e4c2c1e51748e1cdb3a08d5eca1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_mul.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_mul.S",
+      "git_blob": "83501b0395eb1e23005b7d44bfd789fe3bcf41de",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_namespace.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_namespace.h",
+      "git_blob": "057f242ca19adf9baff5d7032b988b96e636400f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_nsquare.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_nsquare.S",
+      "git_blob": "41c3054805f4072809d0ccada0f0a90f42a7b890",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_pack.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe51_pack.S",
+      "git_blob": "500c85847621df1e0a41e20f1c0cb9d3c4b32218",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe_frombytes_sandy2x.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/fe_frombytes_sandy2x.c",
+      "git_blob": "2fe081ee2aed231b21b6a6ce6f2e923ce9564d37",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder.S",
+      "git_blob": "c5c06021d807ef3ac552edf4ed82aea9e7aefa05",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder.h",
+      "git_blob": "ccf4ecaecdd9a96532ec84bfaa9c8b06538126b7",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder_namespace.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/ladder_namespace.h",
+      "git_blob": "6637074bec9988a6b8d730f6adb5de37f0d9035d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/sandy2x/sandy2x.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/sandy2x/sandy2x.S",
+      "git_blob": "585804fb1ce338b6b665c8c11ca0d4e8d75aaf45",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/scalarmult_curve25519.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/scalarmult_curve25519.c",
+      "git_blob": "c55e45e2f3d0dd219269038edc8e9257939d6bf7",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/curve25519/scalarmult_curve25519.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/curve25519/scalarmult_curve25519.h",
+      "git_blob": "66edbf6a8a8cb910c8fe8d914f648ca6eec9edf8",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/ed25519/ref10/scalarmult_ed25519_ref10.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/ed25519/ref10/scalarmult_ed25519_ref10.c",
+      "git_blob": "7c980893ec0d4079e26f13e0ecb29f602c449455",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_scalarmult/ristretto255/ref10/scalarmult_ristretto255_ref10.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_scalarmult/ristretto255/ref10/scalarmult_ristretto255_ref10.c",
+      "git_blob": "433a9a26dc6157e94255faa9e12807254dff4661",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_secretbox/crypto_secretbox.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_secretbox/crypto_secretbox.c",
+      "git_blob": "45f678ecdf8f19913d7ad1a0bded083ee7210d1b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_secretbox/crypto_secretbox_easy.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_secretbox/crypto_secretbox_easy.c",
+      "git_blob": "12132a2a65878e6cdcac0b30fa57f8498630fb13",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_secretbox/xchacha20poly1305/secretbox_xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_secretbox/xchacha20poly1305/secretbox_xchacha20poly1305.c",
+      "git_blob": "d012b13bfe85d289e98be3dd50a315a6715f6dbd",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_secretbox/xsalsa20poly1305/secretbox_xsalsa20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_secretbox/xsalsa20poly1305/secretbox_xsalsa20poly1305.c",
+      "git_blob": "7240050dfd1536215e4918d02c00109b69a57a63",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_secretstream/xchacha20poly1305/secretstream_xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_secretstream/xchacha20poly1305/secretstream_xchacha20poly1305.c",
+      "git_blob": "2754a91c92ecca9ae9601a09a30461e1504dc8f4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/crypto_shorthash.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/crypto_shorthash.c",
+      "git_blob": "95f52f83ba76b322da8a69c8b9905dab325ae1dc",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphash24_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphash24_ref.c",
+      "git_blob": "5487745b8a4a14331f945f53495d925ed52c0005",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphash_ref.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphash_ref.h",
+      "git_blob": "3f9a38b51006ff583fb156329ef4466f4c92aec3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphashx24_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphashx24_ref.c",
+      "git_blob": "be984eeee54964d17518ce210fefbad2cc7082d1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/siphash24/shorthash_siphash24.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/siphash24/shorthash_siphash24.c",
+      "git_blob": "e2cea7761ec633726d45f8c029bf44b590e73b0a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_shorthash/siphash24/shorthash_siphashx24.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_shorthash/siphash24/shorthash_siphashx24.c",
+      "git_blob": "2d487dbb6fa401659cc33a4ef40d230d7f9e6dfa",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/crypto_sign.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/crypto_sign.c",
+      "git_blob": "d723ff8c29e69bff7b4861d757176696be5ac762",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/ref10/keypair.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/ref10/keypair.c",
+      "git_blob": "e8e40150bb8bf7f284c9c5ddcd496e300f207371",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/ref10/obsolete.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/ref10/obsolete.c",
+      "git_blob": "64ded79ed58ad1d069a7a192341972f0722a73b8",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/ref10/open.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/ref10/open.c",
+      "git_blob": "26476b321cd0f4b1c999d04c4232d86f4df39f81",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/ref10/sign.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/ref10/sign.c",
+      "git_blob": "bbdd8f729370392394ebc2e53caf4e159a2d9f15",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/ref10/sign_ed25519_ref10.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/ref10/sign_ed25519_ref10.h",
+      "git_blob": "29f45a8544eb308510399e775108cfd4b869a573",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_sign/ed25519/sign_ed25519.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_sign/ed25519/sign_ed25519.c",
+      "git_blob": "9b9024972ab149d375d212d6600fd7386a1d3f1b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-avx2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-avx2.c",
+      "git_blob": "f63e05526529a092f6c6efb46593500f27aacbdd",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-avx2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-avx2.h",
+      "git_blob": "45eb98d7970379b60915d09f5b2f9179fb7e08c7",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-ssse3.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-ssse3.c",
+      "git_blob": "6f5d3851c3e38781f9a51f21557d7d5839d9c1dd",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-ssse3.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-ssse3.h",
+      "git_blob": "d67630f6a92ece875de32a68ab787fd771230f8c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/u0.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/u0.h",
+      "git_blob": "c05dfd7282f937abe724ea5b3d20c525600f146b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/u1.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/u1.h",
+      "git_blob": "f93fffeadc76692c8cd2c74f7784719ba4351c37",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/u4.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/u4.h",
+      "git_blob": "4ab295d7a3fb0e7e1fbbb915c5d2a181c3022bae",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/dolbeau/u8.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/dolbeau/u8.h",
+      "git_blob": "f212f67515bce1c133d6c792815407502909567d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.c",
+      "git_blob": "40cccbf8f8f90eb54dd73a493206c202f42aef39",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.h",
+      "git_blob": "6ac48075546907560a552a907f15ceae1ec6af72",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/stream_chacha20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/stream_chacha20.c",
+      "git_blob": "427c3fb08992fd8510d0220962b61c0af53ca7d3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/chacha20/stream_chacha20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/chacha20/stream_chacha20.h",
+      "git_blob": "40f782f418c5ade3f0d20c3320dc40e3b9f5f0b3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/crypto_stream.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/crypto_stream.c",
+      "git_blob": "58d25381abe19798470152f4cdbee0a0a6c0b30e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/ref/salsa20_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/ref/salsa20_ref.c",
+      "git_blob": "f0854ebf7e171cf733c1f72054cb05ed032a85ce",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/ref/salsa20_ref.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/ref/salsa20_ref.h",
+      "git_blob": "8716cb4048b9f2f3c7b827a68d98f6398bc395cd",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/stream_salsa20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/stream_salsa20.c",
+      "git_blob": "45298501364bec029e75d2a1144bd81f77c474cf",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/stream_salsa20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/stream_salsa20.h",
+      "git_blob": "1949d381130555ef93d287428f2b973bc2cf48a3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6-asm.S": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6-asm.S",
+      "git_blob": "6d9f354e10aeec259604fc2aa2d82eb7e87e5162",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6.c",
+      "git_blob": "0a6fee0f3e076eef1d4a9788c8d81f1b5ab99882",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6/salsa20_xmm6.h",
+      "git_blob": "d38473a9ff8c8c77ca2cfaa8327d7ff85b608bab",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-avx2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-avx2.c",
+      "git_blob": "18d4773ec9634e3350be5c05188bc7e4642684f4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-avx2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-avx2.h",
+      "git_blob": "0924e9baff2f662f2643796959cd0a0662d5f300",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-sse2.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-sse2.c",
+      "git_blob": "d8e53a65540b1ef97420a32958e751cb7e7d7add",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-sse2.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-sse2.h",
+      "git_blob": "ed52a8bcbefb98eaa5295c4f99cb63643f9aa014",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/u0.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/u0.h",
+      "git_blob": "830f70e81626ea550c4ff5f8202f430f636a3cdf",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/u1.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/u1.h",
+      "git_blob": "e82521cd5ea16b5f1c7397ebce5774236e1c7a0d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/u4.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/u4.h",
+      "git_blob": "474f486002d8c616faa9ebf54ac205eec0f1b9b4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa20/xmm6int/u8.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa20/xmm6int/u8.h",
+      "git_blob": "581b22c214335a2b8696fa92545dabcf3432e930",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa2012/ref/stream_salsa2012_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa2012/ref/stream_salsa2012_ref.c",
+      "git_blob": "bfdfeedba37435d8e3b1d3a6b88d37d58ba8933b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa2012/stream_salsa2012.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa2012/stream_salsa2012.c",
+      "git_blob": "d0cc0f68eeb0f73dbefbbcfca1eead42f0046c4c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa208/ref/stream_salsa208_ref.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa208/ref/stream_salsa208_ref.c",
+      "git_blob": "7ec0c4e78eae19bf182269382bb87958c8d29e74",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/salsa208/stream_salsa208.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/salsa208/stream_salsa208.c",
+      "git_blob": "b79bda5ec27f615306115fe94912df7a1df8ee5b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/xchacha20/stream_xchacha20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/xchacha20/stream_xchacha20.c",
+      "git_blob": "8b1bc09abdb958d0a17ed7b6e6ff05a1c4c3c181",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_stream/xsalsa20/stream_xsalsa20.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_stream/xsalsa20/stream_xsalsa20.c",
+      "git_blob": "dc831a94d8df81db20cb0f69e6e66753359ef97c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/crypto_verify/sodium/verify.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/crypto_verify/sodium/verify.c",
+      "git_blob": "ffebf220a06330c1593774357140e87e787bf126",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/Makefile.am",
+      "git_blob": "7476bd974d51f36a0840f6fbf5397515f684fe9f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/Makefile.in",
+      "git_blob": "936f6b9b7afe642ce26691b8b772202766470e9f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium.h",
+      "git_blob": "295f911cff395aa697b4e3dbccb62dcaf2cfe0cf",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/core.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/core.h",
+      "git_blob": "dd088d2cae2269f47651487541525ba45bb5c301",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_aead_aes256gcm.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_aead_aes256gcm.h",
+      "git_blob": "9baeb3f19f701c059c576267753adf0a78bfb920",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_aead_chacha20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_aead_chacha20poly1305.h",
+      "git_blob": "5d671df142da5d16ecc35dc74ad25ebc7d8cc885",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_aead_xchacha20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_aead_xchacha20poly1305.h",
+      "git_blob": "6643b0cbf5091d0ed173a6ad546bda913acf9f26",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_auth.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_auth.h",
+      "git_blob": "540aee0e8d7f5a61c20451b9fc288b7f0fc85b31",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_auth_hmacsha256.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_auth_hmacsha256.h",
+      "git_blob": "3da864c7d27051531391281e7ad460839354c1c5",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_auth_hmacsha512.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_auth_hmacsha512.h",
+      "git_blob": "d992cb8163d692cbd332546d0e2d67748e771de0",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_auth_hmacsha512256.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_auth_hmacsha512256.h",
+      "git_blob": "3fb526389246206dfaf5855967e69b267dfa8d94",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_box.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_box.h",
+      "git_blob": "e060dd29fc4bbccb0cb5c79771f1a9c4e4e654e4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_box_curve25519xchacha20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_box_curve25519xchacha20poly1305.h",
+      "git_blob": "26a3d31efa93bc34fa62526e53f42a88696d792e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_box_curve25519xsalsa20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_box_curve25519xsalsa20poly1305.h",
+      "git_blob": "e733f49995b4a27c8f9bf304e5001cb722b0fc42",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_ed25519.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_ed25519.h",
+      "git_blob": "dcc46a6ce0fc0133d1efbf03e307fe1823288bbe",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_hchacha20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_hchacha20.h",
+      "git_blob": "ece141b09b4786fddcec929823f6ccc81de8a070",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_hsalsa20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_hsalsa20.h",
+      "git_blob": "4bf7a48786fe1a63016c531dfc3e1d2d30e700d1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_ristretto255.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_ristretto255.h",
+      "git_blob": "f2820e5576e1504c4179204b6255f9869b1994be",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_salsa20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_salsa20.h",
+      "git_blob": "bd79fd9f540eb9f326e4dfdac70e3491c709c879",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_salsa2012.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_salsa2012.h",
+      "git_blob": "05957591ca75a36920e8a8d18f8c8f190a3ef473",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_core_salsa208.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_core_salsa208.h",
+      "git_blob": "d2f216af268936c8787411e09491c85b00da2692",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_generichash.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_generichash.h",
+      "git_blob": "d897e5d26c57815f8b2aa196909c47bfdffce537",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_generichash_blake2b.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_generichash_blake2b.h",
+      "git_blob": "fee9d8ad196fb8b7b12160499b278f9375c9e878",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_hash.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_hash.h",
+      "git_blob": "767d5480181c4769094977348428a4a1ae80aa95",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_hash_sha256.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_hash_sha256.h",
+      "git_blob": "c47982af940751c5eb3bd188b0244adfdc21e945",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_hash_sha512.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_hash_sha512.h",
+      "git_blob": "5b690fb25da08b2ef4d9164d88959946ad1f4bd1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_kdf.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_kdf.h",
+      "git_blob": "ac2fc6183c2d2f07840f8827ab419a1fa4298e7b",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_kdf_blake2b.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_kdf_blake2b.h",
+      "git_blob": "489c7c20fc803cf6a39ff08204ab92027c3acb67",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_kx.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_kx.h",
+      "git_blob": "347132c320e0d22e9725b6b9dd4633dc73fabefe",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_onetimeauth.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_onetimeauth.h",
+      "git_blob": "7cd7b07060f7a80d7967c2f40b66d42d6bc35ea4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_onetimeauth_poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_onetimeauth_poly1305.h",
+      "git_blob": "f3e34d86df4d6bbf19023634a2c930226ce94b9a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_pwhash.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_pwhash.h",
+      "git_blob": "585a993efd2d7106211106264ca682a0f3b2d47a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_pwhash_argon2i.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_pwhash_argon2i.h",
+      "git_blob": "88ff6221d6797652a413aba667e88182677418f2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_pwhash_argon2id.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_pwhash_argon2id.h",
+      "git_blob": "7183abd186bb09fb5f25f505db596d18b42db6ef",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_pwhash_scryptsalsa208sha256.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_pwhash_scryptsalsa208sha256.h",
+      "git_blob": "5c0bf7d390adbf2334b9be622208fc457775548c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_scalarmult.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_scalarmult.h",
+      "git_blob": "1c6858537833282d555da4143be8553c72748970",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_scalarmult_curve25519.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_scalarmult_curve25519.h",
+      "git_blob": "60e9d0c5a40241bb0c8d6f7db692da4ee7943cb8",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_scalarmult_ed25519.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_scalarmult_ed25519.h",
+      "git_blob": "2dfa4d7073f6a88b321d841edac0cc711edc286a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_scalarmult_ristretto255.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_scalarmult_ristretto255.h",
+      "git_blob": "40a45ccef02fad07a67374341ff55e9ae963c1a5",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_secretbox.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_secretbox.h",
+      "git_blob": "1d3709db128f81048933d84030874f2401344477",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_secretbox_xchacha20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_secretbox_xchacha20poly1305.h",
+      "git_blob": "6ec674e31052d38b83fd206b5b0fd0e7300b8d68",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_secretbox_xsalsa20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_secretbox_xsalsa20poly1305.h",
+      "git_blob": "be0874cbafa56a5bd5b5259be3d48c3395a99ff2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_secretstream_xchacha20poly1305.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_secretstream_xchacha20poly1305.h",
+      "git_blob": "b22e4e9313ec04d0d6388bf22e5477a7675a234d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_shorthash.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_shorthash.h",
+      "git_blob": "fecaa88bd80c347f31417e039adf5e852f089e1f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_shorthash_siphash24.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_shorthash_siphash24.h",
+      "git_blob": "1e6f72a620e52688bd4eebd1945f8d7cd5fd0a73",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_sign.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_sign.h",
+      "git_blob": "f5fafb123e01094be95d150113b6e10faba51cdc",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_sign_ed25519.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_sign_ed25519.h",
+      "git_blob": "0fdac42d3539059f516fd7f52c4ce32012f104d2",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_sign_edwards25519sha512batch.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_sign_edwards25519sha512batch.h",
+      "git_blob": "eed158aa84549cdfd435ab1ef5d4ee9fb8e41c0c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream.h",
+      "git_blob": "88dab5f61118373afd807a292fb337a525b3099d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_chacha20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_chacha20.h",
+      "git_blob": "408897558b80a1337d19d9cc23c3a224ecd61d54",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_salsa20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_salsa20.h",
+      "git_blob": "45b3b3e34aa7a2485067ebeb5bc8d115411ca785",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_salsa2012.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_salsa2012.h",
+      "git_blob": "6c5d303cacc12d54c2bfbbe0b17ec4a191a99693",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_salsa208.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_salsa208.h",
+      "git_blob": "d574f30478a6574746b8d0fd1919ea702c7e5fa5",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_xchacha20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_xchacha20.h",
+      "git_blob": "c4002db00a85354286b3b02feba484cbc313f5d6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_stream_xsalsa20.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_stream_xsalsa20.h",
+      "git_blob": "20034e3462b0f24516a8c44ad07f02efabc34f4a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_verify_16.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_verify_16.h",
+      "git_blob": "7b9c8077ad3295ad1cc431b29ca2231b8c8168c7",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_verify_32.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_verify_32.h",
+      "git_blob": "9b0f4529f6c61507d624cf852005455e9bc00e15",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/crypto_verify_64.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/crypto_verify_64.h",
+      "git_blob": "c83b73025a6bbd22bac9bbc4ab643e495538cbb8",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/export.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/export.h",
+      "git_blob": "a0074fc9cbb03c99cec1e9aa6dc282c74461e8a0",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/chacha20_ietf_ext.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/chacha20_ietf_ext.h",
+      "git_blob": "2c80b96aa72ca56e60ebadb54b96f1177a9d5976",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/common.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/common.h",
+      "git_blob": "339e725ba477609646a55196093cd004877684c6",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/ed25519_ref10.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/ed25519_ref10.h",
+      "git_blob": "3f4c45caf0eb7c4177ca9575b563d198f2bae1e4",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/ed25519_ref10_fe_25_5.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/ed25519_ref10_fe_25_5.h",
+      "git_blob": "f2782d9d22f7840e4c9d314a2156a5f61c9141e3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/ed25519_ref10_fe_51.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/ed25519_ref10_fe_51.h",
+      "git_blob": "6c0d775baf634dd3c0d5c1340fa53b1e1a5bdb4f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/implementations.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/implementations.h",
+      "git_blob": "c7237f851deb74934ee81dc500cae037eee35e00",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/mutex.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/mutex.h",
+      "git_blob": "322b6742b2697f7bf7ee8450764f689c7414f05a",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/private/sse2_64_32.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/private/sse2_64_32.h",
+      "git_blob": "fc994bd1a371101889254a9ebde9ea3fc4561562",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/randombytes.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/randombytes.h",
+      "git_blob": "a03cc657204c704909ab27e5fa1bda008aa7bcf1",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/randombytes_internal_random.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/randombytes_internal_random.h",
+      "git_blob": "2b2b7d6edc11a2fef58bd731663058fe4cb7855e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/randombytes_sysrandom.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/randombytes_sysrandom.h",
+      "git_blob": "9e27b674c79618881c867471524badf8ff35a9d9",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/runtime.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/runtime.h",
+      "git_blob": "7f15d58e7c56870e9fad9b1ce8ebf84b1bb26ddc",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/utils.h": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/utils.h",
+      "git_blob": "ac8015129191b6b05c0cff55d9e11e99c2d409c3",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/include/sodium/version.h.in": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/include/sodium/version.h.in",
+      "git_blob": "8a72044b4bb7fa3406ee70f26fdb87876f0c0d6f",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/randombytes/internal/randombytes_internal_random.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/randombytes/internal/randombytes_internal_random.c",
+      "git_blob": "f0794f80ac32347bd95e1a21fc3046e7f8bef229",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/randombytes/randombytes.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/randombytes/randombytes.c",
+      "git_blob": "8ac085fc17fcb593657f43fa526ead311a81e961",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/randombytes/sysrandom/randombytes_sysrandom.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/randombytes/sysrandom/randombytes_sysrandom.c",
+      "git_blob": "38f04f0a1b5c87cd4730b8bebdd07b351c28143c",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/sodium/codecs.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/sodium/codecs.c",
+      "git_blob": "77fa464cc4b71796ad90d7ba0b3a895f8a7a722d",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/sodium/core.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/sodium/core.c",
+      "git_blob": "7a6943d19c55e1bfd0b10b8f3093fa5280808e63",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/sodium/runtime.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/sodium/runtime.c",
+      "git_blob": "9dfe54f849dc95e1557b8fc3521077943dec188e",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/sodium/utils.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/sodium/utils.c",
+      "git_blob": "cdaff9d0698fe2ef30df534b19b6dc8b933b7f69",
+      "git_mode": "100644"
+    },
+    "libsodium/src/libsodium/sodium/version.c": {
+      "repository": "libsodium",
+      "source_path": "src/libsodium/sodium/version.c",
+      "git_blob": "4e584a6ea0f11ff2d088655967f4ac7290bea8f5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "test/Makefile.am",
+      "git_blob": "f9894bb855e6da0bee05d9c6f17aa6b31560922a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "test/Makefile.in",
+      "git_blob": "349d508f8ad9c357ea218f135867e9036a9376f1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/constcheck.sh": {
+      "repository": "libsodium",
+      "source_path": "test/constcheck.sh",
+      "git_blob": "994c164262158ac4139a64f524345e8683cf18f5",
+      "git_mode": "100755"
+    },
+    "libsodium/test/default/Makefile.am": {
+      "repository": "libsodium",
+      "source_path": "test/default/Makefile.am",
+      "git_blob": "59f8595c4fe2caf9352350ddf51a335625329f5a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/Makefile.in": {
+      "repository": "libsodium",
+      "source_path": "test/default/Makefile.in",
+      "git_blob": "89399e25b87e55a57e43bc7b0c43d34c7d6750c8",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_aes256gcm.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_aes256gcm.c",
+      "git_blob": "1f83fdc042f069f79f6c68fe96ad6f63bef7deba",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_aes256gcm.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_aes256gcm.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_aes256gcm2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_aes256gcm2.c",
+      "git_blob": "43170b5d775a64129c1abeb5b6cae9c031a6440b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_aes256gcm2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_aes256gcm2.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_chacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_chacha20poly1305.c",
+      "git_blob": "0a01afe1e2aca12d712ef8db735201a9692dc278",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_chacha20poly1305.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_chacha20poly1305.exp",
+      "git_blob": "1c6131ff7033520e0c585bc81e7bd62432a4d160",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_chacha20poly13052.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_chacha20poly13052.c",
+      "git_blob": "8c59ecaf1ef4b744f606ef39b73520473ef31f70",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_chacha20poly13052.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_chacha20poly13052.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_xchacha20poly1305.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_xchacha20poly1305.c",
+      "git_blob": "12059b6e4fc0bad223c82d8d8187665f4f4886ef",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/aead_xchacha20poly1305.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/aead_xchacha20poly1305.exp",
+      "git_blob": "d17ee7a1410c40e95b0a43a0b505efa63a04501b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth.c",
+      "git_blob": "23ac927713aac1d327811346a9c6f9adae5680d3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth.exp",
+      "git_blob": "03b57d6318b6e0e2dff76d8713a80b0fc0638161",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth2.c",
+      "git_blob": "583a2d44827ebf560e209e5cf1c84a0755f2921c",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth2.exp",
+      "git_blob": "955951a20fd54c4824632178a05b23aefc22b3f0",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth3.c",
+      "git_blob": "ca90aa7b5a1336f751513f6402ebade1fdc88c90",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth3.exp",
+      "git_blob": "573541ac9702dd3969c9bc859d2b91ec1f7e6e56",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth5.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth5.c",
+      "git_blob": "955c9cfbb537ca3e4c813fcd403731c8bd53401b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth5.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth5.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth6.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth6.c",
+      "git_blob": "f397a0546a1cf66565e7d48877d48501812790cc",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth6.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth6.exp",
+      "git_blob": "da0c5284b69cd658b9bf300716ac68f96cb70b0f",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth7.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth7.c",
+      "git_blob": "3d087f8eaa2babc0f64d4a5e039383ba3aeadc17",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/auth7.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/auth7.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box.c",
+      "git_blob": "228aca7b6bb2dde59ebe83d8ba5ff888bba8dfa5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box.exp",
+      "git_blob": "25db669b76eb4ccfae0d829ad9f02c3f2c3ba482",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box2.c",
+      "git_blob": "3e46fda85e20b4687bfa3b55e76bc8ad40cfb7cb",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box2.exp",
+      "git_blob": "51deccd9b31606c8dd9e71bebd61a4d1a9a15135",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box7.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box7.c",
+      "git_blob": "a58ea3022f698b9ebb18c36210b8c2e138fa67c3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box7.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box7.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box8.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box8.c",
+      "git_blob": "4d27f335f3a2b6c737a2f7062700b111503c24a1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box8.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box8.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_easy.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_easy.c",
+      "git_blob": "2e6a20f98ba4c394c6979d5632b64a85fbf37dc3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_easy.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_easy.exp",
+      "git_blob": "f13afd0bbc8d69f4a0992e5754402c2857e3d636",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_easy2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_easy2.c",
+      "git_blob": "05cb099f4274cba2fd157d60fa0276d8bf7baeb9",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_easy2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_easy2.exp",
+      "git_blob": "9a8dd6c66fd45aa0f62e3cd0d24064731691cb22",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_seal.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_seal.c",
+      "git_blob": "f28c041645ec6fd50c8e220c64610fdddde5bbd3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_seal.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_seal.exp",
+      "git_blob": "ded7a43cc06c713be16d62e50c2083098d00a6df",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_seed.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_seed.c",
+      "git_blob": "95930d3250adda4202701f4668db557d982311c2",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/box_seed.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/box_seed.exp",
+      "git_blob": "20e6806f90f0cda79511f90250bbf942dc193ade",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/chacha20.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/chacha20.c",
+      "git_blob": "8b88745a4197cb035190709afb8655a42b6fc60c",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/chacha20.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/chacha20.exp",
+      "git_blob": "aafaf29c313b88453e4b2e5ced76354d9e54fcff",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/cmptest.h": {
+      "repository": "libsodium",
+      "source_path": "test/default/cmptest.h",
+      "git_blob": "b1261bdbe2aaa17d012dfa86e7b8002721424033",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/codecs.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/codecs.c",
+      "git_blob": "726c96bc19114ad31189fbe2df52211b2b35dea3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/codecs.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/codecs.exp",
+      "git_blob": "171834ed92ea9601f5e158a72a6383a3c3ce0479",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core1.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core1.c",
+      "git_blob": "f1d7b0be21df89f0c62fd707f14f8e9e7f41f837",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core1.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core1.exp",
+      "git_blob": "715a489d4fcc792fe860a549f36b616b4537a521",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core2.c",
+      "git_blob": "7e2dd7e0fcee87e33e1349f5b6113bedfec91f34",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core2.exp",
+      "git_blob": "f4682af060c5177b73495d320d3643c87c6195e9",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core3.c",
+      "git_blob": "09f2473b42019bf35d031e09f4abe47eba74e334",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core3.exp",
+      "git_blob": "e6bc1026d3440bc6b9c3f28aa52c3da6cab9cde7",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core4.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core4.c",
+      "git_blob": "cb174abff837ee537c5aa69c6f0c4630501716af",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core4.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core4.exp",
+      "git_blob": "d04e5b5e6c9ab0f8a93c7651b2a4295111507b54",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core5.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core5.c",
+      "git_blob": "02b0fd9a9f112f69f6e122aef00ba4ba126d7144",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core5.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core5.exp",
+      "git_blob": "562cf717e9f89c54c8240e749ed6f74a1a3d6b83",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core6.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core6.c",
+      "git_blob": "f10c0d66a1df330c96a26f674ec4149a4bc1b8f5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core6.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core6.exp",
+      "git_blob": "562cf717e9f89c54c8240e749ed6f74a1a3d6b83",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core_ed25519.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core_ed25519.c",
+      "git_blob": "5340f9e82c1a97ca974cb7f11c2c41c63869666b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core_ed25519.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core_ed25519.exp",
+      "git_blob": "0fea1020097bfa209c4adf0686290ba0767303a3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core_ristretto255.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/core_ristretto255.c",
+      "git_blob": "2367f8a219dbb0a9147e331b5386e9da2d91ab77",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/core_ristretto255.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/core_ristretto255.exp",
+      "git_blob": "8618d892da6018c473a03329d22c18c08b6efdf8",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/ed25519_convert.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/ed25519_convert.c",
+      "git_blob": "d067547e256c12955a3dea54d30d6906159a65b3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/ed25519_convert.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/ed25519_convert.exp",
+      "git_blob": "cba2b7b824adcb365b5c89e8026cf2c0da1fc915",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash.c",
+      "git_blob": "2da877d21b9a8717895a8dd887388c798a1bacc4",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash.exp",
+      "git_blob": "ac46f32593cde49f6d3881e31e459a7560485acd",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash2.c",
+      "git_blob": "b7e33e69fdc9eac9b07d0276bbf864b1884d8776",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash2.exp",
+      "git_blob": "5ee6f605257b303e82e0c247c5db45a8febd1fb6",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash3.c",
+      "git_blob": "ec86b35fadf27f1b681dde1ccf8125f31989e304",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/generichash3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/generichash3.exp",
+      "git_blob": "75a62d4381315b2fe2e50e6fd0171eeba168d4b1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/hash.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/hash.c",
+      "git_blob": "60d352776c7521a5d682b7f3d6183c96a9831aba",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/hash.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/hash.exp",
+      "git_blob": "f26c0b08a9b5402187efe3e97632c74e5aa6d47b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/hash2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/hash2.exp",
+      "git_blob": "df582172a2d36da07276782e754e39ddea37e5be",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/hash3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/hash3.c",
+      "git_blob": "cfcb989c35887d94484a7c0f7b03cb6d27ea2a8a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/hash3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/hash3.exp",
+      "git_blob": "df582172a2d36da07276782e754e39ddea37e5be",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/index.html.tpl": {
+      "repository": "libsodium",
+      "source_path": "test/default/index.html.tpl",
+      "git_blob": "4a4e28863aa28c364e379e1aaeaf6dcdc1775be9",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/kdf.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/kdf.c",
+      "git_blob": "f10f034e240e755949579f81569f99ba2b28704a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/kdf.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/kdf.exp",
+      "git_blob": "4aa769462a94f8e85b0760e370d9439be8fa6143",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/keygen.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/keygen.c",
+      "git_blob": "a53d8184a282f6aa8d5e57c65fc47682fa32ed78",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/keygen.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/keygen.exp",
+      "git_blob": "4d10017f0e93029292568b836e21390e20ab77f6",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/kx.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/kx.c",
+      "git_blob": "e03f2d0c62c6f608e106b5aa39233f375bb7039a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/kx.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/kx.exp",
+      "git_blob": "b9db6d5245d7fe6af2cecc69f0afbe1967040cff",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/metamorphic.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/metamorphic.c",
+      "git_blob": "fc883c7f4e44b9792f8ad00702b7f6ee71bfcad6",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/metamorphic.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/metamorphic.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/misuse.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/misuse.c",
+      "git_blob": "407d526f55dc4fb833fd6d218fd31d55cb61e478",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/misuse.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/misuse.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth.c",
+      "git_blob": "7a4931b4c6ea5367745c289c1e2c4d4bb7b3d5c3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth.exp",
+      "git_blob": "33973bd921064ba8c62e5fb8f01e8fdc8209c634",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth2.c",
+      "git_blob": "e429ce0f4fc4cf93da2d5d5977703a7810f33c37",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth2.exp",
+      "git_blob": "573541ac9702dd3969c9bc859d2b91ec1f7e6e56",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth7.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth7.c",
+      "git_blob": "7a77339656b269f1ee01e3669eeb4d295fff8136",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/onetimeauth7.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/onetimeauth7.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pre.js.inc": {
+      "repository": "libsodium",
+      "source_path": "test/default/pre.js.inc",
+      "git_blob": "8b8d589afd5a7cb4c59ed43149c5bfb8733d9285",
+      "git_mode": "100755"
+    },
+    "libsodium/test/default/pwhash_argon2i.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_argon2i.c",
+      "git_blob": "3e1195e13cdce68152cc3798e339e8bad2f3ec2a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_argon2i.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_argon2i.exp",
+      "git_blob": "0140ba8bf7d2846cd7450f675721c812e1f44206",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_argon2id.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_argon2id.c",
+      "git_blob": "95463492740a8c63d447957fcbe2169db2f7423b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_argon2id.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_argon2id.exp",
+      "git_blob": "a259827fd766c6ce17b7771ac5c25908b87f9ba7",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_scrypt.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_scrypt.c",
+      "git_blob": "5afe963f9a353973461cc0cfc9cddea9b8c7dadd",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_scrypt.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_scrypt.exp",
+      "git_blob": "2f98d0e8b69984db6ae54239bdbd910528ef8552",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_scrypt_ll.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_scrypt_ll.c",
+      "git_blob": "c2b3f3c17ee398544bff6caa62717db9720d7289",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/pwhash_scrypt_ll.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/pwhash_scrypt_ll.exp",
+      "git_blob": "9b7f6a74bd9e4064b3e0acae60c2f68e45af14b0",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/randombytes.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/randombytes.c",
+      "git_blob": "d08066e8aee10682e8fe5b3ad79b977151fa890a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/randombytes.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/randombytes.exp",
+      "git_blob": "cf955ee30953b6bb86022ed055a2e18078f85107",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult.c",
+      "git_blob": "b410fcd156fb27a877c2f0aa32ff544905554c29",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult.exp",
+      "git_blob": "df1d273604080a7de4cf2759c5b50f8b212ae638",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult2.c",
+      "git_blob": "d1bb83d5c20d07b2c37db850769bf45489bff97c",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult2.exp",
+      "git_blob": "9804b113b12054f2d37024a9683763f7664ba9f5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult5.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult5.c",
+      "git_blob": "adeda87f6c94feb7189db0050e9822bdf44b7a0a",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult5.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult5.exp",
+      "git_blob": "e66cca170962006de13f005541edcb083a414fa3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult6.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult6.c",
+      "git_blob": "f8f07842bac84e3f2b6ec46972db68c571c4db0f",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult6.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult6.exp",
+      "git_blob": "bec211300d85e968c8ccf13fc1083e66744ed4f1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult7.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult7.c",
+      "git_blob": "54f64c2684134503a2dd492c1eb35520abd2ef0d",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult7.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult7.exp",
+      "git_blob": "d00491fd7e5bb6fa28c517a0bb32b8b506539d4d",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult8.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult8.c",
+      "git_blob": "25a541dd20ed7a4be264e35b5f44a5ea7927e5b3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult8.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult8.exp",
+      "git_blob": "320ff64fda0db9d056262ad3068938dae929a4ea",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult_ed25519.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult_ed25519.c",
+      "git_blob": "795647b5bb521108c70aee6781a5c7288170698d",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult_ed25519.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult_ed25519.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult_ristretto255.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult_ristretto255.c",
+      "git_blob": "1acd12169f358df9094cc85bd4cb251829c17072",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/scalarmult_ristretto255.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/scalarmult_ristretto255.exp",
+      "git_blob": "919a7621b71eb45e63cc4c53e7c6a203e0f62165",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox.c",
+      "git_blob": "df1d62ff47ba644297877e87abe2b0c49e6dae8d",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox.exp",
+      "git_blob": "25db669b76eb4ccfae0d829ad9f02c3f2c3ba482",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox2.c",
+      "git_blob": "e6320b7709437b85bb24309273bb59d0edd79fd1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox2.exp",
+      "git_blob": "c61d4557cb747c361ae017bfd579d0196ec60595",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox7.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox7.c",
+      "git_blob": "389943d2118ef401eeac6b6008bec356e67387f5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox7.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox7.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox8.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox8.c",
+      "git_blob": "acba5f0c7ab4e43ea855ab076fdbf96ecf118b16",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox8.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox8.exp",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox_easy.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox_easy.c",
+      "git_blob": "4542bbdbee85da69ca53cb6d6231f4c079f8191b",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox_easy.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox_easy.exp",
+      "git_blob": "3cffae866235471d01dae609647504e93af09244",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox_easy2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox_easy2.c",
+      "git_blob": "7cacbd7aba15584aa888291f95dafcf29e8b03d4",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretbox_easy2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretbox_easy2.exp",
+      "git_blob": "229972f29247e15494c79a12deea84f9950c78df",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretstream.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretstream.c",
+      "git_blob": "63c64438dad81eaff612d409698598f272adbac2",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/secretstream.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/secretstream.exp",
+      "git_blob": "d86bac9de59abcc26bc7956c1e842237c7581859",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/shorthash.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/shorthash.c",
+      "git_blob": "e8fadeccbf0a3c321528131e8b6abee840a67234",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/shorthash.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/shorthash.exp",
+      "git_blob": "6ec8684d34f58cb59793795bbb1cec2b91ae04c6",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sign.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sign.c",
+      "git_blob": "30a2882b11aac1ddbbac407a32e4750b963116c3",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sign.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sign.exp",
+      "git_blob": "1c4285f5f24f1bf7d10a8fb6ef9d4cfd605b5a42",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/siphashx24.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/siphashx24.c",
+      "git_blob": "8ece23e374ebb3a509deb6c56880cdcf2c27359d",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/siphashx24.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/siphashx24.exp",
+      "git_blob": "7218445e8edb45a67c3ce144def5c8db54430e31",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_core.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_core.c",
+      "git_blob": "a3985b0e8970ca3c689adbbb82b771747e731128",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_core.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_core.exp",
+      "git_blob": "68a17b04144cc525c963b0496975bf58a8b49010",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils.c",
+      "git_blob": "844e16cfbfd747ced665394a945b621922184902",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils.exp",
+      "git_blob": "c97a1db384b1c6f5ce13029db6d09a5faa9ec2b1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils2.c",
+      "git_blob": "bd72f36c6441fbcd53e785efe336516f46a59391",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils2.exp",
+      "git_blob": "f796351dc1fd709e8c486d1f3fc49b9cd3c6017f",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils3.c",
+      "git_blob": "3bba037a24a26ab3c102656e4fc2679211b94bd1",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_utils3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_utils3.exp",
+      "git_blob": "37e114f84fd22f85a538a6408d2158bc3e6acf43",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_version.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_version.c",
+      "git_blob": "2a8fddbd1ff976617da0bd3b8f8d645ec5c88ed5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/sodium_version.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/sodium_version.exp",
+      "git_blob": "e8183f05f5db68b3934e93f4bf6bed2bb664e0b5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream.c",
+      "git_blob": "87ef3712e8519e78b13ee3dfd8ab45f5438ee758",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream.exp",
+      "git_blob": "68ff67b4f0c4b19d4929ea0f6de7125e13c07420",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream2.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream2.c",
+      "git_blob": "1e178a478bff7788a643991ee5c7e3cde2b456f5",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream2.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream2.exp",
+      "git_blob": "23054b754428ee96f9879010ae92c8a5506a4295",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream3.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream3.c",
+      "git_blob": "4ed646f9cac6643b7836fc97bb4ae5a275f8e3ff",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream3.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream3.exp",
+      "git_blob": "9cd78798a268adc396e840e6f8917a45dab99227",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream4.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream4.c",
+      "git_blob": "38f43f839dd755eb1f279ff40d121b6d8e4c05aa",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/stream4.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/stream4.exp",
+      "git_blob": "0d3d8e949d60012953ec782e9effe10dec732390",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/verify1.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/verify1.c",
+      "git_blob": "68257c97f756e0484fc411d09b1e86a64b49b215",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/verify1.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/verify1.exp",
+      "git_blob": "2c94e483710018ee33f9a68104566371b1ecf2aa",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/wasi-test-wrapper.sh": {
+      "repository": "libsodium",
+      "source_path": "test/default/wasi-test-wrapper.sh",
+      "git_blob": "0633560879bad76eae30d70b697724f752bf663a",
+      "git_mode": "100755"
+    },
+    "libsodium/test/default/wintest.bat": {
+      "repository": "libsodium",
+      "source_path": "test/default/wintest.bat",
+      "git_blob": "e50fb49493e1b7b05cc27dcadbdedfe38c832803",
+      "git_mode": "100755"
+    },
+    "libsodium/test/default/xchacha20.c": {
+      "repository": "libsodium",
+      "source_path": "test/default/xchacha20.c",
+      "git_blob": "07eafcc55bb134dc6228585a8f532cc6877c5a21",
+      "git_mode": "100644"
+    },
+    "libsodium/test/default/xchacha20.exp": {
+      "repository": "libsodium",
+      "source_path": "test/default/xchacha20.exp",
+      "git_blob": "0ac74c6a1552f22bea113676ad2a79dfdb61bd40",
+      "git_mode": "100644"
+    },
+    "libsodium/test/quirks/quirks.h": {
+      "repository": "libsodium",
+      "source_path": "test/quirks/quirks.h",
+      "git_blob": "69fe3693617476b55da3f134631b49b49d0eda2f",
+      "git_mode": "100644"
+    },
+    "mingw/win32/libsodium.a": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/mingw/win32/libsodium.a",
+      "git_blob": "6813c422acbb36d485446cd0ab4e55250d5f4034",
+      "git_mode": "100644"
+    },
+    "mingw/win64/libsodium.a": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/mingw/win64/libsodium.a",
+      "git_blob": "2c3a8f621e315ff1148b5d42aa83e33234df5546",
+      "git_mode": "100644"
+    },
+    "msvc/Win32/Debug/v142/libsodium.lib": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/msvc/Win32/Debug/v142/libsodium.lib",
+      "git_blob": "74a87c66ede4db1c3ed1636a2fd9d85e89d7f979",
+      "git_mode": "100644"
+    },
+    "msvc/Win32/Release/v142/libsodium.lib": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/msvc/Win32/Release/v142/libsodium.lib",
+      "git_blob": "c3e561b786322db43b5136965b57a7eff2f1c5f8",
+      "git_mode": "100644"
+    },
+    "msvc/x64/Debug/v142/libsodium.lib": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/msvc/x64/Debug/v142/libsodium.lib",
+      "git_blob": "4c67575659715fb26bba3d05a469229243eb6d3f",
+      "git_mode": "100644"
+    },
+    "msvc/x64/Release/v142/libsodium.lib": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/msvc/x64/Release/v142/libsodium.lib",
+      "git_blob": "d9b390ac818fe2fe6e1ad3a975d84639793f82e8",
+      "git_mode": "100644"
+    },
+    "src/lib.rs": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/src/lib.rs",
+      "git_blob": "07e88b7c7233f5b6d9af8a8a5d97fcd1f5a54a3e",
+      "git_mode": "100644"
+    },
+    "src/sodium_bindings.rs": {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/src/sodium_bindings.rs",
+      "git_blob": "473d71cb69e2cf78c6320f119f7a422c501b62e6",
+      "git_mode": "100644"
+    }
+  },
+  "omitted_files": [
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/.gitignore",
+      "git_blob": "46d6bedf651dee1e76887a7c0ffb99825e10131e",
+      "reason": "Upstream repository ignore rules; no effect on dependency compilation."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/README.md",
+      "git_blob": "f10c8ccb0f72e95c3112abf1569a83605c1c9ce0",
+      "reason": "Optional upstream README/logo; no new markdown documentation is vendored."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/sodium_wrapper.h",
+      "git_blob": "968ee210f405bea42b3581e2671b56e469f44049",
+      "reason": "Optional binding-regeneration inputs; authoritative generated Rust bindings are retained unchanged."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/src/gen.sh",
+      "git_blob": "a0feb7431468b6b14b2277d8af755b97cb69c648",
+      "reason": "Optional binding-regeneration inputs; authoritative generated Rust bindings are retained unchanged."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_aead_chacha20poly1305.rs",
+      "git_blob": "60a56cef895178b72be07ad34c5fbaaece424f00",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_aead_xchacha20poly1305_ietf.rs",
+      "git_blob": "77c651741252dc4a25606de56bb328868f9c5066",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_auth.rs",
+      "git_blob": "a57935f018d5af474814163d4a83b02cfed24a86",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_auth_hmacsha256.rs",
+      "git_blob": "2698043b98c7cb2267a1e4bfd2474102ae7a5dd0",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_auth_hmacsha512.rs",
+      "git_blob": "817cf39174732e8f1e63488dd376563ab1f22dc5",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_auth_hmacsha512256.rs",
+      "git_blob": "c32ff1b6a75280dec0b887a110cf75835bb3bc91",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_box.rs",
+      "git_blob": "d07194805f745c8a5b740b0e3ff503af93818684",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_box_curve25519xsalsa20poly1305.rs",
+      "git_blob": "a2fe15616f0f2214e82c00f05e0fc3136f4de8f7",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_core_hsalsa20.rs",
+      "git_blob": "416c7cc4c55e7e9907b6a64ea63191b053507953",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_core_salsa20.rs",
+      "git_blob": "9a1600511291754d82f7f2c8e74f8e3f2030e389",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_core_salsa2012.rs",
+      "git_blob": "ab50794791c11686e744a10a4fd9a4b815663ab5",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_core_salsa208.rs",
+      "git_blob": "703b92237cceed9fe78e4aef08bd855f6c4779f1",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_generichash.rs",
+      "git_blob": "6a489fd4ba44260640ff1f19ab56a0745663af73",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_generichash_blake2b.rs",
+      "git_blob": "f921a07d1fdb7efc83b9b00d27cf194ea89a29cc",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_hash.rs",
+      "git_blob": "3c2556f727687cdda5ec4b84e38df236715016ba",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_hash_sha256.rs",
+      "git_blob": "9022fb72c0c7ca659bc9b04f3f4c05826ece17de",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_hash_sha512.rs",
+      "git_blob": "d30dab59744c32f7bf176ad57aa3781f8a01832f",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_kx.rs",
+      "git_blob": "3aba13fe91e2d0ea22e813f1d7e56c30bf2732ec",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_onetimeauth.rs",
+      "git_blob": "a6b6fa771d80185cb5c571c2e8f3e66f873743bd",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_onetimeauth_poly1305.rs",
+      "git_blob": "bfe309a1b0047e1ef5515842b2cb36c2c5f08b0e",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_pwhash_scryptsalsa208sha256.rs",
+      "git_blob": "c7463c18fba2b8fece10f07a1ac9d54915465946",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_scalarmult.rs",
+      "git_blob": "488cda60d2a3545526ac7d09efbcce563f81f923",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_scalarmult_curve25519.rs",
+      "git_blob": "6f6991815c77fc6e1c0a78549402aaec18f47f5d",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_secretbox.rs",
+      "git_blob": "feaad53b856a9806fb18d2adf140957a1fe09895",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_secretbox_xsalsa20poly1305.rs",
+      "git_blob": "8ed529bf5f99f0b571d4ef26e7c1f13a778b6a60",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_shorthash_siphash24.rs",
+      "git_blob": "9473faa83b38f5e45289b2807c8d3032d294a412",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_sign_ed25519.rs",
+      "git_blob": "497221cda524cc0e0f1af9f45f0123eda6417971",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream.rs",
+      "git_blob": "df74e1c4d81540900e39e5067414d2c52663d3a6",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_chacha20.rs",
+      "git_blob": "9a5b650a0a7c1daff45f497fb9d98d03ef7a57a2",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_salsa20.rs",
+      "git_blob": "c9f562f84d19a4567edc04573c08c3129288126d",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_salsa2012.rs",
+      "git_blob": "da5cc42c3cace721760361ecaa2ed731ae58779b",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_salsa208.rs",
+      "git_blob": "53e759706612f8451cd7449c15c822e96cd74eb6",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_xchacha20.rs",
+      "git_blob": "62d715b3769a9dcafc8fe9302ee5b5cb5bd738f3",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_stream_xsalsa20.rs",
+      "git_blob": "6097e1515745887fe776d7025677918edc0dcd9d",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_verify_16.rs",
+      "git_blob": "f81830553de98cefc603d46e5a27561d6d8aec7a",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_verify_32.rs",
+      "git_blob": "77d4ebd147e30641a6a7d87f18c0ebd531a094e9",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/crypto_verify_64.rs",
+      "git_blob": "8064748311b72c51210ec3d97830cc97e1b9a47b",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/crypto/mod.rs",
+      "git_blob": "13d75b7e93b79fdcd9bbcfaba7b545f763854cc3",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "sodiumoxide",
+      "source_path": "libsodium-sys/tests/test.rs",
+      "git_blob": "0c595fe85fc5a9d1c5f8d579d798b5ddd8f7aeff",
+      "reason": "Optional Rust integration tests; not required to compile the FFI crate and not duplicated into engine tests."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": ".github/workflows/codeql-analysis.yml",
+      "git_blob": "e8feed710e16d429abfd51b6e132cd0abcffc60a",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": ".github/workflows/dotnet-core.yml",
+      "git_blob": "24f6b606a7395c5a986c6b36849ec4ef037f087d",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": ".gitignore",
+      "git_blob": "c842285d3db882666d7f4ba50b6073852d70cf5a",
+      "reason": "Upstream repository ignore rules; no effect on dependency compilation."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": ".travis.yml",
+      "git_blob": "987992c78a74df09bd5c6616faeac211e3ae6583",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "README.markdown",
+      "git_blob": "ff0703acd8504542b6af0085f7fad3acf3640012",
+      "reason": "Optional upstream README/logo; no new markdown documentation is vendored."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "appveyor.yml",
+      "git_blob": "5fdcdc8a46f6f6d34c801178af19a9a135f634ea",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "azure-pipelines.yml",
+      "git_blob": "81bf48aec662dccdedf4036c597ec09656a786a7",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "builds/.gitignore",
+      "git_blob": "878f1a3a1aa6735a05ac378a035d7e5ffde8288b",
+      "reason": "Upstream repository ignore rules; no effect on dependency compilation."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "lgtm.yml",
+      "git_blob": "5c972387d9132f786d7e72b740cb6564144ec6c1",
+      "reason": "Optional upstream CI/static-analysis configuration; not part of target build inputs."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "logo.png",
+      "git_blob": "0f193a1af458415559c933feabfb88429f6b1c06",
+      "reason": "Optional upstream README/logo; no new markdown documentation is vendored."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/dotnet-core/libsodium.pkgproj",
+      "git_blob": "fd863c47f4de3a5fc5e07b8d5ee4deb4ecf2260f",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/dotnet-core/test.cs",
+      "git_blob": "33484825f0d411b27ef00c0abdba561dfcdf2ce4",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/nuget/.gitignore",
+      "git_blob": "d4b1a8c29b07d3e068880b1e9128d52494037299",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/nuget/package.bat",
+      "git_blob": "565a96be0fa28f6ed293927118d5e05df3141302",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/nuget/package.config",
+      "git_blob": "33eda2ddb57cffe900377e05843407e619f4d4b3",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "packaging/nuget/package.gsl",
+      "git_blob": "5b255e5e0ebefc4d12e8a47cb043099ce1f5ebbb",
+      "reason": "Optional .NET/NuGet distribution tooling; not used by build.rs target builds."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/libsodium.vcxproj",
+      "git_blob": "5aaf832183fd361056158e0f3e0e9e39c935afd3",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/libsodium.vcxproj.filters",
+      "git_blob": "c78137b7e483b59972699ddfbf54647f05bd0b73",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/libsodium.vcxproj.filters.tpl",
+      "git_blob": "18a98fb7ccbae805fa93084a50cbd13986cd0126",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/libsodium.vcxproj.tpl",
+      "git_blob": "e8d326c8e8107137d6714045b1f89c985b61cd07",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/regen-msvc.py",
+      "git_blob": "9a2c87aace5ebbf70df957f1a2d15ad12a445f81",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/tl_libsodium.vcxproj.filters.tpl",
+      "git_blob": "1863d08688c9382664be07e6acbde74c10100bce",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    },
+    {
+      "repository": "libsodium",
+      "source_path": "regen-msvc/tl_libsodium.vcxproj.tpl",
+      "git_blob": "72bb16a878f5b21ba7dabae0e3b27344b4eb8788",
+      "reason": "Optional Visual Studio project-regeneration tooling; pinned projects and bundled Windows dependency libraries are retained."
+    }
+  ],
+  "validation": {
+    "performed": [
+      "Read exact repository commit/tree and submodule gitlink identities.",
+      "Verified all 566 selected unpatched archive members against their original Git blob hashes before recovering source."
+    ],
+    "not_run": [
+      "Builds",
+      "Tests",
+      "Linters",
+      "Formatters",
+      "Device actions",
+      "Archive-lock runtime/concurrency/dry-run/failure smoke checks"
+    ],
+    "integration_owner": "Main performs unified verification after all source and workspace wiring changes land."
+  }
+}

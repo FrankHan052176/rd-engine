@@ -1,0 +1,125 @@
+{
+  "schema": "rd-engine-windows-map-adapter-1",
+  "kind": "pinned-wire-semantics-and-native-ABI-adaptation",
+  "claim": "This is a local integration of pinned RustDesk Map wire semantics and rdev Windows scan-code emission into the existing guarded input owner. The combined Rust/C++ implementation is not an unmodified upstream transplant, and does not import or call a second injector.",
+  "rustdesk": {
+    "repository": "https://github.com/rustdesk/rustdesk",
+    "revision": "092a961b629d318fe290eeafac0cd214a1e9deeb",
+    "license": "GNU Affero General Public License version 3; upstream LICENCE",
+    "license_url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+    "sources": [
+      {
+        "path": "src/server/input_service.rs",
+        "git_blob_sha1": "4eb6c7b76ed1595f32f7e6866a21a5abba2409fa",
+        "symbols": ["map_keyboard_mode", "sim_rdev_rawkey_position"],
+        "url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/src/server/input_service.rs#L1439-L1459",
+        "excerpts": [
+          "let rawkey = RawKey::ScanCode(code);",
+          "sim_rdev_rawkey_position(evt.chr() as _, evt.down);"
+        ],
+        "meaning": "On a Windows receiver, Map chr is a target-platform scan code and down is the transition; it is not Unicode or a character-layout translation. Only this wire interpretation is reused, not record_pressed_key, simulate_, try_change_desktop, lock-state repair, or the upstream global held-key owner."
+      },
+      {
+        "path": "src/keyboard.rs",
+        "git_blob_sha1": "e7bdce9b54390037b2d35d8452fb52d4e5a83100",
+        "symbols": ["map_keyboard_mode", "_map_keyboard_mode", "windows_peer_special_key"],
+        "url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/src/keyboard.rs#L1246-L1357",
+        "excerpts": [
+          "if event.position_code > 255 && (event.position_code >> 8) != 0xE0 {\n                return None;\n            }",
+          "key_event.set_chr(keycode as _);",
+          "// Windows has no normal scan code for `Pause`, so send it as a legacy control key.",
+          "key_event.mode = KeyboardMode::Legacy.into();\n    key_event.down = down;\n    key_event.set_control_key(ControlKey::Pause);"
+        ],
+        "meaning": "The sender has already converted source-platform keys to Windows scans. The receiver retains a byte or an E0-prefixed byte. Pause is the sender's actual Legacy control-key exception; the adapter does not relabel received Map data."
+      },
+      {
+        "path": "src/server/connection.rs",
+        "git_blob_sha1": "7614705fe17187a77b7f8007f7aa8b8b46592b85",
+        "symbols": ["CLICK_TIME", "MOUSE_MOVE_TIME", "is_left_up", "is_enter"],
+        "url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/src/server/connection.rs#L3141-L3146",
+        "excerpts": [
+          "if is_left_up(&me) {\n                            CLICK_TIME.store(get_time(), Ordering::SeqCst);\n                        } else {\n                            MOUSE_MOVE_TIME.store(get_time(), Ordering::SeqCst);\n                        }",
+          "if is_enter(&me) {\n                            CLICK_TIME.store(get_time(), Ordering::SeqCst);\n                        }",
+          "MOUSE_MOVE_TIME.store(get_time(), Ordering::SeqCst);"
+        ],
+        "meaning": "All input peers contribute to the shared anti-remote-CM times: left-button release is click activity, other pointer activity is mouse activity, and Enter is click plus keyboard/mouse activity. This adaptation moves observation from message receipt to the real native submission/receipt boundary and includes Map Enter via its native mapped VK."
+      },
+      {
+        "path": "flutter/lib/desktop/pages/server_page.dart",
+        "git_blob_sha1": "b1ca18b2b0f9036c62ceccdd78175b16322f6c06",
+        "symbols": ["checkClickTime"],
+        "url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/flutter/lib/desktop/pages/server_page.dart#L1229-L1239",
+        "excerpts": [
+          "var clickCallbackTime = DateTime.now().millisecondsSinceEpoch;",
+          "var d = clickCallbackTime - await bind.cmGetClickTime();\n    if (d > 120) callback();"
+        ],
+        "meaning": "Exported times are Unix wall-clock milliseconds for Dart; the native owner independently uses monotonic elapsed time greater than 120ms and rejects uncertainty."
+      }
+    ]
+  },
+  "rdev": {
+    "repository": "https://github.com/rustdesk-org/rdev",
+    "revision": "23e24dd6b35452a495dae0ae6d99395e9755ab0f",
+    "path": "src/windows/simulate.rs",
+    "git_blob_sha1": "6663d69f377dd83602d7511aedeaae4d2b166883",
+    "symbols": ["simulate_key_event_rawkey", "simulate_code", "sim_keyboard_event"],
+    "url": "https://github.com/rustdesk-org/rdev/blob/23e24dd6b35452a495dae0ae6d99395e9755ab0f/src/windows/simulate.rs#L195-L224",
+    "excerpts": [
+      "RawKey::ScanCode(scancode) => simulate_code(None, Some(*scancode), is_press),",
+      "if let Some(scan) = scan {\n        keycode = 0;\n        scancode = scan;\n        flags = KEYEVENTF_SCANCODE;",
+      "if (scancode >> 8) == 0xE0 || (scancode >> 8) == 0xE1 {\n        flags |= KEYEVENTF_EXTENDEDKEY;\n    }",
+      "if !pressed {\n        flags |= KEYEVENTF_KEYUP;\n    }",
+      "sim_keyboard_event(flags as _, keycode, scancode as _)"
+    ],
+    "meaning": "SCANCODE injection uses wVk=0, the original scan in wScan, KEYEVENTF_SCANCODE, and KEYUP/EXTENDEDKEY as appropriate. Although rdev's generic primitive also recognizes E1, the pinned RustDesk Windows sender excludes that Map form and explicitly sends Pause through Legacy. The receiver does not synthesize an E1 sequence.",
+    "license": "MIT",
+    "license_text": "MIT License\n\nCopyright (c) 2020 Nicolas Patry\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
+  },
+  "local_adaptations": [
+    {
+      "files": ["src/platform/windows_input.rs"],
+      "symbols": ["decode_windows_map", "map_key_encoding", "InputSession::prepare_map_key", "Encoding", "Arbitration::map_slot"],
+      "changes": [
+        "Keep InputSession public signatures. Map accepts only a nonzero byte or E0-prefixed byte in Chr with a down/up transition; malformed scans, non-Chr payloads and Map press requests are rejected rather than truncated or converted to text. Legacy decoding and transient modifier handling remain on their existing path.",
+        "Query MapVirtualKeyExW(MAPVK_VSC_TO_VK_EX) through the native adapter for initial canonical VK; there is no handwritten scan-to-VK table or VK injection fallback.",
+        "Store scan-code mode, complete wire scan, mapped VK and extended flag in the existing opening HoldRecord encoding. The same ledger finds a held wire code across all peers before another layout query, and repeat/up/cleanup use the held episode and encoding. No second held owner is introduced.",
+        "Only a successful evidence retirement or confirmed release ends the association. A subsequent fresh down may then query the current layout. Different wire keys/modes that collide in the existing canonical modifier family are refused rather than silently relabelled."
+      ]
+    },
+    {
+      "files": ["native/windows-input/windows_input.h", "native/windows-input/windows_input.cpp"],
+      "symbols": ["RD_INPUT_KEY_SCANCODE", "rd_input_key_for_scancode", "map_scan_valid", "validate_event", "to_input"],
+      "changes": [
+        "Add the paired flag value 4 and a read-only native scan-to-VK query without changing event/request/result structure sizes.",
+        "Validate the scan form and the E0/extended pairing. In SCANCODE mode virtual_key is only frozen guard identity, while SendInput receives wVk=0, unchanged wScan and KEYEVENTF_SCANCODE. Legacy virtual-key injection remains unchanged.",
+        "Use the existing one SendInput call, batch descriptors, hook canonical-key checks, receipt application, lease/episode and local/foreign occupancy protection. No guard identity migration, second injector, desktop switch, global modifier repair or alternate cleanup path is introduced."
+      ]
+    },
+    {
+      "files": ["src/platform/windows_input.rs"],
+      "symbols": ["RemoteActivitySnapshot", "RemoteActivity::observe", "remote_activity_snapshot", "remote_input_allows_sensitive_action", "InputSession::flush", "InputSession::release_all_locked"],
+      "changes": [
+        "Aggregate all peers under the existing arbitration lock held across native submission and receipt commit. A snapshot cannot overtake an in-flight batch. Record sequence and monotonic submission time only at that boundary, not on Host.apply_* success or network-message receipt.",
+        "Coherent native zero-submission refusals and empty/no-op builders do not create activity. Passed receipts and accepted non-hold submissions update only click/mouse wall times; unconfirmed submitted events are conservatively classified with uncertain=true. Full vetoes do not fabricate successful-injection wall times.",
+        "Partial, missing, contradictory or unknown submission evidence latches uncertainty without clearing previous activity. Retained/MayDown ownership, poisoned arbitration, unconfirmed reclamation, invalid wall time and sequence exhaustion fail closed. The monotonic gate requires more than 120ms after the last submission and never uses wall-clock subtraction.",
+        "Click includes actual left-button release and both Map and Legacy Enter, including numpad Enter. Keyboard/text and other mouse activity update mouse time. Snapshot contains no input content or Config state. Policy overrides remain the host owner's responsibility and cannot override uncertainty."
+      ]
+    }
+  ],
+  "preserved_boundaries": [
+    "No edits to capture, codec, presentation, host advertised version or frame-rate paths.",
+    "No SYSTEM/SCM service, secure-desktop access, identity replacement, UIAccess/UIPI change, camera/chat/voice restoration or Dart account migration.",
+    "Guard hook VK mismatch still vetoes the event and retains/quarantines uncertain ownership; it is not bypassed to make a release appear successful."
+  ],
+  "known_limits": [
+    "If a layout or keyboard-state change makes the frozen physical scan produce a different actual hook VK, the existing canonical guard refuses it. Rust reports the native failure and preserves the record; checked cleanup reports ReclamationUnconfirmed if evidence cannot retire it. No cross-layout successful-release runtime guarantee is claimed.",
+    "The existing canonical modifier-family arbitration does not independently own two physical sides of a modifier at once. A conflicting Map wire code is refused rather than adding a second ownership model.",
+    "SendInput submission and passed hook receipts do not prove application delivery across UIPI. Non-hold events have submission counts, not hold receipts. Partial or unknown evidence remains conservative and can keep sensitive actions disabled for the lifetime of the process.",
+    "This is the official time-based anti-remote-CM policy, not hardware-local-user authentication."
+  ],
+  "verification": {
+    "performed": "Source-only inspection of the pinned receiver/sender, pinned rdev scan emission, the local ABI/Encoding pairing, the single guarded submission boundary and all-peer activity API references.",
+    "not_performed": ["format", "lint", "build", "dependency resolution", "tests", "input injection", "application launch", "Windows UI/device access"],
+    "remaining_owner": "Main performs integration provenance, compilation/linking and packaging after the concurrent edits land; the user performs functional input/CM testing. Source inspection is not runtime acceptance."
+  }
+}

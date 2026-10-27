@@ -7,6 +7,8 @@ on:
       - .github/workflows/windows.yml
       - src/**
       - native/**
+      - scripts/**
+      - vendor/**
       - tests/**
       - examples/**
       - Cargo.toml
@@ -17,6 +19,8 @@ on:
       - .github/workflows/windows.yml
       - src/**
       - native/**
+      - scripts/**
+      - vendor/**
       - tests/**
       - examples/**
       - Cargo.toml
@@ -33,6 +37,13 @@ concurrency:
 env:
   RUST_VERSION: '1.95.0'
   CARGO_TERM_COLOR: never
+  # Same dependency baseline as the pinned official client's flutter-build.yml.
+  VCPKG_COMMIT_ID: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
+  # The generation environment for the paired bindings. native/frb/UPSTREAM.lock
+  # pins both, native/frb/CLIENT_SURFACE.md names the SDK, and the codegen job
+  # refuses to run when either differs from the lock.
+  FRB_CODEGEN_VERSION: '1.80.1'
+  FLUTTER_VERSION: '3.24.5'
 
 jobs:
   test-windows-modern-producer:
@@ -42,6 +53,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify native source provenance
+        # Fail closed before anything is configured or built: the seven required
+        # source trees must exist and match native/frb/UPSTREAM.lock exactly
+        # (file set, per-file SHA-256 and the versions those files claim), and
+        # every locked path must be tracked so a clean clone reproduces it.
+        shell: bash
+        run: bash scripts/verify-native-provenance.sh --require-tracked
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -50,9 +71,77 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: rd-engine-windows-x64-rust-1.95-v1
-          workspaces: .
+          workspaces: |
+            .
+            native/frb
+      - name: Checkout pinned Windows dependency toolchain
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT_ID }}
+          path: .build-deps/vcpkg
+          persist-credentials: false
+      - name: Build target Zlib for LibVNCClient
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Join-Path $env:GITHUB_WORKSPACE '.build-deps/vcpkg'
+          & (Join-Path $vcpkg 'bootstrap-vcpkg.bat') -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed.' }
+          & (Join-Path $vcpkg 'vcpkg.exe') install zlib:x64-windows-static-md --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw 'Target Zlib build failed.' }
+          $zlib = Join-Path $vcpkg 'installed/x64-windows-static-md'
+          if (!(Test-Path (Join-Path $zlib 'include/zlib.h')) -or
+              !(Test-Path (Join-Path $zlib 'lib/zs.lib'))) {
+            throw 'Target Zlib headers or static library are absent.'
+          }
+          "ZLIB_ROOT=$zlib" >> $env:GITHUB_ENV
+          # This baseline's Zlib 1.3.2 uses zs.lib. Its vcpkg wrapper supplies
+          # the correct imported ZLIB::ZLIB target to CMake's FindZLIB.
+          $toolchain = Join-Path $env:RUNNER_TEMP 'rd-engine-vcpkg.cmake'
+          $vcpkgCmake = (Join-Path $vcpkg 'scripts/buildsystems/vcpkg.cmake').Replace('\', '/')
+          'set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")' | Set-Content $toolchain
+          "include(`"$vcpkgCmake`")" | Add-Content $toolchain
+          "CMAKE_TOOLCHAIN_FILE=$toolchain" >> $env:GITHUB_ENV
+      - name: Build pinned Libvpx for the software VP8/VP9 backend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Join-Path $env:GITHUB_WORKSPACE '.build-deps/vcpkg'
+          # The overlay is the pinned official revision's res/vcpkg/libvpx
+          # (native/frb/vcpkg-overlays/libvpx, see its ORIGIN.txt): its
+          # 0004-remove-library-suffixes.patch is what makes the installed
+          # static library a single vpx.lib, the name
+          # `cargo:rustc-link-lib=static=vpx` resolves. The built-in port would
+          # install a CRT-suffixed name this engine cannot link.
+          $overlay = Join-Path $env:GITHUB_WORKSPACE 'native/frb/vcpkg-overlays'
+          & (Join-Path $vcpkg 'vcpkg.exe') install libvpx:x64-windows-static-md `
+            --overlay-ports="$overlay" --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw 'Target Libvpx build from the pinned overlay failed.' }
+          $libvpx = Join-Path $vcpkg 'installed/x64-windows-static-md'
+          # Exactly the three files build.rs verifies before it links anything:
+          # the header the decoder ABI was generated from, the static library,
+          # and the record it reads the provenance version from.
+          foreach ($required in @(
+            'include/vpx/vpx_decoder.h',
+            'lib/vpx.lib',
+            'lib/pkgconfig/vpx.pc'
+          )) {
+            if (!(Test-Path (Join-Path $libvpx $required))) {
+              throw "The pinned Libvpx install has no $required."
+            }
+          }
+          $pc = Get-Content -LiteralPath (Join-Path $libvpx 'lib/pkgconfig/vpx.pc') -Raw
+          if ($pc -notmatch '(?m)^Version:\s*1\.15\.2\s*$') {
+            throw 'The installed vpx.pc does not report the pinned libvpx 1.15.2.'
+          }
+          "LIBVPX_PREFIX=$libvpx" >> $env:GITHUB_ENV
       - name: Check formatting
         run: cargo fmt --check
+      - name: Check FRB kernel formatting
+        # The bridge crate is an independent workspace (native/frb/Cargo.toml),
+        # so the root `cargo fmt --check` does not reach it.
+        run: cargo fmt --manifest-path native/frb/Cargo.toml --check
       - name: Reject forbidden native fallback operations
         shell: pwsh
         run: |
@@ -74,8 +163,33 @@ jobs:
           }
       - name: Test default windows-modern-producer
         run: cargo test --locked --target x86_64-pc-windows-msvc
-      - name: Build release Windows host launcher
-        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin rd-engine-windows-host
+      - name: Test the linked software VP8/VP9 backend
+        # Feature-on and link-on: LIBVPX_PREFIX (exported above) is what the
+        # engine's build.rs resolves, so this build links the pinned static
+        # libvpx and the probe test reaches real decoder contexts for both
+        # codecs. It is the only place those two codecs are executed rather than
+        # asserted, and it stays at `CapabilityEvidence::Opened`: no bitstream is
+        # decoded, so no `FirstNativeOutput` claim is made. bash, not pwsh, so
+        # cargo's own `--` reaches cargo untouched; the run is named exactly and
+        # its count is asserted, because a mistyped filter would otherwise report
+        # zero tests as success.
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_path='viewer::decoder::software::engine::tests::probe_opens_both_advertised_codecs'
+          if ! report="$(cargo test --locked --features software-vpx \
+            --target x86_64-pc-windows-msvc -- --exact "$test_path" 2>&1)"; then
+            printf '%s\n' "$report" >&2
+            echo 'the linked software-vpx probe test failed' >&2
+            exit 1
+          fi
+          printf '%s\n' "$report"
+          grep -q '1 passed; 0 failed' <<<"$report" || {
+            echo "the linked software-vpx probe test did not run: expected exactly one passing test ($test_path)" >&2
+            exit 1
+          }
+      - name: Build release Windows FRB kernel
+        run: cargo build --manifest-path native/frb/Cargo.toml --locked --release --target x86_64-pc-windows-msvc
       - name: Collect engine artifacts and source provenance
         shell: pwsh
         run: |
@@ -86,31 +200,89 @@ jobs:
           }
           $testBinaries = @(Get-ChildItem -LiteralPath $deps -File -Filter '*.exe')
           $engineRlibs = @(Get-ChildItem -LiteralPath $deps -File -Filter '*rd_engine*.rlib')
-          $hostExecutable = 'target/x86_64-pc-windows-msvc/release/rd-engine-windows-host.exe'
+          $bridge = cargo metadata --manifest-path native/frb/Cargo.toml --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'FRB Cargo metadata failed.' }
+          $library = @($bridge.packages[0].targets | Where-Object { $_.crate_types -contains 'cdylib' })
+          if ($library.Count -ne 1) { throw 'Expected exactly one FRB dynamic library.' }
+          $bridgeDll = Join-Path $bridge.target_directory "x86_64-pc-windows-msvc/release/$($library[0].name).dll"
           if ($testBinaries.Count -eq 0) { throw 'Main engine test binaries are absent.' }
           if ($engineRlibs.Count -eq 0) { throw 'Main rd-engine rlib artifacts are absent.' }
-          if (!(Test-Path -LiteralPath $hostExecutable -PathType Leaf)) { throw 'Release Windows host executable is absent.' }
+          if (!(Test-Path -LiteralPath $bridgeDll -PathType Leaf)) { throw 'Release Windows FRB kernel is absent.' }
 
           $output = Join-Path $env:RUNNER_TEMP 'rd-engine-artifacts'
           New-Item -ItemType Directory -Force $output | Out-Null
           $testBinaries + $engineRlibs | Copy-Item -Destination $output
-          Copy-Item -LiteralPath $hostExecutable -Destination $output
+          Copy-Item -LiteralPath $bridgeDll -Destination $output
+          # Never stage Dart's resolution cache or a build directory: they belong
+          # to the runner, they would carry absolute paths, and .dart_tool must
+          # not travel in an artifact.
+          $dartOutput = Join-Path $output 'dart'
+          New-Item -ItemType Directory -Force $dartOutput | Out-Null
+          foreach ($entry in Get-ChildItem -LiteralPath 'native/frb/dart' -Force) {
+            if ($entry.Name -in @('.dart_tool', 'build', 'target')) { continue }
+            Copy-Item -LiteralPath $entry.FullName -Destination $dartOutput -Recurse
+          }
+          Copy-Item -LiteralPath 'native/frb/include' -Destination (Join-Path $output 'include') -Recurse
+          Copy-Item -LiteralPath 'native/frb/UPSTREAM.txt','native/frb/UPSTREAM.lock','native/frb/CLIENT_SURFACE.md' -Destination $output
+          $stagedProducts = @(Get-ChildItem -LiteralPath $output -Recurse -Force -Directory |
+            Where-Object { $_.Name -in @('.dart_tool', 'build', 'target', 'node_modules') })
+          if ($stagedProducts.Count -gt 0) {
+            $stagedProducts | ForEach-Object { Write-Error "build product staged for upload: $($_.FullName)" }
+            throw 'Build products must never be uploaded in this artifact.'
+          }
 
           $provenance = Join-Path $output 'source-provenance.txt'
           "repository=$env:GITHUB_REPOSITORY" | Set-Content -LiteralPath $provenance
           "commit=$env:GITHUB_SHA" | Add-Content -LiteralPath $provenance
           "rust_target=x86_64-pc-windows-msvc" | Add-Content -LiteralPath $provenance
-          "cargo_features=default (windows-modern-producer)" | Add-Content -LiteralPath $provenance
+          "cargo_features=main crate default (windows-modern-producer); native/frb selects software-vpx and official-account; account business remains in pinned official Dart" | Add-Content -LiteralPath $provenance
+          "vcpkg_commit=$env:VCPKG_COMMIT_ID" | Add-Content -LiteralPath $provenance
+          "libvpx=1.15.2 static, built by the pinned overlay native/frb/vcpkg-overlays/libvpx (res/vcpkg/libvpx of upstream rustdesk 092a961b629d318fe290eeafac0cd214a1e9deeb) on the x64-windows-static-md triplet" | Add-Content -LiteralPath $provenance
+          "cpu_frame_path=EventToUI::Rgba through session_get_rgba_size and the engine-owned pointer; no GPU or texture capability is advertised by this artifact" | Add-Content -LiteralPath $provenance
           foreach ($source in @(
             'native/windows-capture/rd_desktop_duplication.cpp',
-            'native/windows-nvenc/windows_nvenc.cpp'
+            'native/windows-nvenc/windows_nvenc.cpp',
+            'native/windows-input/windows_input.cpp',
+            'native/windows-decoder/rd_windows_decoder.cpp',
+            'native/frb/include/rd_engine_windows_texture.h',
+            'native/frb/UPSTREAM.lock',
+            'native/frb/vcpkg-overlays/libvpx/ORIGIN.txt',
+            'native/frb/vcpkg-overlays/libvpx/portfile.cmake',
+            'native/frb/vcpkg-overlays/libvpx/vcpkg.json',
+            'native/frb/patches/official-client-cpu-rgba.patch',
+            'native/frb/build-windows.ps1',
+            'native/frb/patches/official-client-flutter-lock.patch',
+            'native/frb/patches/official-client-account-safety.patch',
+            'native/frb/patches/official-client-account-storage.patch',
+            'native/frb/patches/official-client-lan-actions.patch',
+            'native/frb/patches/official-client-product-scope.patch',
+            'native/frb/patches/official-client-host-control.patch',
+            'native/frb/src/localization/UPSTREAM.json',
+            'native/windows-input/MAP_ADAPTER.json',
+            'src/host.rs',
+            'src/host/control.rs',
+            'src/authentication.rs',
+            'src/session.rs',
+            'src/platform/windows_input.rs',
+            'native/frb/src/host_bridge.rs',
+            'src/lan/UPSTREAM.json',
+            'vendor/default-net/UPSTREAM.json',
+            'src/official_account/UPSTREAM.json',
+            'vendor/secret-service/UPSTREAM.json',
+            'vendor/secret-service/no-prompt-create.patch',
+            'vendor/rustdesk/UPSTREAM.json',
+            'vendor/rustdesk/ohos-and-pins.patch',
+            'vendor/libsodium-sys/UPSTREAM.json',
+            'vendor/libsodium-sys/archive-directory-lock.patch',
+            'scripts/verify-native-provenance.sh'
           )) {
             $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
             "sha256=$hash path=$source" | Add-Content -LiteralPath $provenance
           }
           foreach ($origin in @(
             'native/windows-capture/ORIGIN.md',
-            'native/windows-nvenc/ORIGIN.md'
+            'native/windows-nvenc/ORIGIN.md',
+            'native/frb/vcpkg-overlays/libvpx/ORIGIN.txt'
           )) {
             if (Test-Path -LiteralPath $origin -PathType Leaf) {
               "--- $origin ---" | Add-Content -LiteralPath $provenance
@@ -120,7 +292,105 @@ jobs:
           "RD_ENGINE_ARTIFACTS=$output" >> $env:GITHUB_ENV
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rd-engine-windows-x64-${{ github.sha }}
+          name: rd-engine-frb-windows-x64-${{ github.sha }}
           path: ${{ env.RD_ENGINE_ARTIFACTS }}
           if-no-files-found: error
           retention-days: 14
+
+  verify-generated-bindings:
+    # The paired bindings are the ABI the official client compiles against, so
+    # the regeneration check runs in the pinned generation environment: macOS
+    # (where the committed halves were produced) with the official consumer SDK
+    # Flutter 3.24.5 / Dart 3.5.4 recorded in native/frb/UPSTREAM.lock and named
+    # by native/frb/CLIENT_SURFACE.md. The job byte-compares both halves; it
+    # uploads and caches nothing, and no step here may cache or upload
+    # .dart_tool.
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Install the pinned Flutter/Dart SDK
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          # No pub cache: dart pub get has to resolve from the committed
+          # native/frb/dart/pubspec.lock, and no cache may carry .dart_tool.
+          cache: false
+      - name: Verify native source provenance
+        shell: bash
+        run: bash scripts/verify-native-provenance.sh --require-tracked
+      - name: Require the generator inputs and outputs to be tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- \
+            native/frb/generate-bindings.sh \
+            native/frb/UPSTREAM.lock \
+            native/frb/src/client_compat.rs \
+            native/frb/src/bridge_generated.rs \
+            native/frb/src/bridge_generated.io.rs \
+            native/frb/dart/pubspec.yaml \
+            native/frb/dart/pubspec.lock \
+            native/frb/dart/lib/generated_bridge.dart \
+            native/frb/dart/lib/generated_bridge.freezed.dart
+      - name: Install the pinned generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^Generator: flutter_rust_bridge_codegen //p' native/frb/UPSTREAM.lock | sed -n '1p')"
+          if [ "$pin" != "$FRB_CODEGEN_VERSION" ]; then
+            echo "this workflow installs flutter_rust_bridge_codegen $FRB_CODEGEN_VERSION, native/frb/UPSTREAM.lock pins '$pin'" >&2
+            exit 1
+          fi
+          cargo install flutter_rust_bridge_codegen --version "$FRB_CODEGEN_VERSION" \
+            --features uuid --locked --root "$RUNNER_TEMP/frb-codegen"
+          echo "FRB_CODEGEN=$RUNNER_TEMP/frb-codegen/bin/flutter_rust_bridge_codegen" >> "$GITHUB_ENV"
+      - name: Regenerate the paired bindings
+        # native/frb/generate-bindings.sh enforces the pinned generator and the
+        # pinned Dart SDK, and refuses a dart pub get that re-resolves
+        # native/frb/dart/pubspec.lock.
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart --version
+          bash native/frb/generate-bindings.sh
+      - name: Reject any generated binding difference
+        # Exact match, no tolerance: a formatting-only or dependency-driven diff
+        # is a different artifact than the committed one.
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(
+            native/frb/src/bridge_generated.rs
+            native/frb/src/bridge_generated.io.rs
+            native/frb/dart/lib/generated_bridge.dart
+            native/frb/dart/lib/generated_bridge.freezed.dart
+            native/frb/dart/pubspec.lock
+          )
+          git diff --exit-code -- "${paths[@]}"
+          status="$(git status --porcelain --untracked-files=all -- "${paths[@]}")"
+          if [ -n "$status" ]; then
+            echo 'the generator added, removed or rewrote a committed artifact:' >&2
+            echo "$status" >&2
+            exit 1
+          fi
+          echo 'regenerated bindings match the committed bytes'
+      - name: Explain a failed comparison
+        if: failure()
+        shell: bash
+        run: |
+          echo 'regeneration did not reproduce the committed paired bindings:' >&2
+          echo '  - the generator or the Dart SDK differs from native/frb/UPSTREAM.lock (Generator, Dart SDK)' >&2
+          echo '  - the rustfmt of the active toolchain differs from the one the committed Rust half was formatted with' >&2
+          echo '  - dart pub get re-resolved native/frb/dart/pubspec.lock' >&2
+          echo '  - src/client_compat.rs changed without regenerating both halves' >&2
+          git --no-pager diff --stat -- native/frb/src native/frb/dart/lib native/frb/dart/pubspec.lock || true

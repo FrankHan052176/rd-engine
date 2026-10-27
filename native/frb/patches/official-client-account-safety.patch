@@ -1,0 +1,4036 @@
+# Official-client scoped account lifecycle and strict HTTP integration patch.
+# Target: rustdesk/rustdesk 092a961b629d318fe290eeafac0cd214a1e9deeb.
+# Apply from the pinned client's flutter/ directory with git apply.
+# Scope: nine exact-pin Dart files plus three integration-owned Dart helpers.
+# No full application, generated binding, manifest, runner or media/input path
+# is included. model.dart changes only its account-audit consumer and import.
+# The real password/verification/OIDC, legacy/shared address-book CRUD, group
+# pagination and UI layouts remain official Dart business, not Rust rewrites.
+#
+# Integration adaptations (not claimed to be upstream transplants):
+# - An async atomic native snapshot captures receipt/API/token/user-info and
+#   separate Ab/Group cache receipts. Local generation checks supplement, never
+#   replace, native authoritative receipt comparison across windows/processes.
+# - A bounded account-write/transition queue drains already-submitted native
+#   work. Deferred continuations retain the originating lease, not a later
+#   getter's credentials. Only the same successful mutation adopts a successor.
+# - Cache load/model publication checks the originating kind receipt. Saves and
+#   clears use that kind's CAS receipt and retain only their returned successor.
+#   Ab deserialize remains model-only; cache clear does not log out the account.
+# - OIDC start retains its returned attempt for every poll/cancel. Success may
+#   adopt only a snapshot matching returned account_scope and response token.
+# - Logout keeps old URL/headers/receipt through its reset; foreign/newer login
+#   cannot be cleared by a delayed logout response. Trust/server changes drain
+#   the local queue before the official ordered option writes.
+# - Native and optional non-web Dart HTTP require captured-scope HTTPS, reject
+#   redirects and never override certificate trust. Native enforcement remains
+#   required. Sensitive response/body/user-info/header/query diagnostics are
+#   removed; authorized business response data is preserved.
+#
+# Approved additive bridge prerequisites (Main owns paired code generation):
+# mainAccountSnapshot; mainAccountSetLocalOption; mainAccountCache;
+# mainAccountAuthScoped; mainAccountAuthCancelScoped; mainAccountAuthResultScoped.
+# Legacy native account mutation/cache/OIDC entrypoints must fail explicitly.
+# No new Dart dependency, request ID, generated API shim or plaintext fallback.
+# The conditional web helper keeps the actual upstream JavaScript business
+# bridge and user-gesture OIDC ordering; it does not invent native receipts or
+# claim a new rd-engine web backend/native protected-storage implementation.
+#
+# Original exact-pin source hashes (Git blob, then SHA-256):
+# flutter/lib/common.dart
+#   b80e0b5f958071d288af1a1f84c095f2cfb892d9
+#   449c74fb07c86c9adf400002248d83a27b528dfc3e43e625e8277a26bd686f13
+# flutter/lib/common/widgets/dialog.dart
+#   98d7f6b4be6edc4a8e989b775d02794be07e763e
+#   0fe64cf56e2c28a49a52228f244b577b7e19f824d97d80edec549179b199141f
+# flutter/lib/common/widgets/login.dart
+#   826949456d4e4dd2a2371ce9f6cd371e44dc4208
+#   cba8ee99aae7dd6b383148441674efb06ef08dd5d4b57bd563e5ad56f609a66a
+# flutter/lib/common/widgets/toolbar.dart
+#   c3896b0972c3360df41fcc6b827f144c77913d60
+#   6cc6138f14ab527dc7aafc8bc1bc674f373f62f85f2b463c8eb38c39172fdb8f
+# flutter/lib/models/ab_model.dart
+#   001887c0c10bfabd68d6c464c6f8f5fecd0cad91
+#   2c0a08778636375c5e82a85c9cd106c3934478f7b5a883b008a1484b05f2a6fa
+# flutter/lib/models/group_model.dart
+#   d55cff453a024a0a19ae635c5c31fb5a7bf0a0df
+#   f58687b13f643c960682d8e879266a0a093bf8ac2d1c7f0e9bc1961765707fa1
+# flutter/lib/models/model.dart
+#   3572b9728ad8171e481ff3e06c5a26fa6045cbe3
+#   3dec2a0ca9d81af3a147a6bc5c94ac83f2ba123e4dfa28872aeede3e81bf4bc6
+# flutter/lib/models/user_model.dart
+#   405a9faddc9198215655ff7e359e6c6f5336e107
+#   559e8ca722023df915340573261eaea5f4c7aad350bcb6951961afbff3f22715
+# flutter/lib/utils/http_service.dart
+#   9c9624b56caf86309b3893afb2aea4ee205774b1
+#   8e1142b1d25c8287b317438b815a2b309c1d71e95615ba7e5123ab4794279bd5
+# New integration files: flutter/lib/utils/account_lifecycle.dart,
+# flutter/lib/utils/account_native.dart, flutter/lib/utils/account_web.dart.
+# Existing source remains under the upstream repository's license.
+#
+# Source provenance/applicability is not target-runtime acceptance. Main owns
+# paired bindings and compile/link/package integration. The user owns functional
+# testing; no functional/runtime/regression tests or testing infrastructure are
+# introduced or run by this patch author. No target support is inferred here.
+
+diff --git a/lib/common.dart b/lib/common.dart
+--- a/lib/common.dart
++++ b/lib/common.dart
+@@ -46,6 +46,7 @@
+ import 'package:flutter_hbb/native/common.dart'
+     if (dart.library.html) 'package:flutter_hbb/web/common.dart';
+ import 'package:flutter_hbb/utils/http_service.dart' as http;
++import 'package:flutter_hbb/utils/account_lifecycle.dart';
+ 
+ final globalKey = GlobalKey<NavigatorState>();
+ final navigationBarKey = GlobalKey();
+@@ -2726,10 +2727,9 @@
+   }
+ }
+ 
+-Map<String, String> getHttpHeaders() {
+-  return {
+-    'Authorization': 'Bearer ${bind.mainGetLocalOption(key: 'access_token')}'
+-  };
++Map<String, String> getHttpHeaders({required AccountLease account}) {
++  account.check();
++  return {'Authorization': 'Bearer ${account.token}'};
+ }
+ 
+ // Simple wrapper of built-in types for reference use.
+@@ -3625,20 +3625,28 @@
+       return false;
+     }
+   }
+-  final oldApiServer = await bind.mainGetApiServer();
+-
+-  // should set one by one
+-  await bind.mainSetOption(
+-      key: 'custom-rendezvous-server', value: config.idServer);
+-  await bind.mainSetOption(key: 'relay-server', value: config.relayServer);
+-  await bind.mainSetOption(key: 'api-server', value: config.apiServer);
+-  await bind.mainSetOption(key: 'key', value: config.key);
+-  final newApiServer = await bind.mainGetApiServer();
+-  if (oldApiServer.isNotEmpty &&
+-      oldApiServer != newApiServer &&
+-      gFFI.userModel.isLogin) {
+-    gFFI.userModel.logOut(apiServer: oldApiServer);
+-  }
++  await AccountLifecycle.transition(() async {
++    final settings = <String, String>{
++      'custom-rendezvous-server': config.idServer,
++      'relay-server': config.relayServer,
++      'api-server': config.apiServer,
++      'key': config.key,
++    };
++    var changed = false;
++    for (final entry in settings.entries) {
++      if (await bind.mainGetOption(key: entry.key) != entry.value) changed = true;
++    }
++    if (changed) {
++      // Log out before publishing any new server/trust option. logOut captures
++      // the old URL and headers, and its final reset stays inside this queue.
++      await gFFI.userModel.logOut();
++    }
++    // Preserve the official ordered option writes; the native owner also
++    // revokes its own context before each changed trust/server option.
++    for (final entry in settings.entries) {
++      await bind.mainSetOption(key: entry.key, value: entry.value);
++    }
++  });
+   return true;
+ }
+ 
+@@ -4218,7 +4226,7 @@
+     // https://github.com/rustdesk/rustdesk-server-pro/discussions/758
+     return utf8.decode(resp.bodyBytes, allowMalformed: true);
+   } catch (e) {
+-    debugPrint('Failed to decode response as UTF-8: $e');
++    debugPrint('Failed to decode response as UTF-8');
+     // Fallback to bodyString which handles encoding automatically
+     return resp.body;
+   }
+diff --git a/lib/common/widgets/dialog.dart b/lib/common/widgets/dialog.dart
+--- a/lib/common/widgets/dialog.dart
++++ b/lib/common/widgets/dialog.dart
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:convert';
++import 'package:flutter_hbb/utils/account_lifecycle.dart';
+ 
+ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+@@ -1645,38 +1646,43 @@
+   if (!showDialog) {
+     return false;
+   }
++  final account = await AccountLifecycle.capture();
++  account.check();
+   ffi.dialogManager.dismissAll();
+ 
+   Future<void> updateAuditNoteByGuid(String auditGuid, String note) async {
+-    debugPrint('Updating audit note for GUID: $auditGuid, note: $note');
++    debugPrint('Updating audit note');
+     try {
+-      final apiServer = await bind.mainGetApiServer();
++      await account.validate();
++      account.check();
++      final apiServer = account.apiServer;
+       if (apiServer.isEmpty) {
+         debugPrint('API server is empty, cannot update audit note');
+         return;
+       }
+       final url = '$apiServer/api/audit';
+-      var headers = getHttpHeaders();
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode({
+         'guid': auditGuid,
+         'note': note,
+       });
+ 
+-      final response = await http.put(
++      final response = (await account.wait(() => http.put(
+         Uri.parse(url),
+         headers: headers,
+         body: body,
+-      );
++        account: account,
++      ))).value;
+ 
+       if (response.statusCode == 200) {
+-        debugPrint('Successfully updated audit note for GUID: $auditGuid');
++        debugPrint('Successfully updated audit note');
+       } else {
+         debugPrint(
+-            'Failed to update audit note. Status: ${response.statusCode}, Body: ${response.body}');
++            'Failed to update audit note. Status: ${response.statusCode}');
+       }
+     } catch (e) {
+-      debugPrint('Error updating audit note: $e');
++      debugPrint('Error updating audit note');
+     }
+   }
+ 
+diff --git a/lib/common/widgets/login.dart b/lib/common/widgets/login.dart
+--- a/lib/common/widgets/login.dart
++++ b/lib/common/widgets/login.dart
+@@ -11,6 +11,7 @@
+ import 'package:url_launcher/url_launcher.dart';
+ 
+ import '../../common.dart';
++import '../../utils/account_lifecycle.dart';
+ import './dialog.dart';
+ import './oidc_auth_status.dart';
+ 
+@@ -156,6 +157,8 @@
+   int _authAttempt = 0;
+   bool _closed = false;
+   final _cancelInProgress = false.obs;
++  AccountLease? account;
++  Future<AccountLease>? _webAccount;
+ 
+   bool _isCurrent(int authAttempt, String op) {
+     return !_closed && authAttempt == _authAttempt && curOP.value == op;
+@@ -178,13 +181,19 @@
+         return;
+       }
+       try {
+-        await bind.mainAccountAuthCancel();
++        final owner = await gFFI.userModel.beginLogin();
++        account = owner;
+         if (!_isCurrent(authAttempt, op)) {
+           completer.complete(false);
+           return;
+         }
+-        await bind.mainAccountAuth(op: op, rememberMe: true);
+-        completer.complete(_isCurrent(authAttempt, op));
++        await owner.startAuth(op, true);
++        if (!_isCurrent(authAttempt, op)) {
++          await owner.cancelAuth();
++          completer.complete(false);
++          return;
++        }
++        completer.complete(true);
+       } catch (error, stackTrace) {
+         completer.completeError(error, stackTrace);
+       }
+@@ -193,8 +202,25 @@
+   }
+ 
+   Future<bool> _startWeb(int authAttempt, String op) async {
+-    await bind.mainAccountAuth(op: op, rememberMe: true);
+-    return _isCurrent(authAttempt, op);
++    final pending = _prepareWebAuth(op);
++    _webAccount = pending;
++    final owner = await pending;
++    // Replacement owns the shared JS backend. Only current close/cancel may
++    // cancel it, after awaiting this interaction's pending owner.
++    if (!_isCurrent(authAttempt, op)) return false;
++    account = owner;
++    return true;
++  }
++
++  Future<AccountLease> _prepareWebAuth(String op) async {
++    // Capture before the immediate web call; do not move its popup out of the
++    // browser's original user gesture. rd-engine itself is a native backend.
++    final captured = AccountLifecycle.capture(authentication: true);
++    final started = AccountLease.startWebAuth(op, true);
++    final owner = await captured;
++    (await owner.wait(() => started)).value;
++    owner.acceptWebAuth();
++    return owner;
+   }
+ 
+   bool canStart() {
+@@ -210,7 +236,12 @@
+     _cancelInProgress.value = true;
+     _pendingOperation = _pendingOperation.then((_) async {
+       try {
+-        await bind.mainAccountAuthCancel();
++        final owner = isWeb ? await _webAccount : account;
++        if (owner == null || !owner.hasAuthAttempt) {
++          completer.complete(false);
++          return;
++        }
++        await owner.cancelAuth();
+         completer.complete(_isCurrent(authAttempt, op));
+       } catch (error, stackTrace) {
+         completer.completeError(error, stackTrace);
+@@ -223,10 +254,13 @@
+ 
+   Future<void> _cancelBackend() async {
+     try {
+-      await bind.mainAccountAuthCancel();
++      final owner = isWeb ? await _webAccount : account;
++      if (owner == null || !owner.hasAuthAttempt) return;
++      await owner.cancelAuth();
++    } on AccountChanged {
++      return;
+     } catch (error, stackTrace) {
+-      debugPrint('Failed to cancel account authentication $error');
+-      debugPrintStack(stackTrace: stackTrace);
++      debugPrint('Failed to cancel account authentication');
+     }
+   }
+ 
+@@ -252,7 +286,8 @@
+ class WidgetOP extends StatefulWidget {
+   final ConfigOP config;
+   final RxString curOP;
+-  final Function(Map<String, dynamic>) cbLogin;
++  final Function(Map<String, dynamic>, AccountLease) cbLogin;
++  final AccountLease? Function() getAccount;
+   final Future<bool> Function(String) startAuth;
+   final Future<bool> Function(String) cancelAuth;
+   final bool Function() canStartAuth;
+@@ -261,6 +296,7 @@
+     required this.config,
+     required this.curOP,
+     required this.cbLogin,
++    required this.getAccount,
+     required this.startAuth,
+     required this.cancelAuth,
+     required this.canStartAuth,
+@@ -279,6 +315,7 @@
+   String _stateMsg = '';
+   String _failedMsg = '';
+   String _url = '';
++  AccountLease? _account;
+ 
+   @override
+   void dispose() {
+@@ -318,7 +355,6 @@
+     } catch (error, stackTrace) {
+       debugPrint(
+           'Failed to open OIDC authentication URL (${error.runtimeType})');
+-      debugPrintStack(stackTrace: stackTrace);
+     }
+   }
+ 
+@@ -331,7 +367,6 @@
+     } catch (error, stackTrace) {
+       debugPrint(
+           'Failed to copy OIDC authentication URL (${error.runtimeType})');
+-      debugPrintStack(stackTrace: stackTrace);
+       showToast(translate('Failed'));
+     }
+   }
+@@ -344,6 +379,7 @@
+     if (!mounted ||
+         authAttempt != _authAttempt ||
+         widget.curOP.value != widget.config.op ||
++        _account?.isCurrent != true ||
+         authUrl.isEmpty ||
+         _url != authUrl) {
+       return;
+@@ -359,7 +395,8 @@
+   bool _isCurrentAuthAttempt(int authAttempt) {
+     return mounted &&
+         authAttempt == _authAttempt &&
+-        widget.curOP.value == widget.config.op;
++        widget.curOP.value == widget.config.op &&
++        (_account == null || _account!.isCurrent);
+   }
+ 
+   Future<void> _handleAuthFailure(
+@@ -367,20 +404,24 @@
+     Object error,
+     String operation,
+   ) async {
+-    debugPrint('Failed to $operation $error');
+-    if (!_isCurrentAuthAttempt(authAttempt)) {
++    if (!mounted || authAttempt != _authAttempt ||
++        widget.curOP.value != widget.config.op) return;
++    _updateTimer?.cancel();
++    if (error is AccountChanged || _account?.isCurrent == false) {
++      setState(() {
++        _invalidateAuthAttempt();
++        widget.curOP.value = '';
++        _failedMsg = 'Account changed; operation cancelled';
++      });
+       return;
+     }
+-    _updateTimer?.cancel();
++    debugPrint('Account authentication operation failed');
+     setState(() => _failedMsg = 'Failed');
+     try {
+       final canceled = await widget.cancelAuth(widget.config.op);
+-      if (!canceled || !_isCurrentAuthAttempt(authAttempt)) {
+-        return;
+-      }
+-    } catch (cancelError, stackTrace) {
+-      debugPrint('Failed to cancel account authentication $cancelError');
+-      debugPrintStack(stackTrace: stackTrace);
++      if (!canceled || !_isCurrentAuthAttempt(authAttempt)) return;
++    } catch (_) {
++      debugPrint('Failed to cancel account authentication');
+       return;
+     }
+     setState(() {
+@@ -396,15 +437,17 @@
+       _updateTimer?.cancel();
+       return Future<void>.value();
+     }
+-    return bind.mainAccountAuthResult().then<void>((result) {
++    final account = _account;
++    if (account == null || !account.isCurrent) {
++      return _handleAuthFailure(authAttempt, const AccountChanged(),
++          'query account authentication');
++    }
++    return account.pollAuth().then<void>((resultMap) {
++      account.check();
+       if (!mounted ||
+           authAttempt != _authAttempt ||
+           widget.curOP.value != widget.config.op ||
+-          result.isEmpty) {
+-        return;
+-      }
+-      final resultMap = jsonDecode(result);
+-      if (resultMap == null) {
++          resultMap.isEmpty) {
+         return;
+       }
+       final String backendStateMsg = resultMap['state_msg'];
+@@ -420,7 +463,7 @@
+         _updateTimer?.cancel();
+         _invalidateAuthAttempt();
+         widget.curOP.value = '';
+-        widget.cbLogin(authBody as Map<String, dynamic>);
++        widget.cbLogin(authBody as Map<String, dynamic>, account);
+         return;
+       }
+       final stateChanged = _stateMsg != stateMsg || _failedMsg != failedMsg;
+@@ -454,6 +497,7 @@
+ 
+   int _resetState() {
+     _updateTimer?.cancel();
++    _account = null;
+     setState(() {
+       _invalidateAuthAttempt();
+       _stateMsg = _waitingAccountAuth;
+@@ -496,6 +540,8 @@
+                 widget.curOP.value != widget.config.op) {
+               return;
+             }
++            _account = widget.getAccount();
++            if (_account == null || !_account!.isCurrent) return;
+             _beginQueryState(authAttempt);
+           },
+         ),
+@@ -580,7 +626,8 @@
+ class LoginWidgetOP extends StatelessWidget {
+   final List<ConfigOP> ops;
+   final RxString curOP;
+-  final Function(Map<String, dynamic>) cbLogin;
++  final Function(Map<String, dynamic>, AccountLease) cbLogin;
++  final AccountLease? Function() getAccount;
+   final Future<bool> Function(String) startAuth;
+   final Future<bool> Function(String) cancelAuth;
+   final bool Function() canStartAuth;
+@@ -590,6 +637,7 @@
+     required this.ops,
+     required this.curOP,
+     required this.cbLogin,
++    required this.getAccount,
+     required this.startAuth,
+     required this.cancelAuth,
+     required this.canStartAuth,
+@@ -603,6 +651,7 @@
+                 config: op,
+                 curOP: curOP,
+                 cbLogin: cbLogin,
++                getAccount: getAccount,
+                 startAuth: startAuth,
+                 cancelAuth: cancelAuth,
+                 canStartAuth: canStartAuth,
+@@ -720,8 +769,10 @@
+ }
+ 
+ Future<bool?> _openLoginDialog() async {
++  final initialAccount = await AccountLifecycle.capture();
++  initialAccount.check();
+   var username =
+-      TextEditingController(text: UserModel.getLocalUserInfo()?['name'] ?? '');
++      TextEditingController(text: UserModel.getLocalUserInfo(initialAccount)?['name'] ?? '');
+   var password = TextEditingController();
+   final userFocusNode = FocusNode()..requestFocus();
+   Timer(Duration(milliseconds: 100), () => userFocusNode..requestFocus());
+@@ -729,22 +780,42 @@
+   String? usernameMsg;
+   String? passwordMsg;
+   var isInProgress = false;
++  var dialogClosed = false;
++  Object? passwordInteraction;
++  AccountLease? passwordAccount;
++  AccountLease? dialogAccount;
+   final oidcAuth = _OidcAuthController();
+   final curOP = oidcAuth.curOP;
+   // Track hover state for the close icon
+   bool isCloseHovered = false;
+ 
++  bool ownsPasswordInteraction(Object interaction) =>
++      !dialogClosed && identical(passwordInteraction, interaction);
++
++  void retirePasswordDialog() {
++    dialogClosed = true;
++    passwordInteraction = null;
++    final account = passwordAccount;
++    passwordAccount = null;
++    if (account != null) AccountLifecycle.retire(account);
++  }
++
+   final loginOptions = [].obs;
+   final loginOptionsError = Rxn<Object>();
+   final loginOptionsInProgress = false.obs;
+   fetchLoginOptions() async {
++    final account = await AccountLifecycle.capture();
++    account.check();
+     loginOptionsInProgress.value = true;
+     try {
+-      loginOptions.value = await UserModel.queryOidcLoginOptions();
++      loginOptions.value = (await account.wait(() => UserModel.queryOidcLoginOptions())).value;
+       loginOptionsError.value = null;
+-    } catch (e) {
+-      debugPrint("queryOidcLoginOptions failed: $e");
+-      loginOptionsError.value = e;
++    } on AccountChanged {
++      return;
++    } catch (_) {
++      account.check();
++      debugPrint('Failed to query account login options');
++      loginOptionsError.value = 'Failed to query account login options';
+     } finally {
+       loginOptionsInProgress.value = false;
+     }
+@@ -766,21 +837,30 @@
+     });
+ 
+     onDialogCancel() {
++      retirePasswordDialog();
+       isInProgress = false;
+       close(false);
+     }
+ 
+     handleLoginResponse(LoginResponse resp, bool storeIfAccessToken,
+-        void Function([dynamic])? close) async {
++        void Function([dynamic])? close, AccountLease account,
++        {Object? interaction}) async {
++      void checkResponseOwner() {
++        if (interaction != null && !ownsPasswordInteraction(interaction)) {
++          throw const AccountChanged();
++        }
++        account.check();
++      }
++
++      checkResponseOwner();
+       switch (resp.type) {
+         case HttpType.kAuthResTypeToken:
+           if (resp.access_token != null) {
+-            if (storeIfAccessToken) {
+-              await bind.mainSetLocalOption(
+-                  key: 'access_token', value: resp.access_token!);
+-              await bind.mainSetLocalOption(
+-                  key: 'user_info', value: jsonEncode(resp.user ?? {}));
+-            }
++            (await account.wait(() => gFFI.userModel.completeLogin(resp,
++                storeToken: storeIfAccessToken))).value;
++            checkResponseOwner();
++            passwordAccount = null;
++            dialogAccount = account;
+             if (close != null) {
+               close(true);
+             }
+@@ -798,10 +878,11 @@
+             passwordMsg = "Failed, bad tfa type from server";
+           }
+           if (isEmailVerification != null) {
++            passwordAccount = null; // The verification dialog owns this attempt.
+             if (isMobile) {
+               if (close != null) close(null);
+               verificationCodeDialog(
+-                  resp.user, resp.secret, isEmailVerification);
++                  resp.user, resp.secret, isEmailVerification, account: account);
+             } else {
+               setState(() => isInProgress = false);
+               // Workaround for web, close the dialog first, then show the verification code dialog.
+@@ -809,8 +890,11 @@
+               // Not sure why this happens.
+               if (isWeb && close != null) close(null);
+               final res = await verificationCodeDialog(
+-                  resp.user, resp.secret, isEmailVerification);
++                  resp.user, resp.secret, isEmailVerification, account: account);
++              account.check();
+               if (res == true) {
++                if (!isWeb) checkResponseOwner();
++                dialogAccount = account;
+                 if (!isWeb && close != null) close(false);
+                 return;
+               }
+@@ -824,7 +908,7 @@
+     }
+ 
+     onLogin() async {
+-      if (curOP.value.isNotEmpty || isInProgress) {
++      if (dialogClosed || curOP.value.isNotEmpty || isInProgress) {
+         return;
+       }
+       // validate
+@@ -836,24 +920,49 @@
+         setState(() => passwordMsg = translate('Password missed'));
+         return;
+       }
++      // Own the interaction before beginLogin can yield, independently of the
++      // lease which may later belong to the verification dialog.
++      final interaction = Object();
++      passwordInteraction = interaction;
+       curOP.value = 'rustdesk';
+       setState(() => isInProgress = true);
++      AccountLease? account;
+       try {
+-        final resp = await gFFI.userModel.login(LoginRequest(
++        final owner = await gFFI.userModel.beginLogin();
++        account = owner;
++        if (!ownsPasswordInteraction(interaction)) {
++          AccountLifecycle.retire(owner);
++          return;
++        }
++        passwordAccount = owner;
++        final resp = (await owner.wait(() async => gFFI.userModel.login(LoginRequest(
+             username: username.text,
+             password: password.text,
+-            id: await bind.mainGetMyId(),
+-            uuid: await bind.mainGetUuid(),
++            id: (await owner.wait(() => bind.mainGetMyId())).value,
++            uuid: (await owner.wait(() => bind.mainGetUuid())).value,
+             autoLogin: true,
+-            type: HttpType.kAuthReqTypeAccount));
+-        await handleLoginResponse(resp, true, close);
++            type: HttpType.kAuthReqTypeAccount), account: owner))).value;
++        await handleLoginResponse(resp, true, close, owner,
++            interaction: interaction);
++      } on AccountChanged {
++        return;
+       } on RequestException catch (err) {
++        if (!ownsPasswordInteraction(interaction) || account?.isCurrent != true) return;
+         passwordMsg = translate(err.cause);
+-      } catch (err) {
+-        passwordMsg = "Unknown Error: $err";
+-      }
+-      curOP.value = '';
+-      setState(() => isInProgress = false);
++      } catch (_) {
++        if (!ownsPasswordInteraction(interaction) ||
++            (account != null && !account.isCurrent)) return;
++        passwordMsg = 'Account login failed';
++      } finally {
++        // Verification cancellation retires its lease, not this interaction.
++        // Do not let that retirement leave the parent busy or settle a retry.
++        if (ownsPasswordInteraction(interaction)) {
++          passwordInteraction = null;
++          passwordAccount = null;
++          curOP.value = '';
++          if (context.mounted) setState(() => isInProgress = false);
++        }
++      }
+     }
+ 
+     thirdAuthWidget() => Obx(() {
+@@ -910,20 +1019,20 @@
+                   startAuth: oidcAuth.start,
+                   cancelAuth: oidcAuth.cancelCurrent,
+                   canStartAuth: oidcAuth.canStart,
+-                  cbLogin: (Map<String, dynamic> authBody) async {
+-                    LoginResponse? resp;
++                  getAccount: () => oidcAuth.account,
++                  cbLogin: (Map<String, dynamic> authBody, AccountLease account) async {
+                     try {
+-                      // access_token is already stored in the rust side.
+-                      resp =
+-                          gFFI.userModel.getLoginResponseFromAuthBody(authBody);
+-                    } catch (e) {
+-                      debugPrint(
+-                          'Failed to parse oidc login body: "$authBody"');
+-                    }
+-                    close(true);
+-
+-                    if (resp != null) {
+-                      handleLoginResponse(resp, false, null);
++                      account.check();
++                      // The native OIDC result is published after protected commit.
++                      final resp = gFFI.userModel.getLoginResponseFromAuthBody(
++                          authBody, account: account);
++                      await handleLoginResponse(resp, false, close, account);
++                    } on AccountChanged {
++                      return;
++                    } catch (_) {
++                      if (!account.isCurrent || !context.mounted) return;
++                      debugPrint('Failed to process account authentication');
++                      setState(() => passwordMsg = 'Account login failed');
+                     }
+                   },
+                 ),
+@@ -991,17 +1100,25 @@
+       onCancel: onDialogCancel,
+       onSubmit: onLogin,
+     );
+-  }).whenComplete(oidcAuth.close);
+-
+-  if (res != null) {
+-    await UserModel.updateOtherModels();
++  }).whenComplete(() async {
++    retirePasswordDialog();
++    await oidcAuth.close();
++  });
++
++  final account = dialogAccount;
++  if (res != null && account != null && account.isCurrent) {
++    (await account.wait(() => UserModel.updateOtherModels(account: account))).value;
+   }
+ 
+   return res;
+ }
+ 
+ Future<bool?> verificationCodeDialog(
+-    UserPayload? user, String? secret, bool isEmailVerification) async {
++    UserPayload? user, String? secret, bool isEmailVerification,
++    {AccountLease? account}) async {
++  final owner = account ?? await AccountLifecycle.capture(authentication: true);
++  owner.check();
++  var completed = false;
+   var autoLogin = true;
+   var isInProgress = false;
+   String? errorText;
+@@ -1010,24 +1127,25 @@
+ 
+   final res = await gFFI.dialogManager.show<bool>((setState, close, context) {
+     void onVerify() async {
++      if (isInProgress || !owner.isCurrent) return;
+       setState(() => isInProgress = true);
+ 
+       try {
+-        final resp = await gFFI.userModel.login(LoginRequest(
++        final resp = (await owner.wait(() async => gFFI.userModel.login(LoginRequest(
+             verificationCode: code.text,
+             tfaCode: isEmailVerification ? null : code.text,
+             secret: secret,
+             username: user?.name,
+-            id: await bind.mainGetMyId(),
+-            uuid: await bind.mainGetUuid(),
++            id: (await owner.wait(() => bind.mainGetMyId())).value,
++            uuid: (await owner.wait(() => bind.mainGetUuid())).value,
+             autoLogin: autoLogin,
+-            type: HttpType.kAuthReqTypeEmailCode));
++            type: HttpType.kAuthReqTypeEmailCode), account: owner))).value;
+ 
+         switch (resp.type) {
+           case HttpType.kAuthResTypeToken:
+             if (resp.access_token != null) {
+-              await bind.mainSetLocalOption(
+-                  key: 'access_token', value: resp.access_token!);
++              (await owner.wait(() => gFFI.userModel.completeLogin(resp, storeToken: true))).value;
++              completed = true;
+               close(true);
+               return;
+             }
+@@ -1036,12 +1154,17 @@
+             errorText = "Failed, bad response from server";
+             break;
+         }
++      } on AccountChanged {
++        if (context.mounted) close(false);
++        return;
+       } on RequestException catch (err) {
++        if (!owner.isCurrent) return;
+         errorText = translate(err.cause);
+-      } catch (err) {
+-        errorText = "Unknown Error: $err";
+-      }
+-
++      } catch (_) {
++        if (!owner.isCurrent) return;
++        errorText = 'Account verification failed';
++      }
++      if (!context.mounted) return;
+       setState(() => isInProgress = false);
+     }
+ 
+@@ -1102,10 +1225,11 @@
+           dialogButton("Verify", onPressed: getOnSubmit()),
+         ]);
+   });
++  if (!completed) AccountLifecycle.retire(owner);
+   // For verification code, desktop update other models in login dialog, mobile need to close login dialog first,
+   // otherwise the soft keyboard will jump out on each key press, so mobile update in verification code dialog.
+-  if (isMobile && res == true) {
+-    await UserModel.updateOtherModels();
++  if (isMobile && res == true && owner.isCurrent) {
++    (await owner.wait(() => UserModel.updateOtherModels(account: owner))).value;
+   }
+ 
+   return res;
+diff --git a/lib/common/widgets/toolbar.dart b/lib/common/widgets/toolbar.dart
+--- a/lib/common/widgets/toolbar.dart
++++ b/lib/common/widgets/toolbar.dart
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:convert';
++import 'package:flutter_hbb/utils/account_lifecycle.dart';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+@@ -486,9 +487,9 @@
+       TTextMenu(
+           child: Text(translate('Note')),
+           onPressed: () async {
+-            bool isLogin =
+-                bind.mainGetLocalOption(key: 'access_token').isNotEmpty;
+-            if (!isLogin) {
++            final account = await AccountLifecycle.capture();
++            account.check();
++            if (account.token.isEmpty) {
+               final res = await loginDialog();
+               if (res != true) return;
+               // Desktop: send message to main window to refresh login status
+diff --git a/lib/models/ab_model.dart b/lib/models/ab_model.dart
+--- a/lib/models/ab_model.dart
++++ b/lib/models/ab_model.dart
+@@ -12,6 +12,7 @@
+ import 'package:bot_toast/bot_toast.dart';
+ 
+ import '../utils/http_service.dart' as http;
++import '../utils/account_lifecycle.dart';
+ import '../common.dart';
+ 
+ final syncAbOption = 'sync-ab-with-recent-sessions';
+@@ -67,8 +68,41 @@
+ 
+   var _syncAllFromRecent = true;
+   var _syncFromRecentLock = false;
++  AccountLease? _syncOwner;
+   var _timerCounter = 0;
+   var _cacheLoadOnceFlag = false;
++  var _cacheRevision = 0;
++  AccountCacheOrigin? _cacheOrigin;
++
++  Future<AccountLease> _capture({bool resetStale = false, BaseAb? book}) async {
++    final revision = _cacheRevision;
++    final account = await AccountLifecycle.capture(cacheKind: 'ab');
++    account.check();
++    if (revision != _cacheRevision) throw const AccountChanged();
++    if (discardStaleData(account) && !resetStale) {
++      // A gesture on the old book must not become a mutation of the new one.
++      throw const AccountChanged();
++    }
++    if (book != null && !identical(book, _dummyAb) &&
++        !identical(addressbooks[book.name()], book)) {
++      throw const AccountChanged();
++    }
++    final currentRevision = _cacheRevision;
++    return AccountLifecycle.forCache(account, 'ab', ownerIsCurrent: () =>
++        currentRevision == _cacheRevision &&
++        (_cacheOrigin?.matches(account) ?? true));
++  }
++
++  // Forget obsolete UI data only. Observing B is not permission to clear B's
++  // native cache merely because this window still displayed A.
++  bool discardStaleData(AccountLease account) {
++    final scoped = AccountLifecycle.forCache(account, 'ab');
++    if (_cacheOrigin == null || _cacheOrigin!.matches(scoped)) return false;
++    _resetModel();
++    _callbackPeerUpdate();
++    _refreshTab();
++    return true;
++  }
+   var _pulledOnce = false;
+   var listInitialized = false;
+   var _maxPeerOneAb = 0;
+@@ -95,14 +129,34 @@
+     }
+   }
+ 
+-  reset() async {
+-    print("reset ab model");
++  Future<void> reset({AccountLease? account}) async {
++    final origin = account ?? await _capture();
++    await origin.validate();
++    origin.check();
++    final revision = _cacheRevision + 1;
++    final clearing = AccountLifecycle.forCache(origin, 'ab',
++        ownerIsCurrent: () => revision == _cacheRevision);
++    _resetModel();
++    await clearing.cache('ab', 'clear');
++  }
++
++  void _resetModel({bool resetCacheLoad = true}) {
++    _cacheRevision++;
++    _cacheOrigin = null;
+     addressbooks.clear();
+     _currentName.value = '';
+     _listPullError.value = '';
+     _pulledOnce = false;
+-    await bind.mainClearAb();
+     listInitialized = false;
++    if (resetCacheLoad) _cacheLoadOnceFlag = false;
++    _pulling = false;
++    _pullOwner = null;
++    _personalAbGuid = null;
++    _maxPeerOneAb = 0;
++    legacyMode.value = false;
++    _syncAllFromRecent = true;
++    _syncFromRecentLock = false;
++    _syncOwner = null;
+   }
+ 
+   void clearPullErrors() {
+@@ -117,30 +171,39 @@
+   /// If `force` is `ForcePullAb.current`, the function will only pull the current address book.
+   /// If `quiet` is true, the function will not display any notifications or errors.
+   var _pulling = false;
++  AccountLease? _pullOwner;
+   Future<void> pullAb(
+       {required ForcePullAb? force, required bool quiet}) async {
++    final account = await _capture(resetStale: true);
++    account.check();
+     if (bind.isDisableAb()) return;
+     if (!gFFI.userModel.isLogin) return;
+     if (gFFI.userModel.networkError.isNotEmpty) return;
+-    if (_pulling) return;
++    if (_pulling && _pullOwner?.isCurrent == true) return;
+     if (force == null && _pulledOnce) {
+       return;
+     }
+     _pulling = true;
++    _pullOwner = account;
+     if (!quiet) {
+       _listPullError.value = '';
+       current.pullError.value = '';
+     }
+     try {
+-      await _pullAb(force: force, quiet: quiet);
++      (await account.wait(() => _pullAb(force: force, quiet: quiet))).value;
+       _refreshTab();
++    } on AccountChanged {
++      return;
+     } catch (_) {}
++    account.check();
+     _pulling = false;
+     _pulledOnce = true;
+   }
+ 
+   Future<void> _pullAb(
+       {required ForcePullAb? force, required bool quiet}) async {
++    final account = await _capture();
++    account.check();
+     if (force == null && listInitialized && current.initialized) return;
+     debugPrint("pullAb, force: $force, quiet: $quiet");
+     if (!listInitialized || force == ForcePullAb.listAndCurrent) {
+@@ -148,12 +211,15 @@
+         // Read personal guid every time to avoid upgrading the server without closing the main window
+         _personalAbGuid = null;
+         // `true`: continue init. `false`: stop, error already recorded.
+-        if (!await _getPersonalAbGuid(quiet: quiet)) {
++        if (!(await account.wait(() => _getPersonalAbGuid(quiet: quiet))).value) {
+           return;
+         }
++        // This stamp comes from the successful list request, not a getter
++        // authorizing whichever books happened to remain in the window.
++        _cacheOrigin ??= account.cacheOrigin;
+         legacyMode.value = _personalAbGuid == null;
+         if (!legacyMode.value && _maxPeerOneAb == 0) {
+-          await _getAbSettings(quiet: quiet);
++          (await account.wait(() => _getAbSettings(quiet: quiet))).value;
+         }
+         if (_personalAbGuid != null) {
+           debugPrint("pull ab list");
+@@ -161,7 +227,7 @@
+           abProfiles.add(AbProfile(_personalAbGuid!, _personalAddressBookName,
+               gFFI.userModel.userName.value, null, ShareRule.read.value, null));
+           // get all address book name
+-          await _getSharedAbProfiles(abProfiles, quiet: quiet);
++          (await account.wait(() => _getSharedAbProfiles(abProfiles, quiet: quiet))).value;
+           addressbooks.removeWhere((key, value) =>
+               abProfiles.firstWhereOrNull((e) => e.name == key) == null);
+           for (int i = 0; i < abProfiles.length; i++) {
+@@ -186,55 +252,61 @@
+           trySetCurrentToLast();
+         }
+         if (!addressbooks.containsKey(_currentName.value)) {
+-          setCurrentName(legacyMode.value
++          (await account.wait(() => setCurrentName(legacyMode.value
+               ? _legacyAddressBookName
+-              : _personalAddressBookName);
+-        }
+-        // pull current address book
+-        await current.pullAb(quiet: quiet);
++              : _personalAddressBookName))).value;
++        } else {
++          // pull current address book
++          (await account.wait(() => current.pullAb(quiet: quiet))).value;
++        }
+         // try initialize personal address book
+         if (!current.isPersonal()) {
+           final personalAb = addressbooks[_personalAddressBookName];
+           if (personalAb != null && !personalAb.initialized) {
+-            await personalAb.pullAb(quiet: quiet);
++            (await account.wait(() => personalAb.pullAb(quiet: quiet))).value;
+           }
+         }
+       } catch (e) {
+-        debugPrint("pull ab list error: $e");
+-        _setListPullError(e, quiet: quiet);
++      account.check();
++        debugPrint("pull ab list error");
++        await _setListPullError(e, account: account, quiet: quiet);
+       }
+     } else if (listInitialized &&
+         (!current.initialized || force == ForcePullAb.current)) {
+       try {
+-        await current.pullAb(quiet: quiet);
++        (await account.wait(() => current.pullAb(quiet: quiet))).value;
+       } catch (e) {
+-        debugPrint("pull current Ab error: $e");
++      account.check();
++        debugPrint("pull current Ab error");
+       }
+     }
+     _callbackPeerUpdate();
+     if (listInitialized && current.initialized) {
+-      _saveCache();
+-    }
+-  }
+-
+-  void _setListPullError(Object err, {required bool quiet, int? statusCode}) {
++      (await account.wait(() => _saveCache(account))).value;
++    }
++  }
++
++  Future<void> _setListPullError(Object err,
++      {required AccountLease account, required bool quiet, int? statusCode}) async {
+     if (!quiet) {
+       _listPullError.value =
+           '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+     }
+     if (statusCode == 401) {
+-      gFFI.userModel.reset(resetOther: true);
++      await gFFI.userModel.reset(account: account, resetOther: true);
+     }
+   }
+ 
+   Future<bool> _getAbSettings({required bool quiet}) async {
++    final account = await _capture();
++    account.check();
+     int? statusCode;
+     try {
+-      final api = "${await bind.mainGetApiServer()}/api/ab/settings";
+-      var headers = getHttpHeaders();
++      final api = "${account.apiServer}/api/ab/settings";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       _setEmptyBody(headers);
+-      final resp = await http.post(Uri.parse(api), headers: headers);
++      final resp = (await account.wait(() => http.post(Uri.parse(api), headers: headers, account: account))).value;
+       statusCode = resp.statusCode;
+       if (statusCode == 404) {
+         debugPrint("HTTP 404, api server doesn't support shared address book");
+@@ -251,8 +323,9 @@
+       _maxPeerOneAb = json['max_peer_one_ab'] ?? 0;
+       return true;
+     } catch (err) {
+-      debugPrint('get ab settings err: ${err.toString()}');
+-      _setListPullError(err, quiet: quiet, statusCode: statusCode);
++      account.check();
++      debugPrint('get ab settings err');
++      await _setListPullError(err, account: account, quiet: quiet, statusCode: statusCode);
+     }
+     return false;
+   }
+@@ -260,13 +333,15 @@
+   /// Loads `/api/ab/personal`.
+   /// Returns `true` to continue init, `false` to stop after a real error.
+   Future<bool> _getPersonalAbGuid({required bool quiet}) async {
++    final account = await _capture();
++    account.check();
+     int? statusCode;
+     try {
+-      final api = "${await bind.mainGetApiServer()}/api/ab/personal";
+-      var headers = getHttpHeaders();
++      final api = "${account.apiServer}/api/ab/personal";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       _setEmptyBody(headers);
+-      final resp = await http.post(Uri.parse(api), headers: headers);
++      final resp = (await account.wait(() => http.post(Uri.parse(api), headers: headers, account: account))).value;
+       statusCode = resp.statusCode;
+       if (statusCode == 404) {
+         debugPrint("HTTP 404, current api server is legacy mode");
+@@ -285,8 +360,9 @@
+       // New server: guid is available, continue in non-legacy mode.
+       return true;
+     } catch (err) {
+-      debugPrint('get personal ab err: ${err.toString()}');
+-      _setListPullError(err, quiet: quiet, statusCode: statusCode);
++      account.check();
++      debugPrint('get personal ab err');
++      await _setListPullError(err, account: account, quiet: quiet, statusCode: statusCode);
+     }
+     // Real error: stop the current pull.
+     return false;
+@@ -294,7 +370,9 @@
+ 
+   Future<bool> _getSharedAbProfiles(List<AbProfile> profiles,
+       {required bool quiet}) async {
+-    final api = "${await bind.mainGetApiServer()}/api/ab/shared/profiles";
++    final account = await _capture();
++    account.check();
++    final api = "${account.apiServer}/api/ab/shared/profiles";
+     int? statusCode;
+     try {
+       var uri0 = Uri.parse(api);
+@@ -312,10 +390,10 @@
+               'current': current.toString(),
+               'pageSize': pageSize.toString(),
+             });
+-        var headers = getHttpHeaders();
++        var headers = getHttpHeaders(account: account);
+         headers['Content-Type'] = "application/json";
+         _setEmptyBody(headers);
+-        final resp = await http.post(uri, headers: headers);
++        final resp = (await account.wait(() => http.post(uri, headers: headers, account: account))).value;
+         statusCode = resp.statusCode;
+         if (statusCode == 404) {
+           debugPrint(
+@@ -350,8 +428,9 @@
+       } while (current * pageSize < total);
+       return true;
+     } catch (err) {
+-      debugPrint('_getSharedAbProfiles err: ${err.toString()}');
+-      _setListPullError(err, quiet: quiet, statusCode: statusCode);
++      account.check();
++      debugPrint('_getSharedAbProfiles err');
++      await _setListPullError(err, account: account, quiet: quiet, statusCode: statusCode);
+     }
+     return false;
+   }
+@@ -374,6 +453,8 @@
+ // #region peer
+   Future<String?> addIdToCurrent(String id, String alias, String password,
+       List<dynamic> tags, String note) async {
++    final account = await _capture();
++    account.check();
+     if (currentAbPeers.where((element) => element.id == id).isNotEmpty) {
+       return "$id already exists in address book $_currentName";
+     }
+@@ -389,7 +470,7 @@
+     if (note.isNotEmpty) {
+       peer['note'] = note;
+     }
+-    final ret = await addPeersTo([peer], _currentName.value);
++    final ret = (await account.wait(() => addPeersTo([peer], _currentName.value))).value;
+     _syncAllFromRecent = true;
+     return ret;
+   }
+@@ -399,6 +480,8 @@
+     List<Map<String, dynamic>> ps,
+     String name,
+   ) async {
++    final account = await _capture();
++    account.check();
+     final ab = addressbooks[name];
+     if (ab == null) {
+       return 'no such addressbook: $name';
+@@ -406,78 +489,91 @@
+     for (var p in ps) {
+       ab.removeNonExistentTags(p);
+     }
+-    String? errMsg = await ab.addPeers(ps);
+-    await pullNonLegacyAfterChange(name: name);
++    String? errMsg = (await account.wait(() => ab.addPeers(ps))).value;
++    (await account.wait(() => pullNonLegacyAfterChange(name: name))).value;
+     if (name == _currentName.value) {
+       _refreshTab();
+     }
+     _syncAllFromRecent = true;
+-    _saveCache();
++    (await account.wait(() => _saveCache(account))).value;
+     return errMsg;
+   }
+ 
+   Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) async {
+-    bool ret = await current.changeTagForPeers(ids, tags);
+-    await pullNonLegacyAfterChange();
++    final account = await _capture();
++    account.check();
++    bool ret = (await account.wait(() => current.changeTagForPeers(ids, tags))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
+     currentAbPeers.refresh();
+-    _saveCache();
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+   Future<bool> changeAlias({required String id, required String alias}) async {
+-    bool res = await current.changeAlias(id: id, alias: alias);
+-    await pullNonLegacyAfterChange();
++    final account = await _capture();
++    account.check();
++    bool res = (await account.wait(() => current.changeAlias(id: id, alias: alias))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
+     currentAbPeers.refresh();
+-    _saveCache();
++    (await account.wait(() => _saveCache(account))).value;
+     return res;
+   }
+ 
+   Future<bool> changeNote({required String id, required String note}) async {
+-    bool res = await current.changeNote(id: id, note: note);
+-    await pullNonLegacyAfterChange();
++    final account = await _capture();
++    account.check();
++    bool res = (await account.wait(() => current.changeNote(id: id, note: note))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
+     currentAbPeers.refresh();
+     // no need to save cache
+     return res;
+   }
+ 
+   Future<bool> changePersonalHashPassword(String id, String hash) async {
++    final account = await _capture();
++    account.check();
+     var ret = false;
+     final personalAb = addressbooks[_personalAddressBookName];
+     if (personalAb != null) {
+-      ret = await personalAb.changePersonalHashPassword(id, hash);
+-      await personalAb.pullAb(quiet: true);
++      ret = (await account.wait(() => personalAb.changePersonalHashPassword(id, hash))).value;
++      (await account.wait(() => personalAb.pullAb(quiet: true))).value;
+     } else {
+       final legacyAb = addressbooks[_legacyAddressBookName];
+       if (legacyAb != null) {
+-        ret = await legacyAb.changePersonalHashPassword(id, hash);
+-      }
+-    }
+-    _saveCache();
++        ret = (await account.wait(() => legacyAb.changePersonalHashPassword(id, hash))).value;
++      }
++    }
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+   Future<bool> changeSharedPassword(
+       String abName, String id, String password) async {
++    final account = await _capture();
++    account.check();
+     final ab = addressbooks[abName];
+     if (ab == null) return false;
+-    final ret = await ab.changeSharedPassword(id, password);
+-    await ab.pullAb(quiet: true);
++    final ret = (await account.wait(() => ab.changeSharedPassword(id, password))).value;
++    (await account.wait(() => ab.pullAb(quiet: true))).value;
+     return ret;
+   }
+ 
+   Future<bool> deletePeers(List<String> ids) async {
+-    final ret = await current.deletePeers(ids);
+-    await pullNonLegacyAfterChange();
++    final account = await _capture();
++    account.check();
++    final ret = (await account.wait(() => current.deletePeers(ids))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
+     currentAbPeers.refresh();
+     _refreshTab();
+-    _saveCache();
++    (await account.wait(() => _saveCache(account))).value;
+     if (legacyMode.value && current.isPersonal()) {
+       // non-legacy mode not add peers automatically
+       Future.delayed(Duration(seconds: 2), () async {
++        if (!account.isCurrent) return;
+         if (!shouldSyncAb()) return;
+         var hasSynced = false;
+         for (var id in ids) {
+-          if (await bind.mainPeerExists(id: id)) {
++          if ((await account.wait(() => bind.mainPeerExists(id: id))).value) {
+             hasSynced = true;
+             break;
+           }
+@@ -498,16 +594,20 @@
+ 
+ // #region tags
+   Future<bool> addTags(List<String> tagList) async {
++    final account = await _capture();
++    account.check();
+     tagList.removeWhere((e) => e == kUntagged);
+-    final ret = await current.addTags(tagList, {});
+-    await pullNonLegacyAfterChange();
+-    _saveCache();
++    final ret = (await account.wait(() => current.addTags(tagList, {}))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+   Future<bool> renameTag(String oldTag, String newTag) async {
+-    final ret = await current.renameTag(oldTag, newTag);
+-    await pullNonLegacyAfterChange();
++    final account = await _capture();
++    account.check();
++    final ret = (await account.wait(() => current.renameTag(oldTag, newTag))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
+     selectedTags.value = selectedTags.map((e) {
+       if (e == oldTag) {
+         return newTag;
+@@ -515,21 +615,25 @@
+         return e;
+       }
+     }).toList();
+-    _saveCache();
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+   Future<bool> setTagColor(String tag, Color color) async {
+-    final ret = await current.setTagColor(tag, color);
+-    await pullNonLegacyAfterChange();
+-    _saveCache();
++    final account = await _capture();
++    account.check();
++    final ret = (await account.wait(() => current.setTagColor(tag, color))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+   Future<bool> deleteTag(String tag) async {
+-    final ret = await current.deleteTag(tag);
+-    await pullNonLegacyAfterChange();
+-    _saveCache();
++    final account = await _capture();
++    account.check();
++    final ret = (await account.wait(() => current.deleteTag(tag))).value;
++    (await account.wait(() => pullNonLegacyAfterChange())).value;
++    (await account.wait(() => _saveCache(account))).value;
+     return ret;
+   }
+ 
+@@ -537,14 +641,26 @@
+ 
+ // #region sync from recent
+   Future<void> _syncFromRecent({bool push = true}) async {
+-    if (!_syncFromRecentLock) {
+-      _syncFromRecentLock = true;
+-      await _syncFromRecentWithoutLock(push: push);
+-      _syncFromRecentLock = false;
++    final account = await _capture();
++    account.check();
++    if (_syncFromRecentLock && _syncOwner?.isCurrent == true) return;
++    _syncFromRecentLock = true;
++    _syncOwner = account;
++    try {
++      (await account.wait(() => _syncFromRecentWithoutLock(push: push))).value;
++    } on AccountChanged {
++      return;
++    } finally {
++      if (identical(_syncOwner, account)) {
++        _syncFromRecentLock = false;
++        _syncOwner = null;
++      }
+     }
+   }
+ 
+   Future<void> _syncFromRecentWithoutLock({bool push = true}) async {
++    final account = await _capture();
++    account.check();
+     Future<List<Peer>> getRecentPeers() async {
+       try {
+         List<String> filteredPeerIDs;
+@@ -552,15 +668,15 @@
+           _syncAllFromRecent = false;
+           filteredPeerIDs = [];
+         } else {
+-          final new_stored_str = await bind.mainGetNewStoredPeers();
++          final new_stored_str = (await account.wait(() => bind.mainGetNewStoredPeers())).value;
+           if (new_stored_str.isEmpty) return [];
+           filteredPeerIDs = (jsonDecode(new_stored_str) as List<dynamic>)
+               .map((e) => e.toString())
+               .toList();
+           if (filteredPeerIDs.isEmpty) return [];
+         }
+-        final loadStr = await bind.mainLoadRecentPeersForAb(
+-            filter: jsonEncode(filteredPeerIDs));
++        final loadStr = (await account.wait(() => bind.mainLoadRecentPeersForAb(
++            filter: jsonEncode(filteredPeerIDs)))).value;
+         if (loadStr.isEmpty) {
+           return [];
+         }
+@@ -573,27 +689,32 @@
+         }
+         return recents;
+       } catch (e) {
+-        debugPrint('getRecentPeers: $e');
++      account.check();
++        debugPrint('getRecentPeers');
+       }
+       return [];
+     }
+ 
+     try {
+       if (!shouldSyncAb()) return;
+-      final recents = await getRecentPeers();
++      final recents = (await account.wait(() => getRecentPeers())).value;
+       if (recents.isEmpty) return;
+       debugPrint("sync from recent, len: ${recents.length}");
+       if (current.canWrite() && current.initialized) {
+-        await current.syncFromRecent(recents);
++        (await account.wait(() => current.syncFromRecent(recents))).value;
+       }
+     } catch (e) {
+-      debugPrint('_syncFromRecentWithoutLock: $e');
++      account.check();
++      debugPrint('_syncFromRecentWithoutLock');
+     }
+   }
+ 
+   void setShouldAsync(bool v) async {
+-    await bind.mainSetLocalOption(
+-        key: syncAbOption, value: v ? 'Y' : defaultOptionNo);
++    final account = await _capture();
++    account.check();
++    (await account.wait(() => AccountLifecycle.write(account,
++        () => bind.mainSetLocalOption(
++            key: syncAbOption, value: v ? 'Y' : defaultOptionNo)))).value;
+     _syncAllFromRecent = true;
+     _timerCounter = 0;
+   }
+@@ -601,16 +722,23 @@
+ // #endregion
+ 
+ // #region cache
+-  _saveCache() {
+-    try {
+-      var ab_entries = _serializeCache();
+-      Map<String, dynamic> m = <String, dynamic>{
+-        "access_token": bind.mainGetLocalOption(key: 'access_token'),
+-        "ab_entries": ab_entries,
+-      };
+-      bind.mainSaveAb(json: jsonEncode(m));
+-    } catch (e) {
+-      debugPrint('ab save:$e');
++  Future<void> _saveCache(AccountLease account) async {
++    await account.validate();
++    account.check();
++    final origin = _cacheOrigin;
++    if (account.token.isEmpty || origin == null) return;
++    if (!origin.matches(account)) throw const AccountChanged();
++    try {
++      final payload = jsonEncode(<String, dynamic>{
++        'access_token': account.token,
++        'ab_entries': _serializeCache(),
++      });
++      (await account.wait(() => account.cache('ab', 'save', value: payload,
++          origin: origin, onSuccess: (next) => _cacheOrigin = next))).value;
++    } catch (_) {
++      account.check();
++      _listPullError.value = 'Failed to save address book cache';
++      rethrow;
+     }
+   }
+ 
+@@ -639,26 +767,33 @@
+   }
+ 
+   Future<void> loadCache() async {
+-    try {
+-      if (_cacheLoadOnceFlag || currentAbLoading.value) return;
++    final account = await _capture(resetStale: true);
++    account.check();
++    try {
++      if (_cacheLoadOnceFlag || currentAbLoading.value || listInitialized) return;
+       _cacheLoadOnceFlag = true;
+-      final access_token = bind.mainGetLocalOption(key: 'access_token');
++      final access_token = account.token;
+       if (access_token.isEmpty) return;
+-      final cache = await bind.mainLoadAb();
+-      if (currentAbLoading.value) return;
++      late final AccountCacheOrigin loadedOrigin;
++      final cache = (await account.wait(() => account.cache('ab', 'load',
++          onSuccess: (origin) => loadedOrigin = origin))).value;
++      if (currentAbLoading.value || listInitialized) return;
+       final data = jsonDecode(cache);
+       if (data == null || data['access_token'] != access_token) return;
+-      _deserializeCache(data);
++      if (!loadedOrigin.matches(account)) throw const AccountChanged();
++      _deserializeCache(data, loadedOrigin);
+       legacyMode.value = addressbooks.containsKey(_legacyAddressBookName);
+       trySetCurrentToLast();
+     } catch (e) {
+-      debugPrint("load ab cache: $e");
+-    }
+-  }
+-
+-  _deserializeCache(dynamic data) {
++      account.check();
++      _listPullError.value = 'Failed to load address book cache';
++    }
++  }
++
++  _deserializeCache(dynamic data, AccountCacheOrigin origin) {
+     if (data == null) return;
+-    reset();
++    _resetModel(resetCacheLoad: false);
++    _cacheOrigin = origin;
+     final abEntries = data['ab_entries'];
+     if (abEntries is List) {
+       for (var i = 0; i < abEntries.length; i++) {
+@@ -751,6 +886,8 @@
+   }
+ 
+   Future<void> setCurrentName(String name) async {
++    final account = await _capture();
++    account.check();
+     final oldName = _currentName.value;
+     if (addressbooks.containsKey(name)) {
+       _currentName.value = name;
+@@ -764,12 +901,12 @@
+       }
+     }
+     if (!current.initialized) {
+-      await current.pullAb(quiet: false);
++      (await account.wait(() => current.pullAb(quiet: false))).value;
+     }
+     _refreshTab();
+     if (oldName != _currentName.value) {
+       _syncAllFromRecent = true;
+-      _saveCache();
++      (await account.wait(() => _saveCache(account))).value;
+     }
+   }
+ 
+@@ -788,14 +925,16 @@
+ 
+   // should not call this function in a loop call stack
+   Future<void> pullNonLegacyAfterChange({String? name}) async {
++    final account = await _capture();
++    account.check();
+     if (name == null) {
+       if (current.name() != _legacyAddressBookName) {
+-        return await current.pullAb(quiet: true);
++        return (await account.wait(() => current.pullAb(quiet: true))).value;
+       }
+     } else if (name != _legacyAddressBookName) {
+       final ab = addressbooks[name];
+       if (ab != null) {
+-        return await ab.pullAb(quiet: true);
++        return (await account.wait(() => ab.pullAb(quiet: true))).value;
+       }
+     }
+   }
+@@ -857,7 +996,7 @@
+       }
+       return null;
+     } catch (e) {
+-      debugPrint("getdefaultSharedPassword: $e");
++      debugPrint("getdefaultSharedPassword");
+       return null;
+     }
+   }
+@@ -878,6 +1017,7 @@
+   var abPulling =
+       false; // Tracks whether a pull operation is currently in progress to prevent concurrent pulls. Unlike abLoading, this is not tied to UI updates.
+   bool initialized = false;
++  AccountLease? _pullOwner;
+ 
+   String name();
+ 
+@@ -891,19 +1031,24 @@
+   }
+ 
+   Future<void> pullAb({quiet = false}) async {
+-    if (abPulling) return;
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
++    if (abPulling && _pullOwner?.isCurrent == true) return;
+     abPulling = true;
++    _pullOwner = account;
+     if (!quiet) {
+       abLoading.value = true;
+       pullError.value = "";
+     }
+     initialized = false;
+-    debugPrint("pull ab \"${name()}\"");
+-    try {
+-      initialized = await pullAbImpl(quiet: quiet);
++    debugPrint('Pulling address book');
++    try {
++      initialized = (await account.wait(() => pullAbImpl(quiet: quiet))).value;
+     } catch (e) {
+-      debugPrint("Error occurred while pulling address book: $e");
++      account.check();
++      debugPrint("Error occurred while pulling address book");
+     } finally {
++      account.check();
+       abLoading.value = false;
+       abPulling = false;
+     }
+@@ -928,7 +1073,7 @@
+         p['tags'] = newTags;
+       }
+     } catch (e) {
+-      print("removeNonExistentTags: $e");
++      print("removeNonExistentTags");
+     }
+   }
+ 
+@@ -1006,14 +1151,16 @@
+ 
+   @override
+   Future<bool> pullAbImpl({quiet = false}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool ret = false;
+-    final api = "${await bind.mainGetApiServer()}/api/ab";
++    final api = "${account.apiServer}/api/ab";
+     int? statusCode;
+     try {
+-      var authHeaders = getHttpHeaders();
++      var authHeaders = getHttpHeaders(account: account);
+       authHeaders['Content-Type'] = "application/json";
+       authHeaders['Accept-Encoding'] = "gzip";
+-      final resp = await http.get(Uri.parse(api), headers: authHeaders);
++      final resp = (await account.wait(() => http.get(Uri.parse(api), headers: authHeaders, account: account))).value;
+       statusCode = resp.statusCode;
+       if (resp.body.toLowerCase() == "null") {
+         // normal reply, empty ab return null
+@@ -1038,14 +1185,16 @@
+         }
+       }
+     } catch (err) {
++      account.check();
+       if (!quiet) {
+         pullError.value =
+             '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+       }
+     } finally {
++      account.check();
+       if (pullError.isNotEmpty) {
+         if (statusCode == 401) {
+-          gFFI.userModel.reset(resetOther: true);
++          await gFFI.userModel.reset(account: account, resetOther: true);
+         }
+       }
+     }
+@@ -1054,6 +1203,8 @@
+ 
+   Future<bool> pushAb(
+       {bool toastIfFail = true, bool toastIfSucc = true}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     debugPrint("pushAb: toastIfFail:$toastIfFail, toastIfSucc:$toastIfSucc");
+     if (!gFFI.userModel.isLogin) return false;
+     pushError.value = '';
+@@ -1061,12 +1212,12 @@
+     try {
+       //https: //stackoverflow.com/questions/68249333/flutter-getx-updating-item-in-children-list-is-not-reactive
+       peers.refresh();
+-      final api = "${await bind.mainGetApiServer()}/api/ab";
+-      var authHeaders = getHttpHeaders();
++      final api = "${account.apiServer}/api/ab";
++      var authHeaders = getHttpHeaders(account: account);
+       authHeaders['Content-Type'] = "application/json";
+       final body = jsonEncode({"data": jsonEncode(_serialize())});
+       http.Response resp =
+-          await http.post(Uri.parse(api), headers: authHeaders, body: body);
++          (await account.wait(() => http.post(Uri.parse(api), headers: authHeaders, body: body, account: account))).value;
+       if (resp.statusCode == 200 &&
+           (resp.body.isEmpty || resp.body.toLowerCase() == 'null')) {
+         ret = true;
+@@ -1082,6 +1233,7 @@
+         }
+       }
+     } catch (e) {
++      account.check();
+       pushError.value =
+           '${translate('push_ab_failed_tip')}: ${translate(e.toString())}';
+     }
+@@ -1098,6 +1250,8 @@
+ // #region Peer
+   @override
+   Future<String?> addPeers(List<Map<String, dynamic>> ps) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool full = false;
+     for (var p in ps) {
+       if (!isFull()) {
+@@ -1105,7 +1259,7 @@
+         final index = peers.indexWhere((e) => e.id == p['id']);
+         if (index >= 0) {
+           _merge(Peer.fromJson(p), peers[index]);
+-          _mergePeerFromGroup(peers[index]);
++          _mergePeerFromGroup(peers[index], account);
+         } else {
+           peers.add(Peer.fromJson(p));
+         }
+@@ -1114,7 +1268,7 @@
+         break;
+       }
+     }
+-    if (!await pushAb()) {
++    if (!(await account.wait(() => pushAb())).value) {
+       return "Failed to push to server";
+     } else if (full) {
+       return translate("exceed_max_devices");
+@@ -1123,8 +1277,8 @@
+     }
+   }
+ 
+-  _mergePeerFromGroup(Peer p) {
+-    final g = gFFI.groupModel.peers.firstWhereOrNull((e) => p.id == e.id);
++  _mergePeerFromGroup(Peer p, AccountLease account) {
++    final g = gFFI.groupModel.peerForAccount(p.id, account);
+     if (g == null) return;
+     if (p.username.isEmpty) {
+       p.username = g.username;
+@@ -1139,22 +1293,26 @@
+ 
+   @override
+   Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     peers.map((e) {
+       if (ids.contains(e.id)) {
+         e.tags = tags;
+       }
+     }).toList();
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+   @override
+   Future<bool> changeAlias({required String id, required String alias}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     final it = peers.where((element) => element.id == id);
+     if (it.isEmpty) {
+       return false;
+     }
+     it.first.alias = alias;
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+   @override
+@@ -1171,6 +1329,8 @@
+ 
+   @override
+   Future<void> syncFromRecent(List<Peer> recents) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool peerSyncEqual(Peer a, Peer b) {
+       return a.hash == b.hash &&
+           a.username == b.username &&
+@@ -1197,7 +1357,7 @@
+       }
+     }
+     if (needSync) {
+-      await pushAb(toastIfSucc: false, toastIfFail: false);
++      (await account.wait(() => pushAb(toastIfSucc: false, toastIfFail: false))).value;
+       gFFI.abModel._refreshTab();
+     }
+     // Pull cannot be used for sync to avoid cyclic sync.
+@@ -1213,6 +1373,8 @@
+ 
+   @override
+   Future<bool> changePersonalHashPassword(String id, String hash) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool changed = false;
+     final it = peers.where((element) => element.id == id);
+     if (it.isNotEmpty) {
+@@ -1222,15 +1384,17 @@
+       }
+     }
+     if (changed) {
+-      return await pushAb(toastIfSucc: false, toastIfFail: false);
++      return (await account.wait(() => pushAb(toastIfSucc: false, toastIfFail: false))).value;
+     }
+     return true;
+   }
+ 
+   @override
+   Future<bool> deletePeers(List<String> ids) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     peers.removeWhere((e) => ids.contains(e.id));
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ // #endregion
+ 
+@@ -1238,6 +1402,8 @@
+   @override
+   Future<bool> addTags(
+       List<String> tagList, Map<String, int> tagColorMap) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     for (var e in tagList) {
+       if (!tagContainBy(e)) {
+         tags.add(e);
+@@ -1246,11 +1412,13 @@
+         tagColors[e] = str2color2(e, existing: tagColors.values.toList()).value;
+       }
+     }
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+   @override
+   Future<bool> renameTag(String oldTag, String newTag) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     if (tags.contains(newTag)) {
+       BotToast.showText(
+           contentColor: Colors.red, text: 'Tag $newTag already exists');
+@@ -1277,19 +1445,23 @@
+       tagColors.remove(oldTag);
+       tagColors.addAll({newTag: oldColor});
+     }
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+   @override
+   Future<bool> setTagColor(String tag, Color color) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     if (tags.contains(tag)) {
+       tagColors[tag] = color.value;
+     }
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+   @override
+   Future<bool> deleteTag(String tag) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     gFFI.abModel.selectedTags.remove(tag);
+     tags.removeWhere((element) => element == tag);
+     tagColors.remove(tag);
+@@ -1301,7 +1473,7 @@
+         peer.tags.remove(tag);
+       }
+     }
+-    return await pushAb();
++    return (await account.wait(() => pushAb())).value;
+   }
+ 
+ // #endregion
+@@ -1410,14 +1582,16 @@
+ 
+   @override
+   Future<bool> pullAbImpl({quiet = false}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool ret = true;
+     List<Peer> tmpPeers = [];
+-    if (!await _fetchPeers(tmpPeers, quiet: quiet)) {
++    if (!(await account.wait(() => _fetchPeers(tmpPeers, quiet: quiet))).value) {
+       ret = false;
+     }
+     peers.value = tmpPeers;
+     List<AbTag> tmpTags = [];
+-    if (!await _fetchTags(tmpTags, quiet: quiet)) {
++    if (!(await account.wait(() => _fetchTags(tmpTags, quiet: quiet))).value) {
+       ret = false;
+     }
+     tags.value = tmpTags.map((e) => e.name).toList();
+@@ -1430,7 +1604,9 @@
+   }
+ 
+   Future<bool> _fetchPeers(List<Peer> tmpPeers, {quiet = false}) async {
+-    final api = "${await bind.mainGetApiServer()}/api/ab/peers";
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
++    final api = "${account.apiServer}/api/ab/peers";
+     int? statusCode;
+     try {
+       var uri0 = Uri.parse(api);
+@@ -1449,10 +1625,10 @@
+               'pageSize': pageSize.toString(),
+               'ab': profile.guid,
+             });
+-        var headers = getHttpHeaders();
++        var headers = getHttpHeaders(account: account);
+         headers['Content-Type'] = "application/json";
+         _setEmptyBody(headers);
+-        final resp = await http.post(uri, headers: headers);
++        final resp = (await account.wait(() => http.post(uri, headers: headers, account: account))).value;
+         statusCode = resp.statusCode;
+         Map<String, dynamic> json =
+             _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
+@@ -1482,14 +1658,16 @@
+       } while (current * pageSize < total);
+       return true;
+     } catch (err) {
++      account.check();
+       if (!quiet) {
+         pullError.value =
+             '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+       }
+     } finally {
++      account.check();
+       if (pullError.isNotEmpty) {
+         if (statusCode == 401) {
+-          gFFI.userModel.reset(resetOther: true);
++          await gFFI.userModel.reset(account: account, resetOther: true);
+         }
+       }
+     }
+@@ -1497,7 +1675,9 @@
+   }
+ 
+   Future<bool> _fetchTags(List<AbTag> tmpTags, {quiet = false}) async {
+-    final api = "${await bind.mainGetApiServer()}/api/ab/tags/${profile.guid}";
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
++    final api = "${account.apiServer}/api/ab/tags/${profile.guid}";
+     int? statusCode;
+     try {
+       var uri0 = Uri.parse(api);
+@@ -1507,10 +1687,10 @@
+         path: uri0.path,
+         port: uri0.port,
+       );
+-      var headers = getHttpHeaders();
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       _setEmptyBody(headers);
+-      final resp = await http.post(uri, headers: headers);
++      final resp = (await account.wait(() => http.post(uri, headers: headers, account: account))).value;
+       statusCode = resp.statusCode;
+       List<dynamic> json =
+           _jsonDecodeRespList(decode_http_response(resp), resp.statusCode);
+@@ -1529,14 +1709,16 @@
+       }
+       return true;
+     } catch (err) {
++      account.check();
+       if (!quiet) {
+         pullError.value =
+             '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+       }
+     } finally {
++      account.check();
+       if (pullError.isNotEmpty) {
+         if (statusCode == 401) {
+-          gFFI.userModel.reset(resetOther: true);
++          await gFFI.userModel.reset(account: account, resetOther: true);
+         }
+       }
+     }
+@@ -1546,10 +1728,12 @@
+ // #region Peers
+   @override
+   Future<String?> addPeers(List<Map<String, dynamic>> ps) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/add/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/add/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       for (var p in ps) {
+         if (peers.firstWhereOrNull((e) => e.id == p['id']) != null) {
+@@ -1565,13 +1749,14 @@
+         }
+         String body = jsonEncode(p);
+         final resp =
+-            await http.post(Uri.parse(api), headers: headers, body: body);
++            (await account.wait(() => http.post(Uri.parse(api), headers: headers, body: body, account: account))).value;
+         final errMsg = _jsonDecodeActionResp(resp);
+         if (errMsg.isNotEmpty) {
+           return errMsg;
+         }
+       }
+     } catch (err) {
++      account.check();
+       return err.toString();
+     }
+     return null;
+@@ -1579,16 +1764,18 @@
+ 
+   @override
+   Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/update/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       var ret = true;
+       for (var id in ids) {
+         final body = jsonEncode({"id": id, "tags": tags});
+         final resp =
+-            await http.put(Uri.parse(api), headers: headers, body: body);
++            (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+         final errMsg = _jsonDecodeActionResp(resp);
+         if (errMsg.isNotEmpty) {
+           BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1598,20 +1785,23 @@
+       }
+       return ret;
+     } catch (err) {
+-      debugPrint('changeTagForPeers err: ${err.toString()}');
++      account.check();
++      debugPrint('changeTagForPeers err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> changeAlias({required String id, required String alias}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/update/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode({"id": id, "alias": alias});
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1619,20 +1809,23 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('changeAlias err: ${err.toString()}');
++      account.check();
++      debugPrint('changeAlias err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> changeNote({required String id, required String note}) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/update/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode({"id": id, "note": note});
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1640,19 +1833,22 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('changeNote err: ${err.toString()}');
++      account.check();
++      debugPrint('changeNote err');
+       return false;
+     }
+   }
+ 
+   Future<bool> _setPassword(Object bodyContent) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/update/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode(bodyContent);
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1660,31 +1856,38 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('changeSharedPassword err: ${err.toString()}');
++      account.check();
++      debugPrint('changeSharedPassword err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> changePersonalHashPassword(String id, String hash) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     if (!personal) return false;
+     if (!peers.any((e) => e.id == id)) return true;
+-    return await _setPassword({"id": id, "hash": hash});
++    return (await account.wait(() => _setPassword({"id": id, "hash": hash}))).value;
+   }
+ 
+   @override
+   Future<bool> changeSharedPassword(String id, String password) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     if (personal) return false;
+-    return await _setPassword({"id": id, "password": password});
++    return (await account.wait(() => _setPassword({"id": id, "password": password}))).value;
+   }
+ 
+   @override
+   Future<void> syncFromRecent(List<Peer> recents) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     bool uiUpdate = false;
+     bool saveCache = false;
+     final api =
+-        "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
+-    var headers = getHttpHeaders();
++        "${account.apiServer}/api/ab/peer/update/${profile.guid}";
++    var headers = getHttpHeaders(account: account);
+     headers['Content-Type'] = "application/json";
+ 
+     Future<bool> trySyncOnePeer(Peer p, Peer r) async {
+@@ -1718,10 +1921,10 @@
+       }
+       map['id'] = p.id;
+       final body = jsonEncode(map);
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+-        debugPrint('syncOnePeer errMsg: $errMsg');
++        debugPrint('syncOnePeer errMsg');
+         return false;
+       }
+       uiUpdate = true;
+@@ -1733,7 +1936,7 @@
+       for (var p in peers) {
+         Peer? r = recents.firstWhereOrNull((e) => e.id == p.id);
+         if (r != null) {
+-          await trySyncOnePeer(p, r);
++          (await account.wait(() => trySyncOnePeer(p, r))).value;
+         }
+       }
+       // Pull cannot be used for sync to avoid cyclic sync.
+@@ -1741,23 +1944,26 @@
+         peers.refresh();
+       }
+       if (saveCache) {
+-        gFFI.abModel._saveCache();
++        (await account.wait(() => gFFI.abModel._saveCache(account))).value;
+       }
+     } catch (err) {
+-      debugPrint('syncFromRecent err: ${err.toString()}');
++      account.check();
++      debugPrint('syncFromRecent err');
+     }
+   }
+ 
+   @override
+   Future<bool> deletePeers(List<String> ids) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/peer/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/peer/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode(ids);
+       final resp =
+-          await http.delete(Uri.parse(api), headers: headers, body: body);
++          (await account.wait(() => http.delete(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1765,7 +1971,8 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('deletePeers err: ${err.toString()}');
++      account.check();
++      debugPrint('deletePeers err');
+       return false;
+     }
+   }
+@@ -1775,10 +1982,12 @@
+   @override
+   Future<bool> addTags(
+       List<String> tagList, Map<String, int> tagColorMap) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/tag/add/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/tag/add/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       for (var t in tagList) {
+         final body = jsonEncode({
+@@ -1787,7 +1996,7 @@
+               str2color2(t, existing: tagColors.values.toList()).value,
+         });
+         final resp =
+-            await http.post(Uri.parse(api), headers: headers, body: body);
++            (await account.wait(() => http.post(Uri.parse(api), headers: headers, body: body, account: account))).value;
+         final errMsg = _jsonDecodeActionResp(resp);
+         if (errMsg.isNotEmpty) {
+           BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1796,13 +2005,16 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('addTags err: ${err.toString()}');
++      account.check();
++      debugPrint('addTags err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> renameTag(String oldTag, String newTag) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     if (tags.contains(newTag)) {
+       BotToast.showText(
+           contentColor: Colors.red, text: 'Tag $newTag already exists');
+@@ -1810,14 +2022,14 @@
+     }
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/tag/rename/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/tag/rename/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode({
+         "old": oldTag,
+         "new": newTag,
+       });
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1825,23 +2037,26 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('renameTag err: ${err.toString()}');
++      account.check();
++      debugPrint('renameTag err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> setTagColor(String tag, Color color) async {
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
+     try {
+       final api =
+-          "${await bind.mainGetApiServer()}/api/ab/tag/update/${profile.guid}";
+-      var headers = getHttpHeaders();
++          "${account.apiServer}/api/ab/tag/update/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode({
+         "name": tag,
+         "color": color.value,
+       });
+-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
++      final resp = (await account.wait(() => http.put(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1849,20 +2064,23 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('setTagColor err: ${err.toString()}');
++      account.check();
++      debugPrint('setTagColor err');
+       return false;
+     }
+   }
+ 
+   @override
+   Future<bool> deleteTag(String tag) async {
+-    try {
+-      final api = "${await bind.mainGetApiServer()}/api/ab/tag/${profile.guid}";
+-      var headers = getHttpHeaders();
++    final account = await gFFI.abModel._capture(book: this);
++    account.check();
++    try {
++      final api = "${account.apiServer}/api/ab/tag/${profile.guid}";
++      var headers = getHttpHeaders(account: account);
+       headers['Content-Type'] = "application/json";
+       final body = jsonEncode([tag]);
+       final resp =
+-          await http.delete(Uri.parse(api), headers: headers, body: body);
++          (await account.wait(() => http.delete(Uri.parse(api), headers: headers, body: body, account: account))).value;
+       final errMsg = _jsonDecodeActionResp(resp);
+       if (errMsg.isNotEmpty) {
+         BotToast.showText(contentColor: Colors.red, text: errMsg);
+@@ -1870,7 +2088,8 @@
+       }
+       return true;
+     } catch (err) {
+-      debugPrint('deleteTag err: ${err.toString()}');
++      account.check();
++      debugPrint('deleteTag err');
+       return false;
+     }
+   }
+@@ -1978,7 +2197,7 @@
+     Map<String, dynamic> json = jsonDecode(body);
+     return json;
+   } catch (e) {
+-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
++    const err = 'Invalid address book response';
+     if (statusCode != 200) {
+       throw 'HTTP $statusCode, $err';
+     }
+@@ -1991,7 +2210,7 @@
+     List<dynamic> json = jsonDecode(body);
+     return json;
+   } catch (e) {
+-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
++    const err = 'Invalid address book response';
+     if (statusCode != 200) {
+       throw 'HTTP $statusCode, $err';
+     }
+@@ -2015,7 +2234,7 @@
+         if (errMsg.isNotEmpty) {
+           errMsg += ', ';
+         }
+-        errMsg += resp.body;
++        errMsg += 'Invalid address book response';
+       }
+       if (errMsg.isEmpty) {
+         errMsg = "unknown error";
+diff --git a/lib/models/group_model.dart b/lib/models/group_model.dart
+--- a/lib/models/group_model.dart
++++ b/lib/models/group_model.dart
+@@ -8,6 +8,7 @@
+ import 'package:get/get.dart';
+ import 'dart:convert';
+ import '../utils/http_service.dart' as http;
++import '../utils/account_lifecycle.dart';
+ 
+ class GroupModel {
+   final RxBool groupLoading = false.obs;
+@@ -21,7 +22,41 @@
+   WeakReference<FFI> parent;
+   var initialized = false;
+   var _cacheLoadOnceFlag = false;
++  var _cacheRevision = 0;
++  AccountCacheOrigin? _cacheOrigin;
++
++  Future<AccountLease> _capture({bool resetStale = false}) async {
++    final revision = _cacheRevision;
++    final account = await AccountLifecycle.capture(cacheKind: 'group');
++    account.check();
++    if (revision != _cacheRevision) throw const AccountChanged();
++    if (discardStaleData(account) && !resetStale) {
++      throw const AccountChanged();
++    }
++    final currentRevision = _cacheRevision;
++    return AccountLifecycle.forCache(account, 'group', ownerIsCurrent: () =>
++        currentRevision == _cacheRevision &&
++        (_cacheOrigin?.matches(account) ?? true));
++  }
++
++  // This is a model-only reset, not authorization to delete the new owner's
++  // native cache. A subsequent load/pull must publish its own origin.
++  bool discardStaleData(AccountLease account) {
++    final scoped = AccountLifecycle.forCache(account, 'group');
++    if (_cacheOrigin == null || _cacheOrigin!.matches(scoped)) return false;
++    _resetModel();
++    _callbackPeerUpdate();
++    platformFFI.tryHandle({'name': LoadEvent.group});
++    return true;
++  }
++
++  Peer? peerForAccount(String id, AccountLease account) {
++    final scoped = AccountLifecycle.forCache(account, 'group');
++    if (_cacheOrigin?.matches(scoped) != true) return null;
++    return peers.firstWhereOrNull((peer) => peer.id == id);
++  }
+   var _statusCode = 200;
++  AccountLease? _pullOwner;
+ 
+   final Map<String, VoidCallback> _peerIdUpdateListeners = {};
+ 
+@@ -37,45 +72,56 @@
+   }
+ 
+   Future<void> pull({force = true, quiet = false}) async {
++    final account = await _capture(resetStale: true);
++    account.check();
+     if (bind.isDisableGroupPanel()) return;
+-    if (!gFFI.userModel.isLogin || groupLoading.value) return;
++    if (!gFFI.userModel.isLogin ||
++        (groupLoading.value && _pullOwner?.isCurrent == true)) return;
+     if (gFFI.userModel.networkError.isNotEmpty) return;
+     if (!force && initialized) return;
++    _pullOwner = account;
++    _statusCode = 200;
+     if (!quiet) {
+       groupLoading.value = true;
+       groupLoadError.value = "";
+     }
+-    try {
+-      await _pull();
++    var published = false;
++    try {
++      published = (await account.wait(() => _pull())).value;
+       _tryHandlePullError();
+     } catch (e) {
+-      print("pull accessibles error: $e");
++      account.check();
++      print("pull accessibles error");
+     }
+     groupLoading.value = false;
+-    initialized = true;
++    if (published) initialized = true;
+     platformFFI.tryHandle({'name': LoadEvent.group});
+     if (_statusCode == 401) {
+-      gFFI.userModel.reset(resetOther: true);
+-    } else {
+-      _saveCache();
+-    }
+-  }
+-
+-  Future<void> _pull() async {
++      await gFFI.userModel.reset(account: account, resetOther: true);
++    } else if (published) {
++      (await account.wait(() => _saveCache(account))).value;
++    }
++  }
++
++  Future<bool> _pull() async {
++    final account = await _capture();
++    account.check();
++    final origin = account.cacheOrigin;
+     List<DeviceGroupPayload> tmpDeviceGroups = List.empty(growable: true);
+-    if (!await _getDeviceGroups(tmpDeviceGroups)) {
+-      // old hbbs doesn't support this api
+-      // return;
++    if (!(await account.wait(() => _getDeviceGroups(tmpDeviceGroups))).value) {
++      return false;
+     }
+     tmpDeviceGroups.sort((a, b) => a.name.compareTo(b.name));
+     List<UserPayload> tmpUsers = List.empty(growable: true);
+-    if (!await _getUsers(tmpUsers)) {
+-      return;
++    if (!(await account.wait(() => _getUsers(tmpUsers))).value) {
++      return false;
+     }
+     List<Peer> tmpPeers = List.empty(growable: true);
+-    if (!await _getPeers(tmpPeers)) {
+-      return;
+-    }
++    if (!(await account.wait(() => _getPeers(tmpPeers))).value) {
++      return false;
++    }
++    if (!origin.matches(account)) throw const AccountChanged();
++    _cacheOrigin = origin;
+     deviceGroups.value = tmpDeviceGroups;
+     // me first
+     var index = tmpUsers
+@@ -98,11 +144,14 @@
+         .toList();
+     groupLoadError.value = '';
+     _callbackPeerUpdate();
++    return true;
+   }
+ 
+   Future<bool> _getDeviceGroups(
+       List<DeviceGroupPayload> tmpDeviceGroups) async {
+-    final api = "${await bind.mainGetApiServer()}/api/device-group/accessible";
++    final account = await _capture();
++    account.check();
++    final api = "${account.apiServer}/api/device-group/accessible";
+     try {
+       var uri0 = Uri.parse(api);
+       final pageSize = 100;
+@@ -119,8 +168,13 @@
+               'current': current.toString(),
+               'pageSize': pageSize.toString(),
+             });
+-        final resp = await http.get(uri, headers: getHttpHeaders());
++        final resp = (await account.wait(() => http.get(uri, headers: getHttpHeaders(account: account), account: account))).value;
+         _statusCode = resp.statusCode;
++        if (resp.statusCode == 404 && current == 1) {
++          // Old hbbs has no device-group endpoint. Its complete result is an
++          // empty optional list, never retained or partially fetched groups.
++          return true;
++        }
+         Map<String, dynamic> json =
+             _jsonDecodeResp(decode_http_response(resp), resp.statusCode);
+         if (json.containsKey('error')) {
+@@ -149,16 +203,18 @@
+       } while (current * pageSize < total);
+       return true;
+     } catch (err) {
+-      debugPrint('get accessible device groups: $err');
+-      // old hbbs doesn't support this api
+-      // groupLoadError.value =
+-      //     '${translate('pull_group_failed_tip')}: ${translate(err.toString())}';
++      account.check();
++      debugPrint('get accessible device groups');
++      groupLoadError.value =
++          '${translate('pull_group_failed_tip')}: ${translate(err.toString())}';
+     }
+     return false;
+   }
+ 
+   Future<bool> _getUsers(List<UserPayload> tmpUsers) async {
+-    final api = "${await bind.mainGetApiServer()}/api/users";
++    final account = await _capture();
++    account.check();
++    final api = "${account.apiServer}/api/users";
+     try {
+       var uri0 = Uri.parse(api);
+       final pageSize = 100;
+@@ -177,7 +233,7 @@
+               'accessible': '',
+               'status': '1',
+             });
+-        final resp = await http.get(uri, headers: getHttpHeaders());
++        final resp = (await account.wait(() => http.get(uri, headers: getHttpHeaders(account: account), account: account))).value;
+         _statusCode = resp.statusCode;
+         Map<String, dynamic> json =
+             _jsonDecodeResp(decode_http_response(resp), resp.statusCode);
+@@ -214,7 +270,8 @@
+       } while (current * pageSize < total);
+       return true;
+     } catch (err) {
+-      debugPrint('get accessible users: $err');
++      account.check();
++      debugPrint('get accessible users');
+       groupLoadError.value =
+           '${translate('pull_group_failed_tip')}: ${translate(err.toString())}';
+     }
+@@ -222,8 +279,10 @@
+   }
+ 
+   Future<bool> _getPeers(List<Peer> tmpPeers) async {
+-    try {
+-      final api = "${await bind.mainGetApiServer()}/api/peers";
++    final account = await _capture();
++    account.check();
++    try {
++      final api = "${account.apiServer}/api/peers";
+       var uri0 = Uri.parse(api);
+       final pageSize = 100;
+       var total = 0;
+@@ -242,7 +301,7 @@
+             path: uri0.path,
+             port: uri0.port,
+             queryParameters: queryParameters);
+-        final resp = await http.get(uri, headers: getHttpHeaders());
++        final resp = (await account.wait(() => http.get(uri, headers: getHttpHeaders(account: account), account: account))).value;
+         _statusCode = resp.statusCode;
+ 
+         Map<String, dynamic> json =
+@@ -274,7 +333,8 @@
+       } while (current * pageSize < total);
+       return true;
+     } catch (err) {
+-      debugPrint('get accessible peers: $err');
++      account.check();
++      debugPrint('get accessible peers');
+       groupLoadError.value =
+           '${translate('pull_group_failed_tip')}: ${translate(err.toString())}';
+     }
+@@ -286,7 +346,7 @@
+       Map<String, dynamic> json = jsonDecode(body);
+       return json;
+     } catch (e) {
+-      final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
++      const err = 'Invalid group response';
+       if (statusCode != 200) {
+         throw 'HTTP $statusCode, $err';
+       }
+@@ -294,62 +354,96 @@
+     }
+   }
+ 
+-  void _saveCache() {
+-    try {
+-      final map = (<String, dynamic>{
+-        "access_token": bind.mainGetLocalOption(key: 'access_token'),
+-        "device_groups": deviceGroups.map((e) => e.toGroupCacheJson()).toList(),
+-        "users": users.map((e) => e.toGroupCacheJson()).toList(),
+-        'peers': peers.map((e) => e.toGroupCacheJson()).toList()
++  Future<void> _saveCache(AccountLease account) async {
++    await account.validate();
++    account.check();
++    final origin = _cacheOrigin;
++    if (account.token.isEmpty || origin == null) return;
++    if (!origin.matches(account)) throw const AccountChanged();
++    try {
++      final payload = jsonEncode(<String, dynamic>{
++        'access_token': account.token,
++        'device_groups': deviceGroups.map((e) => e.toGroupCacheJson()).toList(),
++        'users': users.map((e) => e.toGroupCacheJson()).toList(),
++        'peers': peers.map((e) => e.toGroupCacheJson()).toList(),
+       });
+-      bind.mainSaveGroup(json: jsonEncode(map));
+-    } catch (e) {
+-      debugPrint('group save:$e');
++      (await account.wait(() => account.cache('group', 'save', value: payload,
++          origin: origin, onSuccess: (next) => _cacheOrigin = next))).value;
++    } catch (_) {
++      account.check();
++      groupLoadError.value = 'Failed to save group cache';
++      rethrow;
+     }
+   }
+ 
+   Future<void> loadCache() async {
++    final account = await _capture(resetStale: true);
++    account.check();
+     try {
+       if (_cacheLoadOnceFlag || groupLoading.value || initialized) return;
+       _cacheLoadOnceFlag = true;
+-      final access_token = bind.mainGetLocalOption(key: 'access_token');
++      final access_token = account.token;
+       if (access_token.isEmpty) return;
+-      final cache = await bind.mainLoadGroup();
+-      if (groupLoading.value) return;
++      late final AccountCacheOrigin loadedOrigin;
++      final cache = (await account.wait(() => account.cache('group', 'load',
++          onSuccess: (origin) => loadedOrigin = origin))).value;
++      if (groupLoading.value || initialized) return;
+       final data = jsonDecode(cache);
+       if (data == null || data['access_token'] != access_token) return;
+-      deviceGroups.clear();
+-      users.clear();
+-      peers.clear();
++      if (!loadedOrigin.matches(account)) throw const AccountChanged();
++      final tmpDeviceGroups = <DeviceGroupPayload>[];
++      final tmpUsers = <UserPayload>[];
++      final tmpPeers = <Peer>[];
+       if (data['device_groups'] is List) {
+         for (var u in data['device_groups']) {
+-          deviceGroups.add(DeviceGroupPayload.fromJson(u));
++          tmpDeviceGroups.add(DeviceGroupPayload.fromJson(u));
+         }
+       }
+       if (data['users'] is List) {
+         for (var u in data['users']) {
+-          users.add(UserPayload.fromJson(u));
++          tmpUsers.add(UserPayload.fromJson(u));
+         }
+       }
+       if (data['peers'] is List) {
+         for (final peer in data['peers']) {
+-          peers.add(Peer.fromJson(peer));
+-        }
+-        _callbackPeerUpdate();
++          tmpPeers.add(Peer.fromJson(peer));
++        }
+       }
++      _cacheOrigin = loadedOrigin;
++      deviceGroups.value = tmpDeviceGroups;
++      users.value = tmpUsers;
++      peers.value = tmpPeers;
++      _callbackPeerUpdate();
+     } catch (e) {
+-      debugPrint("load group cache: $e");
+-    }
+-  }
+-
+-  reset() async {
++      account.check();
++      groupLoadError.value = 'Failed to load group cache';
++    }
++  }
++
++  Future<void> reset({AccountLease? account}) async {
++    final origin = account ?? await _capture();
++    await origin.validate();
++    origin.check();
++    final revision = _cacheRevision + 1;
++    final clearing = AccountLifecycle.forCache(origin, 'group',
++        ownerIsCurrent: () => revision == _cacheRevision);
++    _resetModel();
++    await clearing.cache('group', 'clear');
++  }
++
++  void _resetModel() {
++    _cacheRevision++;
++    _cacheOrigin = null;
+     initialized = false;
+     groupLoadError.value = '';
+     deviceGroups.clear();
+     users.clear();
+     peers.clear();
+     selectedAccessibleItemName.value = '';
+-    await bind.mainClearGroup();
++    groupLoading.value = false;
++    _pullOwner = null;
++    _cacheLoadOnceFlag = false;
++    _statusCode = 200;
+   }
+ 
+   void _callbackPeerUpdate() {
+diff --git a/lib/models/model.dart b/lib/models/model.dart
+--- a/lib/models/model.dart
++++ b/lib/models/model.dart
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:convert';
++import '../utils/account_lifecycle.dart';
+ import 'dart:math';
+ import 'dart:typed_data';
+ import 'dart:ui' as ui;
+@@ -1276,6 +1277,8 @@
+       if (url.isEmpty) {
+         return;
+       }
++      final account = await AccountLifecycle.capture();
++      account.check();
+       final initialConnSessionId =
+           bind.sessionGetConnSessionId(sessionId: sessionId);
+       final connType = switch (parent.target?.connType) {
+@@ -1304,13 +1307,14 @@
+         debugPrint(
+             'Querying audit GUID, attempt $attempt/${retryIntervals.length}');
+         try {
+-          var headers = getHttpHeaders();
++          var headers = getHttpHeaders(account: account);
+           headers['Content-Type'] = "application/json";
+ 
+-          final response = await http.get(
++          final response = (await account.wait(() => http.get(
+             Uri.parse(fullUrl),
+             headers: headers,
+-          );
++            account: account,
++          ))).value;
+ 
+           if (response.statusCode == 200) {
+             final guid = jsonDecode(response.body) as String?;
+@@ -1321,22 +1325,25 @@
+             }
+           } else {
+             debugPrint(
+-                'Failed to query audit GUID. Status: ${response.statusCode}, Body: ${response.body}');
++                'Failed to query audit GUID. Status: ${response.statusCode}');
+             return;
+           }
+-        } catch (e) {
+-          debugPrint('Error querying audit GUID (attempt $attempt): $e');
++        } on AccountChanged {
++          return;
++        } catch (_) {
++          debugPrint('Error querying audit GUID (attempt $attempt)');
+         }
+ 
+         if (attempt < retryIntervals.length) {
+-          await Future.delayed(Duration(seconds: retryIntervals[attempt - 1]));
++          (await account.wait(() => Future<void>.delayed(
++              Duration(seconds: retryIntervals[attempt - 1])))).value;
+         }
+       }
+ 
+       debugPrint(
+           'Failed to retrieve audit GUID after ${retryIntervals.length} attempts');
+     } catch (e) {
+-      debugPrint('Error in _queryAuditGuid: $e');
++      debugPrint('Error querying account audit GUID');
+     }
+   }
+ 
+diff --git a/lib/models/user_model.dart b/lib/models/user_model.dart
+--- a/lib/models/user_model.dart
++++ b/lib/models/user_model.dart
+@@ -9,6 +9,7 @@
+ 
+ import '../common.dart';
+ import '../utils/http_service.dart' as http;
++import '../utils/account_lifecycle.dart';
+ import 'model.dart';
+ import 'platform_model.dart';
+ 
+@@ -50,161 +51,211 @@
+     });
+   }
+ 
++  final Expando<AccountLease> _loginAccounts = Expando<AccountLease>();
++  AccountLease? _refreshOwner;
++
+   void refreshCurrentUser() async {
+     if (bind.isDisableAccount()) return;
++    final account = await AccountLifecycle.capture();
++    account.check();
++    gFFI.abModel.discardStaleData(account);
++    gFFI.groupModel.discardStaleData(account);
+     networkError.value = '';
+     networkErrorFromServer.value = false;
+-    final token = bind.mainGetLocalOption(key: 'access_token');
+-    if (token == '') {
+-      await updateOtherModels();
++    if (account.token.isEmpty) {
++      userName.value = '';
++      displayName.value = '';
++      avatar.value = '';
++      isAdmin.value = false;
++      (await account.wait(() => updateOtherModels(account: account))).value;
+       return;
+     }
+-    _updateLocalUserInfo();
+-    final url = await bind.mainGetApiServer();
+-    final body = {
+-      'id': await bind.mainGetMyId(),
+-      'uuid': await bind.mainGetUuid()
+-    };
+-    if (refreshingUser) return;
++    _updateLocalUserInfo(account);
++    if (refreshingUser && _refreshOwner?.isCurrent == true &&
++        _refreshOwner!.sameAccount(account)) return;
++    refreshingUser = true;
++    _refreshOwner = account;
+     try {
+-      refreshingUser = true;
+-      final http.Response response;
+-      try {
+-        response = await http.post(Uri.parse('$url/api/currentUser'),
+-            headers: {
+-              'Content-Type': 'application/json',
+-              'Authorization': 'Bearer $token'
+-            },
+-            body: json.encode(body));
+-      } catch (e) {
+-        networkError.value = e.toString();
+-        rethrow;
+-      }
+-      refreshingUser = false;
++      final body = {
++        'id': (await account.wait(() => bind.mainGetMyId())).value,
++        'uuid': (await account.wait(() => bind.mainGetUuid())).value
++      };
++      final response = (await account.wait(() => http.post(
++          Uri.parse('${account.apiServer}/api/currentUser'),
++          account: account,
++          headers: {
++            'Content-Type': 'application/json',
++            ...getHttpHeaders(account: account),
++          },
++          body: json.encode(body)))).value;
+       final status = response.statusCode;
+       if (status == 401 || status == 400) {
+-        reset(resetOther: status == 401);
++        await reset(account: account, resetOther: status == 401);
+         return;
+       }
+       final data = json.decode(decode_http_response(response));
+       final error = data['error'];
+       if (error != null) {
+-        // The only failure known to come from the server itself, so the
+-        // check-your-network tip does not apply. Flag before the message is
+-        // set in the catch below so rebuilds read a consistent pair.
+         networkErrorFromServer.value = true;
+         throw error;
+       }
+-
+       final user = UserPayload.fromJson(data);
+-      _parseAndUpdateUser(user);
++      (await account.wait(() => AccountLifecycle.write(account, () async {
++        await account.setLocalOption('user_info', jsonEncode(user));
++        account.check();
++        if (isWeb) {
++          await bind.mainSetLocalOption(key: 'verifier', value: user.verifier ?? '');
++          account.check();
++        }
++        _parseAndUpdateUser(user);
++      }))).value;
+     } catch (e) {
+-      debugPrint('Failed to refreshCurrentUser: $e');
+-      // Surface failures in the address book / group tabs, which offer a
+-      // retry. Anything not flagged above -- transport errors, non-JSON or
+-      // unexpected-schema bodies (e.g. a filter's block page) -- keeps the
+-      // check-your-network tip.
++      if (!account.isCurrent) return;
++      debugPrint('Failed to refresh current user');
+       if (networkError.value.isEmpty) {
+-        networkError.value = e.toString();
++        networkError.value = networkErrorFromServer.value
++            ? e.toString() : 'Failed to refresh current user';
+       }
+     } finally {
+-      refreshingUser = false;
+-      await updateOtherModels();
+-    }
+-  }
+-
+-  static Map<String, dynamic>? getLocalUserInfo() {
+-    final userInfo = bind.mainGetLocalOption(key: 'user_info');
+-    if (userInfo == '') {
+-      return null;
+-    }
++      if (account.isCurrent && identical(_refreshOwner, account)) {
++        refreshingUser = false;
++        (await account.wait(() => updateOtherModels(account: account))).value;
++      }
++    }
++  }
++
++  static Map<String, dynamic>? getLocalUserInfo(AccountLease account) {
++    account.check();
++    final userInfo = account.userInfo;
++    if (userInfo == '') return null;
+     try {
+       return json.decode(userInfo);
+-    } catch (e) {
+-      debugPrint('Failed to get local user info "$userInfo": $e');
++    } catch (_) {
++      debugPrint('Failed to parse local user information');
+     }
+     return null;
+   }
+ 
+-  _updateLocalUserInfo() {
+-    final userInfo = getLocalUserInfo();
+-    if (userInfo != null) {
+-      userName.value = (userInfo['name'] ?? '').toString();
+-      displayName.value = (userInfo['display_name'] ?? '').toString();
+-      avatar.value = (userInfo['avatar'] ?? '').toString();
+-    }
+-  }
+-
+-  Future<void> reset({bool resetOther = false}) async {
+-    await bind.mainSetLocalOption(key: 'access_token', value: '');
+-    await bind.mainSetLocalOption(key: 'user_info', value: '');
+-    if (resetOther) {
+-      await gFFI.abModel.reset();
+-      await gFFI.groupModel.reset();
+-    }
+-    userName.value = '';
+-    displayName.value = '';
+-    avatar.value = '';
+-  }
+-
+-  _parseAndUpdateUser(UserPayload user) {
++  _updateLocalUserInfo(AccountLease account) {
++    final userInfo = getLocalUserInfo(account);
++    userName.value = (userInfo?['name'] ?? '').toString();
++    displayName.value = (userInfo?['display_name'] ?? '').toString();
++    avatar.value = (userInfo?['avatar'] ?? '').toString();
++  }
++
++  Future<void> reset({required AccountLease account, bool resetOther = false}) {
++    return AccountLifecycle.transition(() async {
++      final origin = AccountLifecycle.transitionOrigin(account);
++      await origin.validate();
++      origin.check();
++      // Revoke this UI before native deletion; never adopt a newer account
++      // if deletion fails or a foreign process has replaced this receipt.
++      userName.value = '';
++      displayName.value = '';
++      avatar.value = '';
++      isAdmin.value = false;
++      refreshingUser = false;
++      _refreshOwner = null;
++      // Scoped token clearing also retires native OIDC ownership. There is no
++      // unscoped cancel that an old logout could use against a newer attempt.
++      await origin.setLocalOption('access_token', '');
++      origin.check();
++      await origin.setLocalOption('user_info', '');
++      origin.check();
++      if (resetOther) {
++        try {
++          await gFFI.abModel.reset(account: AccountLifecycle.forCache(origin, 'ab'));
++        } finally {
++          await gFFI.groupModel.reset(
++              account: AccountLifecycle.forCache(origin, 'group'));
++        }
++      }
++    });
++  }
++
++  void _parseAndUpdateUser(UserPayload user) {
+     userName.value = user.name;
+     displayName.value = user.displayName;
+     avatar.value = user.avatar;
+     isAdmin.value = user.isAdmin;
+-    bind.mainSetLocalOption(key: 'user_info', value: jsonEncode(user));
+-    if (isWeb) {
+-      // ugly here, tmp solution
+-      bind.mainSetLocalOption(key: 'verifier', value: user.verifier ?? '');
+-    }
+   }
+ 
+   // update ab and group status
+-  static Future<void> updateOtherModels() async {
++  static Future<void> updateOtherModels({AccountLease? account}) async {
++    final origin = account ?? await AccountLifecycle.capture();
++    origin.check();
++    // Receipt comparison is kind-specific and model-only: refreshing user
++    // metadata must neither reauthorize old lists nor clear native caches.
++    gFFI.abModel.discardStaleData(origin);
++    gFFI.groupModel.discardStaleData(origin);
+     await Future.wait([
+-      gFFI.abModel.pullAb(force: ForcePullAb.listAndCurrent, quiet: false),
+-      gFFI.groupModel.pull()
++      AccountLifecycle.run(AccountLifecycle.forCache(origin, 'ab'), () =>
++          gFFI.abModel.pullAb(force: ForcePullAb.listAndCurrent, quiet: false)),
++      AccountLifecycle.run(AccountLifecycle.forCache(origin, 'group'), () =>
++          gFFI.groupModel.pull()),
+     ]);
+-  }
+-
+-  Future<void> logOut({String? apiServer}) async {
+-    final tag = gFFI.dialogManager.showLoading(translate('Waiting'));
+-    try {
+-      final url = apiServer ?? await bind.mainGetApiServer();
+-      final authHeaders = getHttpHeaders();
+-      authHeaders['Content-Type'] = "application/json";
+-      await http
+-          .post(Uri.parse('$url/api/logout'),
+-              body: jsonEncode({
+-                'id': await bind.mainGetMyId(),
+-                'uuid': await bind.mainGetUuid(),
+-              }),
+-              headers: authHeaders)
+-          .timeout(Duration(seconds: 2));
+-    } catch (e) {
+-      debugPrint("request /api/logout failed: err=$e");
+-    } finally {
+-      await reset(resetOther: true);
+-      gFFI.dialogManager.dismissByTag(tag);
+-    }
++    await origin.validate();
++  }
++
++  Future<void> logOut({String? apiServer}) {
++    return AccountLifecycle.transition(() async {
++      final account = await AccountLifecycle.capture();
++      account.check();
++      if (apiServer != null && apiServer != account.apiServer) {
++        // Never pair a caller's old endpoint with a newly captured bearer or
++        // clear the account now belonging to a different server.
++        throw const AccountChanged();
++      }
++      final tag = gFFI.dialogManager.showLoading(translate('Waiting'));
++      try {
++        final headers = getHttpHeaders(account: account);
++        headers['Content-Type'] = 'application/json';
++        await http.post(Uri.parse('${account.apiServer}/api/logout'),
++            account: account,
++            body: jsonEncode({
++              'id': (await account.wait(() => bind.mainGetMyId())).value,
++              'uuid': (await account.wait(() => bind.mainGetUuid())).value,
++            }),
++            headers: headers).timeout(Duration(seconds: 2));
++      } catch (_) {
++        debugPrint('Account logout request failed');
++      } finally {
++        // Still inside the mutation queue: this cannot clear a later login.
++        try {
++          await reset(account: account, resetOther: true);
++        } finally {
++          gFFI.dialogManager.dismissByTag(tag);
++        }
++      }
++    });
++  }
++
++  Future<AccountLease> beginLogin() {
++    return AccountLifecycle.transition(() async {
++      final origin = await AccountLifecycle.capture();
++      await reset(account: origin, resetOther: true);
++      return AccountLifecycle.capture(authentication: true);
++    });
+   }
+ 
+   /// throw [RequestException]
+-  Future<LoginResponse> login(LoginRequest loginRequest) async {
+-    final url = await bind.mainGetApiServer();
+-    final resp = await http.post(Uri.parse('$url/api/login'),
+-        body: jsonEncode(loginRequest.toJson()));
++  Future<LoginResponse> login(LoginRequest loginRequest,
++      {AccountLease? account}) async {
++    final owner = account ?? await beginLogin();
++    await owner.validate();
++    final resp = (await owner.wait(() => http.post(
++        Uri.parse('${owner.apiServer}/api/login'),
++        account: owner, body: jsonEncode(loginRequest.toJson())))).value;
+ 
+     final Map<String, dynamic> body;
+     try {
+       body = jsonDecode(decode_http_response(resp));
+-    } catch (e) {
+-      debugPrint("login: jsonDecode resp body failed: ${e.toString()}");
++    } catch (_) {
++      debugPrint('Invalid account login response');
+       if (resp.statusCode != 200) {
+-        BotToast.showText(
+-            contentColor: Colors.red, text: 'HTTP ${resp.statusCode}');
+-      }
+-      rethrow;
++        BotToast.showText(contentColor: Colors.red, text: 'HTTP ${resp.statusCode}');
++      }
++      throw const FormatException('Invalid account login response');
+     }
+     if (resp.statusCode != 200) {
+       throw RequestException(resp.statusCode, body['error'] ?? '');
+@@ -212,41 +263,64 @@
+     if (body['error'] != null) {
+       throw RequestException(0, body['error']);
+     }
+-
+-    return getLoginResponseFromAuthBody(body);
+-  }
+-
+-  LoginResponse getLoginResponseFromAuthBody(Map<String, dynamic> body) {
+-    final LoginResponse loginResponse;
++    return getLoginResponseFromAuthBody(body, account: owner);
++  }
++
++  LoginResponse getLoginResponseFromAuthBody(Map<String, dynamic> body,
++      {required AccountLease account}) {
++    account.check();
+     try {
+-      loginResponse = LoginResponse.fromJson(body);
+-    } catch (e) {
+-      debugPrint("login: jsonDecode LoginResponse failed: ${e.toString()}");
+-      rethrow;
+-    }
+-
+-    final isLogInDone = loginResponse.type == HttpType.kAuthResTypeToken &&
+-        loginResponse.access_token != null;
+-    if (isLogInDone && loginResponse.user != null) {
+-      _parseAndUpdateUser(loginResponse.user!);
+-    }
+-
+-    return loginResponse;
++      final response = LoginResponse.fromJson(body);
++      _loginAccounts[response] = account;
++      return response;
++    } catch (_) {
++      throw const FormatException('Invalid account login response');
++    }
++  }
++
++  Future<void> completeLogin(LoginResponse response,
++      {required bool storeToken}) async {
++    final account = _loginAccounts[response];
++    if (account == null) throw const AccountChanged();
++    await AccountLifecycle.write(account, () async {
++      if (storeToken) {
++        // Preserve the official metadata-before-token contract. Every native
++        // write is awaited while transitions wait behind this queue owner.
++        await account.setLocalOption('user_info', jsonEncode(response.user ?? {}));
++        account.check();
++        await account.setLocalOption('access_token', response.access_token!);
++      } else if (account.token != response.access_token) {
++        // OIDC publishes success only after the native protected commit.
++        throw const AccountChanged();
++      }
++      account.check();
++      final user = response.user;
++      if (user != null) {
++        if (isWeb) {
++          await bind.mainSetLocalOption(key: 'verifier', value: user.verifier ?? '');
++          account.check();
++        }
++        _parseAndUpdateUser(user);
++      }
++    });
++    await account.validate();
+   }
+ 
+   /// Throws on network failures, non-success responses, and invalid response
+   /// data. Returns an empty list when no API server is configured or a
+   /// successful response contains no third-party login options.
+   static Future<List<dynamic>> queryOidcLoginOptions() async {
+-    final url = await bind.mainGetApiServer();
++    final account = await AccountLifecycle.capture();
++    account.check();
++    final url = account.apiServer;
+     if (url.trim().isEmpty) return [];
+-    final resp = await http.get(Uri.parse('$url/api/login-options'));
++    final resp = (await account.wait(() => http.get(Uri.parse('$url/api/login-options'),
++        account: account))).value;
+     const successStatusCodeStart = 200;
+     const successStatusCodeEnd = 300;
+     if (resp.statusCode < successStatusCodeStart ||
+         resp.statusCode >= successStatusCodeEnd) {
+-      throw RequestException(
+-          resp.statusCode, resp.reasonPhrase ?? 'Request failed');
++      throw RequestException(resp.statusCode, 'Request failed');
+     }
+     final List<String> ops = [];
+     for (final item in jsonDecode(resp.body)) {
+diff --git a/lib/utils/account_lifecycle.dart b/lib/utils/account_lifecycle.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/utils/account_lifecycle.dart
+@@ -0,0 +1,436 @@
++import 'dart:async';
++import 'dart:convert';
++
++import 'account_native.dart' if (dart.library.html) 'account_web.dart' as bridge;
++
++class AccountChanged implements Exception {
++  const AccountChanged();
++  @override
++  String toString() => 'Account changed; operation cancelled';
++}
++
++// Native snapshots are atomic, secret-bearing business results. Never include
++// one in diagnostics. The web bridge has no native receipts and stays separate.
++class _AccountView {
++  final String api;
++  final String token;
++  final String userInfo;
++  final String? receipt;
++  final Map<String, String> cacheReceipts;
++
++  _AccountView(Map<String, dynamic> data)
++      : api = data['api_server'] as String,
++        token = data['access_token'] as String,
++        userInfo = data['user_info'] as String,
++        receipt = bridge.nativeAccount ? data['receipt'] as String : null,
++        cacheReceipts = bridge.nativeAccount
++            ? Map<String, String>.from(data['cache_receipts']) : {} {
++    if (bridge.nativeAccount && (receipt!.isEmpty ||
++        (cacheReceipts['ab'] ?? '').isEmpty ||
++        (cacheReceipts['group'] ?? '').isEmpty)) {
++      throw const FormatException('Invalid account snapshot');
++    }
++  }
++}
++
++class AccountResult<T> {
++  final AccountLease _account;
++  final T _value;
++  AccountResult._(this._account, this._value);
++
++  // Check after resuming the consumer, not only in the producer's microtask.
++  T get value {
++    _account.check();
++    return _value;
++  }
++}
++
++// A populated model keeps this value, never a lease's shared mutable view.
++// Native kind receipts already bind the account epoch and that kind's revision;
++// metadata and the other cache kind are deliberately not part of this stamp.
++class AccountCacheOrigin {
++  final String _api;
++  final String _token;
++  final int _generation;
++  final String _kind;
++  final String? _receipt;
++
++  AccountCacheOrigin._(AccountLease account, this._kind, this._receipt)
++      : _api = account.apiServer,
++        _token = bridge.nativeAccount ? '' : account.token,
++        _generation = account._generation;
++
++  bool matches(AccountLease account) => account._cacheKind == _kind &&
++      account.apiServer == _api &&
++      (bridge.nativeAccount
++          ? account._view.cacheReceipts[_kind] == _receipt
++          : account.token == _token && account._generation == _generation);
++}
++
++class AccountLease {
++  _AccountView _view;
++  final int _generation;
++  final bool _authentication;
++  final String? _cacheKind;
++  final bool Function()? _ownerIsCurrent;
++  bool _retired = false;
++  String? _authAttempt;
++  bool _hasAuthAttempt = false;
++
++  bool get hasAuthAttempt => _hasAuthAttempt;
++
++  AccountLease._(this._view, this._generation, this._authentication,
++      this._cacheKind, this._ownerIsCurrent);
++
++  String get apiServer => _view.api;
++  String get token => _view.token;
++  String get userInfo => _view.userInfo;
++  bool get isCurrent => !_retired &&
++      AccountLifecycle._generationIsCurrent(_generation) &&
++      (_ownerIsCurrent?.call() ?? true);
++
++  bool sameAccount(AccountLease other) => bridge.nativeAccount
++      ? _view.receipt == other._view.receipt
++      : apiServer == other.apiServer && token == other.token;
++
++  AccountCacheOrigin get cacheOrigin {
++    check();
++    final kind = _cacheKind;
++    if (kind == null) throw StateError('Cache lease kind missing');
++    return AccountCacheOrigin._(this, kind, _view.cacheReceipts[kind]);
++  }
++
++  void check() {
++    if (!isCurrent) throw const AccountChanged();
++  }
++
++  Never _changed() {
++    _retired = true;
++    throw const AccountChanged();
++  }
++
++  void _matches(_AccountView current, {String? kind, String? cacheReceipt}) {
++    if (current.api != apiServer) _changed();
++    if (bridge.nativeAccount) {
++      if (kind == null) {
++        if (current.receipt != _view.receipt) _changed();
++      } else if (current.token != token ||
++          current.cacheReceipts[kind] != cacheReceipt) {
++        // The kind receipt binds account epoch and that kind's revision.
++        // Unrelated metadata/other-kind activity must not retire this cache.
++        _changed();
++      }
++    } else if (!_authentication && current.token != token) {
++      _changed();
++    }
++  }
++
++  Future<void> validate() async {
++    check();
++    final expected = _cacheKind == null ? null : _view.cacheReceipts[_cacheKind];
++    final _AccountView current;
++    try {
++      current = await AccountLifecycle._snapshot();
++    } catch (_) {
++      _retired = true;
++      rethrow;
++    }
++    check();
++    _matches(current, kind: _cacheKind, cacheReceipt: expected);
++  }
++
++  Future<AccountResult<T>> wait<T>(Future<T> Function() operation) async {
++    try {
++      final result = await AccountLifecycle.run(this, operation);
++      await validate();
++      return AccountResult._(this, result);
++    } catch (_) {
++      if (isCurrent) await validate();
++      rethrow;
++    }
++  }
++
++  // Only a successful scoped mutation or this lease's attempt result can
++  // authorize a successor. A fresh getter can validate, never bless old work.
++  Future<void> _adopt(String? receipt) async {
++    check();
++    if (bridge.nativeAccount && (receipt == null || receipt.isEmpty)) {
++      throw const FormatException('Missing account mutation receipt');
++    }
++    final next = await AccountLifecycle._snapshot();
++    check();
++    if (next.api != apiServer ||
++        (bridge.nativeAccount && next.receipt != receipt)) _changed();
++    _view = next;
++  }
++
++  Future<void> setLocalOption(String key, String value) {
++    return AccountLifecycle.write(this, () async {
++      String? successor;
++      try {
++        successor = await bridge.setLocalOption(_view.receipt, key, value);
++      } catch (_) {
++        await validate();
++        rethrow;
++      }
++      check();
++      await _adopt(successor);
++      check();
++    });
++  }
++
++  Future<String> cache(String kind, String operation, {String? value,
++      AccountCacheOrigin? origin,
++      void Function(AccountCacheOrigin)? onSuccess}) {
++    if (_cacheKind != kind) throw const FormatException('Cache lease kind mismatch');
++    // Freeze before entering the write queue. A sibling lease updating the
++    // shared view must not lend its successor receipt to an older payload.
++    final expectedOrigin = origin ?? cacheOrigin;
++    return AccountLifecycle.write(this, () async {
++      if (!expectedOrigin.matches(this)) throw const AccountChanged();
++      final receipt = expectedOrigin._receipt;
++      final String? result;
++      try {
++        result = await bridge.cache(receipt, kind, operation, value);
++      } catch (_) {
++        await validate();
++        rethrow;
++      }
++      check();
++      final expected = operation == 'load' ? receipt : result;
++      if (bridge.nativeAccount && (expected == null || expected.isEmpty)) {
++        throw const FormatException('Missing cache mutation receipt');
++      }
++      final current = await AccountLifecycle._snapshot();
++      check();
++      _matches(current, kind: kind, cacheReceipt: expected);
++      if (operation == 'load' && result == null) {
++        throw const FormatException('Invalid account cache');
++      }
++      final published = AccountCacheOrigin._(this, kind, expected);
++      if (operation != 'load' && bridge.nativeAccount) {
++        // Advance only this transaction's kind, not the account/other kind.
++        _view.cacheReceipts[kind] = expected!;
++      }
++      // Publish this transaction's exact successor synchronously with the
++      // shared lease update, before another queued mutation can run.
++      onSuccess?.call(published);
++      if (operation == 'load') {
++        return result!;
++      }
++      return '';
++    });
++  }
++
++  Future<void> startAuth(String op, bool rememberMe) async {
++    final attempt = await AccountLifecycle.write(this,
++        () => bridge.authStart(_view.receipt, op, rememberMe));
++    if (bridge.nativeAccount && (attempt == null || attempt.isEmpty)) {
++      throw const FormatException('Missing account authentication attempt');
++    }
++    _authAttempt = attempt;
++    _hasAuthAttempt = true;
++    if (!isCurrent) {
++      await cancelAuth();
++      throw const AccountChanged();
++    }
++  }
++
++  // Web must invoke its existing bridge synchronously in the user gesture.
++  static Future<String?> startWebAuth(String op, bool rememberMe) {
++    if (bridge.nativeAccount) throw StateError('Web authentication on native backend');
++    return bridge.authStart(null, op, rememberMe);
++  }
++
++  void acceptWebAuth() {
++    if (bridge.nativeAccount) throw StateError('Web authentication on native backend');
++    check();
++    _hasAuthAttempt = true;
++  }
++
++  Future<void> cancelAuth() async {
++    if (!_hasAuthAttempt) throw StateError('Account authentication attempt missing');
++    if (!bridge.nativeAccount) check();
++    final attempt = _authAttempt;
++    await AccountLifecycle._enqueue(() => bridge.authCancel(attempt),
++        generation: _generation);
++    _hasAuthAttempt = false;
++  }
++
++  Future<Map<String, dynamic>> pollAuth() {
++    check();
++    if (!_hasAuthAttempt) throw StateError('Account authentication attempt missing');
++    final attempt = _authAttempt;
++    return AccountLifecycle._enqueue(() async {
++      check();
++      // No origin-receipt getter here: successful OIDC intentionally advances
++      // it. Native polling authenticates the exact returned attempt handle.
++      final raw = await bridge.authResult(attempt);
++      check();
++      if (!bridge.nativeAccount && raw.isEmpty) {
++        await validate();
++        return <String, dynamic>{};
++      }
++      final Map<String, dynamic> result;
++      try {
++        result = jsonDecode(raw) as Map<String, dynamic>;
++      } catch (_) {
++        throw const FormatException('Invalid account authentication result');
++      }
++      final body = result['auth_body'];
++      if (body is Map && body['type'] == 'access_token') {
++        final receipt = result['account_scope'];
++        if (bridge.nativeAccount && receipt is! String) {
++          throw const FormatException('Missing OIDC commit receipt');
++        }
++        await _adopt(receipt as String?);
++        check();
++        if (body['access_token'] != token) _changed();
++      } else {
++        await validate();
++        check();
++      }
++      return result;
++    }, generation: _generation);
++  }
++}
++
++class AccountLifecycle {
++  static int _generation = 0;
++  static Future<void> _tail = Future<void>.value();
++  static int _queued = 0;
++  static final Object _queueKey = Object();
++  static final Object _generationKey = Object();
++  static final Object _transitionKey = Object();
++  static final Object _operationKey = Object();
++  static Set<Future<void>>? _nestedWrites;
++  static Object? _activeQueueOwner;
++  static const _maxQueued = 64;
++
++  static bool get _insideQueue => _activeQueueOwner != null &&
++      identical(Zone.current[_queueKey], _activeQueueOwner);
++
++  static bool _generationIsCurrent(int generation) => generation == _generation ||
++      (_insideQueue && Zone.current[_transitionKey] == true &&
++          Zone.current[_generationKey] == generation);
++
++  static Future<_AccountView> _snapshot() async {
++    final data = await bridge.snapshot();
++    try {
++      return _AccountView(data);
++    } catch (_) {
++      throw const FormatException('Invalid account snapshot');
++    }
++  }
++
++  static Future<AccountLease> capture({bool authentication = false,
++      String? cacheKind, bool Function()? ownerIsCurrent}) async {
++    final inherited = Zone.current[_operationKey] as AccountLease?;
++    if (inherited != null) {
++      inherited.check();
++      final origin = cacheKind == null || inherited._cacheKind == cacheKind
++          ? inherited : forCache(inherited, cacheKind, ownerIsCurrent: ownerIsCurrent);
++      await origin.validate();
++      origin.check();
++      return origin;
++    }
++    final generation = _insideQueue
++        ? Zone.current[_generationKey] as int : _generation;
++    if (!_insideQueue) await _tail;
++    if (!_generationIsCurrent(generation)) throw const AccountChanged();
++    final view = await _snapshot();
++    if (!_generationIsCurrent(generation)) throw const AccountChanged();
++    return AccountLease._(view, generation, authentication, cacheKind, ownerIsCurrent);
++  }
++
++  static Future<T> run<T>(AccountLease account, Future<T> Function() action) {
++    account.check();
++    return runZoned(action, zoneValues: {_operationKey: account});
++  }
++
++  static AccountLease forCache(AccountLease account, String kind,
++      {bool Function()? ownerIsCurrent}) {
++    account.check();
++    return AccountLease._(account._view, account._generation, false, kind,
++        ownerIsCurrent);
++  }
++
++  // Rebase only Dart scheduling ownership for an intentional transition.
++  // The native receipt/API/token and kind receipts remain the ORIGINAL view.
++  static AccountLease transitionOrigin(AccountLease account) {
++    if (!_insideQueue || Zone.current[_transitionKey] != true) {
++      throw StateError('Account transition owner missing');
++    }
++    if (account._retired) throw const AccountChanged();
++    return AccountLease._(account._view, Zone.current[_generationKey] as int,
++        true, null, null);
++  }
++
++  static Future<T> _enqueue<T>(Future<T> Function() action,
++      {required int generation, bool transition = false}) {
++    if (_queued >= _maxQueued) {
++      return Future<T>.error(StateError('Account operation queue is full'));
++    }
++    _queued++;
++    if (_insideQueue) {
++      final pending = _nestedWrites!;
++      final result = Future<T>.sync(action);
++      late final Future<void> settled;
++      settled = result.then<void>((_) {}, onError: (Object _, StackTrace __) {})
++          .whenComplete(() {
++        pending.remove(settled);
++        _queued--;
++      });
++      pending.add(settled);
++      return result;
++    }
++    final result = _tail.then((_) async {
++      final owner = Object();
++      final pending = <Future<void>>{};
++      _activeQueueOwner = owner;
++      _nestedWrites = pending;
++      try {
++        return await runZoned(action, zoneValues: {
++          _queueKey: owner,
++          _generationKey: generation,
++          _transitionKey: transition,
++        });
++      } finally {
++        // A synchronous model listener may have submitted another native
++        // write. Drain it as well before admitting the next transition.
++        while (pending.isNotEmpty) {
++          await Future.wait(pending.toList());
++        }
++        _nestedWrites = null;
++        _activeQueueOwner = null;
++        _queued--;
++      }
++    });
++    // The caller retains the error; a failed write must not poison the queue.
++    _tail = result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
++    return result;
++  }
++
++  static Future<T> write<T>(AccountLease account, Future<T> Function() action) {
++    account.check();
++    return _enqueue(() async {
++      await account.validate();
++      account.check();
++      return action();
++    }, generation: account._generation);
++  }
++
++  static Future<T> transition<T>(Future<T> Function() action) {
++    if (_insideQueue && Zone.current[_transitionKey] == true) return action();
++    if (_queued >= _maxQueued) {
++      return Future<T>.error(StateError('Account operation queue is full'));
++    }
++    final generation = ++_generation;
++    return _enqueue(() => runZoned(action, zoneValues: {_operationKey: null}),
++        generation: generation, transition: true);
++  }
++
++  static void retire(AccountLease account) {
++    if (account._generation == _generation) _generation++;
++  }
++}
+diff --git a/lib/utils/account_native.dart b/lib/utils/account_native.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/utils/account_native.dart
+@@ -0,0 +1,39 @@
++import 'dart:convert';
++
++import '../models/platform_model.dart';
++
++const nativeAccount = true;
++
++Future<Map<String, dynamic>> snapshot() async {
++  final raw = await bind.mainAccountSnapshot();
++  try {
++    return jsonDecode(raw) as Map<String, dynamic>;
++  } catch (_) {
++    throw const FormatException('Invalid account snapshot');
++  }
++}
++
++String _required(String? receipt) {
++  if (receipt == null || receipt.isEmpty) {
++    throw const FormatException('Missing account receipt');
++  }
++  return receipt;
++}
++
++Future<String?> setLocalOption(String? receipt, String key, String value) =>
++    bind.mainAccountSetLocalOption(
++        receipt: _required(receipt), key: key, value: value);
++
++Future<String?> cache(String? receipt, String kind, String operation, String? value) =>
++    bind.mainAccountCache(receipt: _required(receipt), kind: kind,
++        operation: operation, value: value);
++
++Future<String?> authStart(String? receipt, String op, bool rememberMe) =>
++    bind.mainAccountAuthScoped(
++        receipt: _required(receipt), op: op, rememberMe: rememberMe);
++
++Future<void> authCancel(String? attempt) =>
++    bind.mainAccountAuthCancelScoped(attempt: _required(attempt));
++
++Future<String> authResult(String? attempt) =>
++    bind.mainAccountAuthResultScoped(attempt: _required(attempt));
+diff --git a/lib/utils/account_web.dart b/lib/utils/account_web.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/utils/account_web.dart
+@@ -0,0 +1,45 @@
++import '../models/platform_model.dart';
++
++// The web client retains its existing JavaScript business bridge. There is no
++// native receipt, fabricated receipt, or native protected-store fallback here.
++const nativeAccount = false;
++
++Future<Map<String, dynamic>> snapshot() async {
++  final api = await bind.mainGetApiServer();
++  return {
++    'api_server': api,
++    'access_token': bind.mainGetLocalOption(key: 'access_token'),
++    'user_info': bind.mainGetLocalOption(key: 'user_info'),
++  };
++}
++
++Future<String?> setLocalOption(String? receipt, String key, String value) async {
++  await bind.mainSetLocalOption(key: key, value: value);
++  return null;
++}
++
++Future<String?> cache(String? receipt, String kind, String operation, String? value) async {
++  if (kind == 'ab') {
++    switch (operation) {
++      case 'load': return bind.mainLoadAb();
++      case 'save': await bind.mainSaveAb(json: value!); return null;
++      case 'clear': await bind.mainClearAb(); return null;
++    }
++  } else if (kind == 'group') {
++    switch (operation) {
++      case 'load': return bind.mainLoadGroup();
++      case 'save': await bind.mainSaveGroup(json: value!); return null;
++      case 'clear': await bind.mainClearGroup(); return null;
++    }
++  }
++  throw const FormatException('Invalid account cache operation');
++}
++
++Future<String?> authStart(String? receipt, String op, bool rememberMe) {
++  // Invoke before returning a Future: Safari requires the original gesture.
++  final started = bind.mainAccountAuth(op: op, rememberMe: rememberMe);
++  return started.then((_) => null);
++}
++
++Future<void> authCancel(String? attempt) => bind.mainAccountAuthCancel();
++Future<String> authResult(String? attempt) => bind.mainAccountAuthResult();
+diff --git a/lib/utils/http_service.dart b/lib/utils/http_service.dart
+--- a/lib/utils/http_service.dart
++++ b/lib/utils/http_service.dart
+@@ -1,12 +1,22 @@
++import 'dart:async';
+ import 'dart:convert';
+ import 'package:flutter/foundation.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:http/http.dart' as http;
+ import '../models/platform_model.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'account_lifecycle.dart';
+ export 'package:http/http.dart' show Response;
+ 
+ enum HttpMethod { get, post, put, delete }
++
++class AccountHttpException implements Exception {
++  final String message;
++  const AccountHttpException(this.message);
++
++  @override
++  String toString() => message;
++}
+ 
+ class HttpService {
+   Future<http.Response> sendRequest(
+@@ -14,41 +24,75 @@
+     HttpMethod method, {
+     Map<String, String>? headers,
+     dynamic body,
++    AccountLease? account,
+   }) async {
+-    headers ??= {'Content-Type': 'application/json'};
++    // Neither branch may send credentials over HTTP, use URL credentials, or
++    // follow a redirect. In particular, do not retry certificate failures with
++    // relaxed trust or a different transport.
++    if (url.scheme != 'https' || url.host.isEmpty ||
++        url.userInfo.isNotEmpty || url.hasFragment) {
++      throw const AccountHttpException('Account HTTP requires a valid HTTPS URL');
++    }
++    account ??= await AccountLifecycle.capture();
++    await account.validate();
++    account.check();
++    final configured = Uri.tryParse(account.apiServer);
++    if (configured == null || configured.scheme != 'https' ||
++        configured.host != url.host || configured.port != url.port ||
++        configured.userInfo.isNotEmpty || configured.hasQuery ||
++        configured.hasFragment ||
++        !url.path.startsWith('${configured.path.replaceFirst(RegExp(r'/+$'), '')}/api/')) {
++      throw const AccountHttpException('Account HTTP destination does not match account');
++    }
++    headers = Map<String, String>.from(
++        headers ?? {'Content-Type': 'application/json'});
++    for (final header in headers.entries) {
++      if (header.key.toLowerCase() == 'authorization' &&
++          header.value.startsWith('Bearer ') &&
++          header.value != 'Bearer ${account.token}') {
++        throw const AccountChanged();
++      }
++    }
++    try {
++      var useFlutterHttp = (isWeb || kIsWeb);
++      if (!useFlutterHttp) {
++        final enableFlutterHttpOnRust =
++            mainGetLocalBoolOptionSync(kOptionEnableFlutterHttpOnRust);
++        useFlutterHttp = !(enableFlutterHttpOnRust ||
++            (await account.wait(() => bind.mainGetProxyStatus())).value);
++      }
+ 
+-    // Use Rust HTTP implementation for non-web platforms for consistency.
+-    var useFlutterHttp = (isWeb || kIsWeb);
+-    if (!useFlutterHttp) {
+-      final enableFlutterHttpOnRust =
+-          mainGetLocalBoolOptionSync(kOptionEnableFlutterHttpOnRust);
+-      // Use flutter http if:
+-      // Not `enableFlutterHttpOnRust` and no proxy is set
+-      useFlutterHttp =
+-          !(enableFlutterHttpOnRust || await bind.mainGetProxyStatus());
++      final http.Response response;
++      if (useFlutterHttp) {
++        response = (await account.wait(() => 
++            _pollFlutterHttp(url, method, headers: headers, body: body))).value;
++      } else {
++        final owner = account;
++        (await owner.wait(() => AccountLifecycle.write(owner, () => bind.mainHttpRequest(
++            url: url.toString(),
++            method: method.name,
++            body: body,
++            header: jsonEncode(headers))))).value;
++        final result = (await owner.wait(() => _pollForResponse(url.toString(), owner))).value;
++        response = _parseHttpResponse(result);
++      }
++      account.check();
++      if (response.statusCode >= 300 && response.statusCode < 400) {
++        throw const AccountHttpException('Account HTTP redirects are not allowed');
++      }
++      return response;
++    } on AccountChanged {
++      rethrow;
++    } on AccountHttpException {
++      rethrow;
++    } on TimeoutException {
++      throw const AccountHttpException('Account HTTP request timed out');
++    } catch (_) {
++      // Platform exceptions can contain headers, bodies or complete query URLs.
++      throw const AccountHttpException('Account HTTP request failed');
+     }
+-
+-    if (useFlutterHttp) {
+-      return await _pollFlutterHttp(url, method, headers: headers, body: body);
+-    }
+-
+-    String headersJson = jsonEncode(headers);
+-    String methodName = method.toString().split('.').last;
+-    await bind.mainHttpRequest(
+-        url: url.toString(),
+-        method: methodName.toLowerCase(),
+-        body: body,
+-        header: headersJson);
+-
+-    var resJson = await _pollForResponse(url.toString());
+-    return _parseHttpResponse(resJson);
+   }
+ 
+-  // Bounds only the pure-Dart branch below, which the OS would otherwise
+-  // let hang forever (e.g. a black-holed TLS handshake), see #15700.
+-  // The Rust branch has its own 12s-per-attempt timeouts and must be
+-  // awaited to completion: a Dart-side timeout there would race the
+-  // URL-keyed ASYNC_HTTP_STATUS entry of the abandoned request.
+   static const _requestTimeout = Duration(seconds: 30);
+ 
+   Future<http.Response> _pollFlutterHttp(
+@@ -59,87 +103,82 @@
+   }) async {
+     final client = http.Client();
+     try {
+-      var response = http.Response('', 400);
+-
+-      switch (method) {
+-        case HttpMethod.get:
+-          response =
+-              await client.get(url, headers: headers).timeout(_requestTimeout);
+-          break;
+-        case HttpMethod.post:
+-          response = await client
+-              .post(url, headers: headers, body: body)
+-              .timeout(_requestTimeout);
+-          break;
+-        case HttpMethod.put:
+-          response = await client
+-              .put(url, headers: headers, body: body)
+-              .timeout(_requestTimeout);
+-          break;
+-        case HttpMethod.delete:
+-          response = await client
+-              .delete(url, headers: headers, body: body)
+-              .timeout(_requestTimeout);
+-          break;
+-        default:
+-          throw Exception('Unsupported HTTP method');
++      final request = http.Request(method.name.toUpperCase(), url)
++        ..followRedirects = false
++        ..maxRedirects = 0;
++      request.headers.addAll(headers ?? {});
++      if (body is String) {
++        request.body = body;
++      } else if (body is List<int>) {
++        request.bodyBytes = body;
++      } else if (body is Map<String, String>) {
++        request.bodyFields = body;
++      } else if (body != null) {
++        throw const AccountHttpException('Unsupported account HTTP body');
+       }
+-
+-      return response;
++      // One deadline includes the response body, not just response headers.
++      return await client.send(request)
++          .then(http.Response.fromStream).timeout(_requestTimeout);
+     } finally {
+       client.close();
+     }
+   }
+ 
+-  Future<String> _pollForResponse(String url) async {
+-    String? responseJson = " ";
+-    while (responseJson == " ") {
+-      responseJson = await bind.mainGetHttpStatus(url: url);
+-      if (responseJson == null) {
+-        throw Exception('The HTTP request failed');
++  Future<String> _pollForResponse(String url, AccountLease account) async {
++    final elapsed = Stopwatch()..start();
++    while (elapsed.elapsed < _requestTimeout) {
++      // Poll submission is serialized with transitions as well as starts: an
++      // old queued poll must never consume a newer same-URL request's result.
++      account.check();
++      final response = (await account.wait(() => AccountLifecycle.write(
++          account, () => bind.mainGetHttpStatus(url: url)))).value;
++      if (response == null) {
++        throw const AccountHttpException('Account HTTP request is no longer available');
+       }
+-      if (responseJson == " ") {
+-        await Future.delayed(const Duration(milliseconds: 100));
+-      }
++      if (response != ' ') return response;
++      (await account.wait(() => Future<void>.delayed(const Duration(milliseconds: 100)))).value;
+     }
+-    return responseJson!;
++    // Native ownership/retention is bounded independently. A new same-URL start
++    // is rejected while its old entry exists; there is no replacement request ID.
++    throw const AccountHttpException('Account HTTP request timed out');
+   }
+ 
+   http.Response _parseHttpResponse(String responseJson) {
+     try {
+-      var parsedJson = jsonDecode(responseJson);
+-      String body = parsedJson['body'];
+-      Map<String, String> headers = {};
+-      for (var key in parsedJson['headers'].keys) {
+-        headers[key] = parsedJson['headers'][key];
+-      }
+-      int statusCode = parsedJson['status_code'];
++      final parsedJson = jsonDecode(responseJson);
++      final String body = parsedJson['body'];
++      final headers = Map<String, String>.from(parsedJson['headers']);
++      final int statusCode = parsedJson['status_code'];
+       return http.Response(body, statusCode, headers: headers);
+-    } catch (e) {
+-      print('Failed to parse response\n$responseJson\nError:\n$e');
+-      throw Exception('Failed to parse response.\n$responseJson');
++    } catch (_) {
++      throw const AccountHttpException('Invalid account HTTP response');
+     }
+   }
+ }
+ 
+-Future<http.Response> get(Uri url, {Map<String, String>? headers}) async {
+-  return await HttpService().sendRequest(url, HttpMethod.get, headers: headers);
++Future<http.Response> get(Uri url,
++    {Map<String, String>? headers, AccountLease? account}) async {
++  return await HttpService().sendRequest(url, HttpMethod.get,
++      headers: headers, account: account);
+ }
+ 
+ Future<http.Response> post(Uri url,
+-    {Map<String, String>? headers, Object? body, Encoding? encoding}) async {
+-  return await HttpService()
+-      .sendRequest(url, HttpMethod.post, body: body, headers: headers);
++    {Map<String, String>? headers, Object? body, Encoding? encoding,
++    AccountLease? account}) async {
++  return await HttpService().sendRequest(url, HttpMethod.post,
++      body: body, headers: headers, account: account);
+ }
+ 
+ Future<http.Response> put(Uri url,
+-    {Map<String, String>? headers, Object? body, Encoding? encoding}) async {
+-  return await HttpService()
+-      .sendRequest(url, HttpMethod.put, body: body, headers: headers);
++    {Map<String, String>? headers, Object? body, Encoding? encoding,
++    AccountLease? account}) async {
++  return await HttpService().sendRequest(url, HttpMethod.put,
++      body: body, headers: headers, account: account);
+ }
+ 
+ Future<http.Response> delete(Uri url,
+-    {Map<String, String>? headers, Object? body, Encoding? encoding}) async {
+-  return await HttpService()
+-      .sendRequest(url, HttpMethod.delete, body: body, headers: headers);
++    {Map<String, String>? headers, Object? body, Encoding? encoding,
++    AccountLease? account}) async {
++  return await HttpService().sendRequest(url, HttpMethod.delete,
++      body: body, headers: headers, account: account);
+ }

@@ -1,0 +1,262 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/rustdesk/rustdesk",
+  "revision": "092a961b629d318fe290eeafac0cd214a1e9deeb",
+  "license": {
+    "spdx": "AGPL-3.0-only",
+    "path": "upstream/LICENCE",
+    "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+    "bytes": 34523,
+    "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+    "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
+  },
+  "scope": "Only the pinned official outbound LAN scanner, untrusted peer-ID helper, actual LanPeers four-field projection and ID removal. Core-owned namespace/admission/retirement lets both existing bridges consume the same scanner. No responder, WOL, server routing, account, input, media, Surface or codec change.",
+  "modified_date": "2026-09-24",
+  "fetch_method": "Selected exact bytes from Main's fixed upstream checkout. This worker independently recomputed full SHA-256/Git blob SHA-1 for the three selected Rust files and compared each to Main's verified_blobs contract. The published default-net archive was independently downloaded over HTTPS and checksum verified. No full application import.",
+  "source_files": {
+    "src/lan.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lan.rs",
+      "bytes": 13023,
+      "sha256": "3637dedc066def759040a53322194a65d528ed01f307048fc16a7e75fb29a489",
+      "git_blob_sha1": "2a648aab04ba2bbd909b4710cdb736929408547b"
+    },
+    "src/common.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/common.rs",
+      "bytes": 111827,
+      "sha256": "11c1c31ed8a071a7d5ca4af88b2c3cb7778f0253057421795cf83ef7efb43717",
+      "git_blob_sha1": "9dadb1c8603a2360c8234701f0caf140afb67794"
+    },
+    "src/ui_interface.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/ui_interface.rs",
+      "bytes": 55150,
+      "sha256": "2ec26030205c7cd5a73808886f2350dc40360043dfbbb44a756026197da153b3",
+      "git_blob_sha1": "b1eeefde2e6a1fa76719766ff4ea8594b90aa61f"
+    },
+    "Cargo.lock": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/Cargo.lock",
+      "bytes": 269193,
+      "sha256": "4911773c148fff7abbb7fedc58423ecdf4fee2f6beebc470d0f71e90323bf11b",
+      "git_blob_sha1": "09ca9b738b998e08544c6998fd5b3594d52575cf"
+    },
+    "LICENCE": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+      "bytes": 34523,
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
+    }
+  },
+  "source_snapshots": [
+    {
+      "snapshot": "upstream/lan.rs.original",
+      "original_file": "src/lan.rs",
+      "selection": [
+        {
+          "start_line": 1,
+          "end_line": 24,
+          "symbol": "imports and Message",
+          "sha256": "b5854852d9718082fcf7cb6d9546f26ea947295fe581d953e4c6c47f7c7cc121"
+        },
+        {
+          "start_line": 76,
+          "end_line": 84,
+          "symbol": "discover",
+          "sha256": "753e00828fc3a86d7aa4d08e681abbc03d4f3af69cd2dd8cd7950f2547951c37"
+        },
+        {
+          "start_line": 107,
+          "end_line": 352,
+          "symbol": "outbound scanner and collector",
+          "sha256": "287116341e5ff1a577bbea500f24e1c49450865d2465e7cc9ceb1e5023c92b46"
+        }
+      ],
+      "snapshot_sha256": "00418f1435faf408b5c52db23fa4994a018e804078cba3a8b4df2835030447ea"
+    },
+    {
+      "snapshot": "upstream/peer_id.rs.original",
+      "original_file": "src/common.rs",
+      "selection": [
+        {
+          "start_line": 2803,
+          "end_line": 2815,
+          "symbol": "is_valid_untrusted_peer_id and constants",
+          "sha256": "91f41ef73e1e4c5430179b6f4164854588177504c796e00dd0ffa1eb8b8e9af9"
+        }
+      ],
+      "snapshot_sha256": "91f41ef73e1e4c5430179b6f4164854588177504c796e00dd0ffa1eb8b8e9af9"
+    },
+    {
+      "snapshot": "upstream/ui_interface.rs.original",
+      "original_file": "src/ui_interface.rs",
+      "selection": [
+        {
+          "start_line": 809,
+          "end_line": 830,
+          "symbol": "get_lan_peers and remove_discovered",
+          "sha256": "02b4991ed7e8a0641821e1030dc7a00f322bd3faa3a7a6175dbed8d4aa232ba7"
+        }
+      ],
+      "snapshot_sha256": "02b4991ed7e8a0641821e1030dc7a00f322bd3faa3a7a6175dbed8d4aa232ba7"
+    },
+    {
+      "snapshot": "upstream/default-net.lock.original",
+      "original_file": "Cargo.lock",
+      "selection": [
+        {
+          "start_line": 2089,
+          "end_line": 2104,
+          "symbol": "default-net package record",
+          "sha256": "66395a30a1ea7ba2807363fa27f18b5ece34f31f2a8388d1cee5965c30e92617"
+        }
+      ],
+      "snapshot_sha256": "66395a30a1ea7ba2807363fa27f18b5ece34f31f2a8388d1cee5965c30e92617"
+    }
+  ],
+  "snapshot_assembly": "For selected-symbol snapshots, each recorded inclusive original line range is retained verbatim; remove only trailing LF between pieces, join pieces with two LF, append final LF. The package-record and license snapshots are exact selected/full bytes. These .original files are provenance, not compiled modules.",
+  "adapted_files": [
+    {
+      "path": "discovery.rs",
+      "sha256": "d179717ca7c7ea4cb7a10efabaa03c2f5b6f5ec4d59e67385fab795188af9c69",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/lan.rs.original"
+        ]
+      },
+      "baseline_sha256": "00418f1435faf408b5c52db23fa4994a018e804078cba3a8b4df2835030447ea",
+      "adaptation_patch": "upstream/discovery.adaptation.patch",
+      "patch_sha256": "cf2a4b25fa21be0aa5915edc84e26b9da4558ca42cb1f0f92ce5634079e4e5d1"
+    },
+    {
+      "path": "peer_id.rs",
+      "sha256": "116aa5d54b92c82c43507cc691a442b1992cdbd22a13ed70bb2ace9d70fa5a9a",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/peer_id.rs.original"
+        ]
+      },
+      "baseline_sha256": "91f41ef73e1e4c5430179b6f4164854588177504c796e00dd0ffa1eb8b8e9af9",
+      "adaptation_patch": "upstream/peer_id.adaptation.patch",
+      "patch_sha256": "b025c9a1459c8d8767e69a2c6316004bc3a34ced2936475e6b617218f8b0b54f"
+    },
+    {
+      "path": "mod.rs",
+      "sha256": "66d7719a94eef9398a33665f81f1d2b75f3f9caa91dbc0db3e1c193725982114",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/ui_interface.rs.original"
+        ]
+      },
+      "baseline_sha256": "02b4991ed7e8a0641821e1030dc7a00f322bd3faa3a7a6175dbed8d4aa232ba7",
+      "adaptation_patch": "upstream/mod.adaptation.patch",
+      "patch_sha256": "7a4e37559330200e822caaa4e1e9f1b639fd601159ef3b6e930e41dbc1f94a48"
+    }
+  ],
+  "adaptations": [
+    {
+      "id": "LAN1",
+      "files": [
+        "discovery.rs"
+      ],
+      "source_symbols": [
+        "discover",
+        "create_broadcast_sockets",
+        "send_query",
+        "wait_response",
+        "spawn_wait_responses",
+        "handle_received_peers"
+      ],
+      "changes": [
+        "Remove application UI/IPC/Flutter imports and the standalone tokio::main runtime. Existing crate::executor runs a blocking coordinator; the async runtime observer always consumes its JoinHandle before completing receipts. No responder or send_wol source is compiled or imported into the module.",
+        "Inject already initialized identity for Android/iOS/OHOS; retain empty desktop ping ID. Retain IPv4 ephemeral binds, the unspecified-address fallback, broadcast destination 255.255.255.255:21119, exact protobuf ping, source-address IP, payload metadata, pong/official-ID/MAC filtering and 3-second inactivity refresh position.",
+        "Add a 10-second monotonic admission deadline captured in start, cancellation checks before new work/receive/ingress/collector steps, a 256-record Tokio ingress, and interruptible try_recv/Condvar waiting of at most 10ms between control checks outside synchronous I/O. Full queues backpressure; no try_send-full drop or peer/cache truncation.",
+        "Save every socket thread JoinHandle, propagate spawn errors, catch/report worker and coordinator unwind, close receiver before joins, merge already admitted buffered records, join all workers even on a prior failure, then drain once more for already-owned sender permits and attempt the final official cache write. The cleanup guard retains this obligation through unwind.",
+        "Initialize the official aggregate after sends and before spawning socket workers, rather than after spawning: a cache-load unwind cannot leave admitted records without an aggregate. A scan cancelled/deadlined before aggregate/worker admission starts no further work and does not rewrite a speculative empty cache.",
+        "Move the unchanged id+username/is_same_peer, ID-only response_set, first-ID replacement/repeated-ID old-map-over-new-map merge and move-to-front collector body into a drainable aggregate. Preserve first received-record write, subsequent >300ms writes only on new records and final write. Absent peers are retained and marked offline only in the aggregate until a write attempt."
+      ]
+    },
+    {
+      "id": "LAN2",
+      "files": [
+        "mod.rs"
+      ],
+      "source_symbols": [
+        "get_lan_peers",
+        "remove_discovered"
+      ],
+      "changes": [
+        "Keep the exact official four-string-field projection and ID retain rule over the existing hbb_common::config DTO/cache; add a shared cache I/O serialization boundary and monotonic write-attempt revision. Query revalidates owner after acquiring that boundary and after I/O; no arbitrary cache root or second DTO/schema is introduced.",
+        "New integration-only owner metadata implements one namespace, opaque generation/scan tickets, coalescing, idle/scanning/stopping/removing/closed state and completion receipts. Removing is reserved synchronously at admission through scan join and official retain/store. Stale tickets/owners do not mutate a replacement scan; new owners are refused until retirement completes; no implicit restart or retry.",
+        "Global state, coordinators and join observers retain only inner state, not the outer bridge Arc<LanOwner>. The last bridge owner Drop requests close. Dropping a receipt or bridge promise cannot release the gate or cancel cleanup.",
+        "Close immediately revokes admission/notifiers; engine-owned tasks join scan/removal, observe their blocking workers, pass the same cache boundary to wait admitted queries, drain admitted notification callbacks, then publish completion and release the namespace. No metadata lock is held during cache I/O or joins.",
+        "Callbacks receive only generation/scan/revision invalidation. They execute with no native lock held inside existing async runtime worker context, may schedule spawn_blocking query, and must not synchronously await close. Invocation panic is caught/reported, disables the notifier and stops an active scan. None is a valid notifier for polling.",
+        "Official LanPeers::load defaults/logs on read failure and store returns void/logs failures. Completion is actual owned work ended and write attempted, not durable save/delete success. Rows always come from a real cache read rather than optimistic in-memory state."
+      ]
+    },
+    {
+      "id": "LAN3",
+      "files": [
+        "peer_id.rs"
+      ],
+      "source_symbols": [
+        "MAX_UNTRUSTED_PEER_ID_LEN",
+        "UNTRUSTED_PEER_ID_FORBIDDEN_CHARS",
+        "is_valid_untrusted_peer_id"
+      ],
+      "changes": [
+        "The selected helper is byte-exact after an attribution header, inside a private module. No ASCII-only/numeric-only replacement or trust inference."
+      ]
+    }
+  ],
+  "dependency_integration": {
+    "required_locked_transitive": {"netlink-sys": {"version": "0.8.6", "checksum": "416060d346fbaf1f23f9512963e3e878f1a78e707cb699ba9215761754244307", "source": "Pinned official Cargo.lock; do not resolve to newer 0.8.x or change pre-existing socket2 consumers."}},
+    "required_direct": {
+      "default-net": {
+        "version": "=0.14.1",
+        "path": "vendor/default-net",
+        "archive_sha256": "a4898b43aed56499fad6b294d15b3e76a51df68079bf492e5daae38ca084e003",
+        "provenance": "../../vendor/default-net/UPSTREAM.json"
+      }
+    },
+    "manifest_changes": [
+      "Root Cargo.toml direct path/version dependency and workspace exclusion only; src/lib.rs adds pub mod lan only."
+    ],
+    "existing_reused": [
+      "crate::executor runtime",
+      "tokio 1.52.4 bounded mpsc/Notify/spawn_blocking",
+      "hbb_common existing protobuf RendezvousMessage/PeerDiscovery",
+      "hbb_common existing config::DiscoveryPeer/is_same_peer/LanPeers"
+    ],
+    "shared_source": {
+      "repository": "https://github.com/rustdesk/hbb_common",
+      "revision": "daf84c2df33b3d5861d9a36600773638559d072c",
+      "provenance": "../../vendor/rustdesk/UPSTREAM.json",
+      "note": "Existing integration-patched source is consumed unchanged; LAN cache or wire schemas are not recopied."
+    },
+    "owners": "Main owns three active lockfiles, generated bindings, provenance scripts/workflows and final compilation/linking/packaging. Other assigned agents own NAPI/ArkTS. No source, bridge, script, media or configuration edits outside this assignment."
+  },
+  "verification": {
+    "performed": [
+      "Read the fixed shared_lan_api and both source/lifecycle audits, current engine rules/runtime/cache, and pinned dependency implementation.",
+      "Independently computed exact local upstream Git blob identities for scanner/helper/projection source and compared to the fixed verified contract.",
+      "Downloaded and hashed the published 0.14.1 archive; confirmed the official RustDesk Cargo.lock package checksum.",
+      "Retained source/license snapshots, generated original-to-adapted patches and SHA-256 records; source-byte patch reconstruction and unchanged-member comparisons only."
+    ],
+    "not_run": [
+      "Compilation/linking",
+      "Tests, smoke scenarios, scanners or benchmarks",
+      "Linters or formatters",
+      "App/device execution, permissions or cache mutation",
+      "Project-wide validation"
+    ],
+    "runtime_claim": "None. Only source bytes and implementation contracts are recorded; Main integrates/compiles/links/packages, and the user owns functional/device/performance acceptance.",
+    "important_limits": [
+      "Ten seconds closes admission/new scan work, not a hard completion/reclamation promise. In-flight system calls, cache I/O, buffer draining and joins may finish later.",
+      "The queue holds at most 256 application records, not a bound on sockets, peers, response_set, IP/MAC maps, cache file bytes or memory. Official peer/cache growth remains unbounded. UDP can still lose packets in the kernel/network while application backpressure pauses receiving.",
+      "Cache writes are upstream void/log-only attempts, not disk error propagation or fsync durability.",
+      "LAN rows and online bits are untrusted observations, never authentication, server trust or a routing shortcut. Scanner-only clients do not become responders.",
+      "OHOS retains the real Unix getifaddrs/freeifaddrs/if_nametoindex path. Interface index is unused by the scanner; no permission fallback or fabricated empty-platform implementation is added. Target compilation/linking and ordinary application SELinux/runtime behavior remain for Main/user respectively."
+    ]
+  }
+}

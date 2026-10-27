@@ -1,0 +1,65 @@
+# Official-client CPU RGBA integration patch.
+#
+# Target: rustdesk/rustdesk, revision 092a961b629d318fe290eeafac0cd214a1e9deeb
+#         (the revision native/frb/UPSTREAM.txt pins), path
+#         flutter/lib/models/desktop_render_texture.dart
+#         blob a960491346f909a3e0a0921654651eda3aec30a8
+# Apply from the client's flutter/ directory, because the diff paths are
+# relative to it:
+#
+#   git -C <client>/flutter apply --check <this file>
+#   git -C <client>/flutter apply       <this file>
+#
+# `scripts/sync-client-to-windows.sh` is the only caller: it verifies this patch
+# applies to the clean local pinned checkout, copies it to the remote bridge, and
+# applies it to the remote build copy of the client before `flutter pub get`. The
+# local official checkout is never modified (the script only checks it).
+#
+# Why: this kernel serves frames over the CPU RGBA path - `EventToUI::Rgba`
+# through `session_get_rgba_size` and the engine-owned pointer, consumed by the
+# official `ImageModel.onRgba`/ImagePainter - and its
+# `mainGetUseTextureRender()` answers false. Upstream's
+# `TextureModel.updateCurrentDisplay` nevertheless allocates a
+# `_PixelbufferTexture` for every display it is asked about and registers its
+# pointer through `platformFFI.registerPixelbufferTexture`, which reaches the
+# kernel as `session_register_pixelbuffer_texture`. On this kernel that call is
+# an explicit refusal, so the texture would be allocated for a renderer that
+# never consumes it and registered into a kernel that refuses to register it.
+#
+# What the patch does: one guard, `if (!bind.mainGetUseTextureRender()) return;`,
+# placed after the existing `isWeb` check and before every allocation and
+# registration in that method. With `mainGetUseTextureRender()` true the method
+# body is byte-for-byte upstream's, so texture-mode allocation, registration and
+# retirement behave exactly as before; with it false nothing is allocated, so
+# there is no texture to retire and no registration to skip. That answer is the
+# kernel's own (`main_get_use_texture_render`), never a client-side guess.
+#
+# Not covered here, and not claimed: upstream's forced texture path for the
+# all-displays view (`pi.forceTextureRender`, true when the current display is
+# `kAllDisplayValue`) is untouched, and the GPU/texture registration ABI stays
+# refused on this kernel. The CPU path this patch enables is the single-display
+# RGBA path above; a full-display texture view of this kernel is unproven.
+#
+# Not verified when this patch was recorded: no Flutter build, `flutter pub get`
+# or application run was performed. The recorded check is applicability
+# (`git apply --check`) against the pinned clean checkout, which is what the sync
+# script repeats before it copies anything.
+diff --git a/lib/models/desktop_render_texture.dart b/lib/models/desktop_render_texture.dart
+index a960491..a717dd0 100644
+--- a/lib/models/desktop_render_texture.dart
++++ b/lib/models/desktop_render_texture.dart
+@@ -182,6 +182,14 @@ class TextureModel {
+ 
+   updateCurrentDisplay(int curDisplay) {
+     if (isWeb) return;
++    // rd-engine CPU path: this kernel serves frames over the RGBA event
++    // (`EventToUI::Rgba`) and answers `mainGetUseTextureRender() == false`, so
++    // no renderer would consume a pixelbuffer texture here. Allocating one and
++    // registering it would allocate against, and register into, nothing; return
++    // before any allocation instead. Where the kernel reports texture render,
++    // the body below is unchanged: allocation, registration and retirement all
++    // stay as upstream wrote them.
++    if (!bind.mainGetUseTextureRender()) return;
+     final ffi = parent.target;
+     if (ffi == null) return;
+     tryCreateTexture(int idx) {

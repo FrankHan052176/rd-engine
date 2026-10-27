@@ -1,0 +1,189 @@
+LibVNCClient engine adapter
+==========================
+Upstream: https://github.com/LibVNC/libvncserver
+Release: LibVNCServer-0.9.15
+Commit: 9b54b1ec32731bd23158ca014dc18014db4194c3
+Source archive: https://codeload.github.com/LibVNC/libvncserver/tar.gz/9b54b1ec32731bd23158ca014dc18014db4194c3
+Archive SHA-256: 662c311e0d4a8fc71bae6cf4759308948e4681c2e23987583ff2121cb1f1aedf
+License: GPL-2.0-or-later; upstream/COPYING and upstream/AUTHORS are retained.
+Individual files retain their original copyright/license notices, including the
+public-domain DES implementation and miniLZO licensing notices.
+
+Vendored scope
+--------------
+108 upstream files: CMakeLists.txt, AUTHORS, COPYING, cmake/, include/, src/.
+The server sources are retained because the unmodified upstream CMake project
+unconditionally defines its vncserver target. Only vncclient is built/linked.
+Examples, tests, webclients, CI files and unrelated documentation are omitted.
+UPSTREAM-SHA256SUMS records original archive bytes for each vendored file.
+engine-integration.patch records the complete difference from that revision.
+The adapter does not generate or rewrite upstream C source during configuration.
+
+Four upstream files have small integration changes:
+- rfbclient.c: report the parsed SecurityResult, peer reason, unsupported security,
+  unsupported version and invalid rectangle through typed hooks; read the same
+  advertised security list before selecting so VNC authentication wins over None;
+  enforce the baseline security allowlist also for server-selected RFB 3.3;
+  remove writes to the process-global log-suppression flag (simultaneous sessions
+  otherwise write shared state). No DES, framing or decoding implementation is
+  replaced. Connection failures still retain native logging.
+- sockets.c: wrap the existing upstream read/write functions to record actual
+  transport failure; report the actual read EOF separately from transport errors.
+- vncviewer.c: report failed existing framebuffer bounds checks as geometry errors
+  rather than silently presenting success after a rejected library bitmap/copy.
+- rfbclient.h: include the generated rfbconfig.h before testing feature macros
+  for conditional system headers. Without this portable include-order fix, an
+  OHOS build skips unistd.h even though its generated configuration and real SDK
+  both provide it. No platform-only branch, API substitute or warning suppression.
+  Also omit the tlsRwMutex declaration when neither threading backend is built:
+  upstream's empty MUTEX macro otherwise leaves a bare semicolon in the struct,
+  which MSVC C rejects. Threaded layouts/locking and the existing no-thread
+  selection are unchanged; no dummy member or warning suppression is added.
+
+Build integration (Main-owned files)
+------------------------------------
+Cargo build dependency: cmake = "0.1" (lock resolved 0.1.58).
+Cargo runtime dependency: mio = { version = "1", features = ["net", "os-poll"] }
+(lock resolved 1.2.3). Existing tokio/hbb_common are reused. cc is already an
+engine build dependency and is also used by cmake-rs; no bindgen is required.
+The old direct des dependency is unnecessary if no unrelated consumer remains.
+
+Root build.rs:
+    #[path = "native/vnc/build.rs"]
+    mod vnc;
+    fn main() {
+        vnc::build(); // before any Windows-only early return
+        // existing build registrations remain here
+    }
+
+The helper builds the real upstream vncclient CMake target through the root-level
+rd_engine_vnc_client dependency target, so Visual Studio finds the generated
+upstream/vncclient.vcxproj instead of looking for it in the root. rd_vnc.c remains
+part of that static PIC library. WIN32 is explicitly supplied on Windows because
+cmake-rs replaces the default C flags; upstream must see it before zlib headers.
+Links: static vncclient, the exact target zlib reported by CMake, and ws2_32 on
+Windows. Requires a target C toolchain, CMake >= 3.16, and target zlib headers/library.
+The wrapper sets CMAKE_POLICY_VERSION_MINIMUM=3.5 for upstream's 3.4 declaration.
+
+cmake-rs honors target-qualified CMAKE_TOOLCHAIN_FILE, CMAKE_PREFIX_PATH, CC/CXX,
+AR and flags, then HOST_/TARGET_ and unqualified variants. Supply the existing
+NDK toolchain/sysroot for OHOS, not host include/library paths. ZLIB_ROOT can point
+to a target zlib installation when not present in the toolchain. The helper emits
+rerun-if-changed for native/vnc, toolchain files supplied by environment, and
+rerun-if-env-changed for CMAKE, CMAKE_TOOLCHAIN_FILE, CMAKE_GENERATOR,
+CMAKE_GENERATOR_TOOLSET, CMAKE_PREFIX_PATH, CC, CXX, AR, CFLAGS, CXXFLAGS, ZLIB_ROOT
+and their target/host variants. Missing zlib is a configure failure, not a build
+silently lacking Zlib/ZRLE.
+
+Capabilities and intentional gaps
+--------------------------------
+Advertised encodings: ZRLE, Zlib, Hextile, CoRRE, RRE, CopyRect, Raw; upstream owns
+NewFBSize/ExtDesktopSize, baseline clipboard, bell, pointer and keysym handling.
+Security: None and VNC authentication only. A username-bearing Endpoint is
+rejected rather than ignored. LibVNCClient's password callback cannot represent
+embedded NUL and its VNC-auth implementation rejects an empty password; these
+return CredentialUnavailable rather than a fabricated remote rejection. An empty
+password remains usable with None authentication. Passwords are wiped locally;
+upstream DES challenge processing and password cleanup are retained.
+
+TLS and JPEG/Tight are explicitly disabled, not advertised as available. This
+preserves the existing baseline and is not a claim that upstream lacks them.
+To expose JPEG/Tight later: build real target libjpeg-turbo plus zlib, enable
+upstream WITH_JPEG, link the detected library and deliberately negotiate Tight.
+To expose TLS later: build target GnuTLS or OpenSSL plus their real transitive
+libraries; define an explicit credential/trust API (CA roots/hostname verification,
+client certificates if required, and rejection policy) before exposing TLS or
+VeNCrypt security types. Never select anonymous TLS or silently accept a peer
+certificate to make a connection work. No certificate decision occurs in this
+baseline, and unsupported security is distinct from AuthenticationFailed.
+
+Memory, cancellation and API changes
+------------------------------------
+The library owns one persistent decoded bitmap. Pixels and damage rectangles are
+borrowed after its message handler returns, and only damaged BGRA rows are copied
+into the caller's transient PixelTarget. RFB depth24's undefined padding byte is
+normalized to opaque alpha in those rows. There is no cloned full-frame queue or
+per-frame worker creation. CopyRect and decompression stay in upstream callbacks.
+The bitmap size is bounded by INT_MAX because upstream bitmap loops use signed
+int byte offsets. Allocation, geometry, protocol, authentication, unsupported
+security/credentials, transport, remote EOF, cancellation and explicit closure
+remain separate errors.
+
+One native OS thread owns every C call, callback allocation and cleanup. Mio
+readability plus a Waker parks it without an adapter polling timer. A single
+pending pump receiver is kept in RfbSession, so dropping a pump future neither
+restarts parsing nor consumes its result. A completed borrowed frame freezes
+native receive until the next pump; input sends remain possible in that interval.
+Failures retain the native allocation until session stop, including worker unwind.
+Close/Drop shuts down an independently-owned socket duplicate, wakes the worker,
+and joins it; it does not detach C work. Join is synchronous after shutdown, so
+Drop/close can briefly wait for native unwind, but native C I/O and cleanup always
+execute on the dedicated worker, never a Tokio worker. Input returns only after
+the actual upstream send completes. Cancelling an input future aborts and joins
+the session before releasing its borrow: queued writes cannot outlive an input
+revocation guard. Subsequent use reports Cancelled. Ordinary pump cancellation
+does not abort the session.
+
+Public RfbOptions and connect/desktop/name/authentication/layout/pump/send_pointer/
+send_key/send_clipboard/close remain. Only BGRA8888 is accepted at the product
+boundary. auth::Authentication remains a result enum; all local auth/encoding
+implementations are removed. There is NO request_update method: upstream
+rfbInitClient sends the initial full request, HandleRFBServerMessage sends each
+ordinary incremental request before FinishedFrameBufferUpdate, and upstream
+resize paths manage their own requests. Remove both viewer request_update calls.
+A Desktop event may include already-copied damage from the same update.
+The old decode_latency API is removed: upstream's synchronous receive/decode
+boundary cannot honestly report decode-only time excluding network wait.
+
+Remaining viewer error migration: remove UnsupportedServerVersion and Encoding
+matches; add CredentialUnavailable, Allocation and Cancelled. BadServerVersion
+covers upstream malformed/too-old versions. PixelTarget explanatory docs must no
+longer claim that VNC decodes directly into the presentation allocation or has
+zero application copies. Main owns those shared files.
+
+Minimal integration smoke scenarios (NOT executed here)
+-------------------------------------------------------
+Use a real upstream TigerVNC Xvnc, isolated on loopback, plus a disposable Rust
+driver that calls the public RfbSession API and MemorySurface. Do not substitute
+the existing handcrafted fixture for real-server acceptance.
+
+1. Start: Xvnc :99 -geometry 640x480 -depth 24 -rfbport 5999 -localhost -SecurityTypes None
+   Connect to 127.0.0.1:5999 with user=None/shared=true/password="" and BGRA8888.
+   Confirm Authentication::None, 640x480 desktop and nonempty server name. Change
+   root/window pixels on DISPLAY=:99; pump into MemorySurface and check changed
+   BGRA rows/damage. Capture wire requests: one initial full request and one
+   library incremental per ordinary update, with no viewer request calls.
+
+2. Restart the same Xvnc with -SecurityTypes VncAuth -PasswordFile <isolated file>
+   (create the file with that TigerVNC installation's vncpasswd). Correct password
+   must connect as VncAuth; wrong password must yield AuthenticationFailed with
+   the real peer reason when supplied. A TLS-only Xvnc configuration must yield
+   NoUsableSecurityType, never connect by accepting a certificate or downgrading.
+
+3. On the real server, move/scroll windows and update solid, tiled and photographic
+   content. Exercise all baseline decoders with seven disposable smoke builds
+   selecting one advertised encoding at a time in rd_vnc.c's encodingsString;
+   retain Raw fallback, and enable CopyRect alongside Raw for the scroll case.
+   Verify actual wire encoding IDs 0,1,2,4,5,6,16 and final pixel/damage results.
+   Restore the production encoding list afterward. No public encoding-selection
+   API was added merely to make a smoke harness convenient.
+
+4. Observe pointer/key events in an X event inspector on DISPLAY=:99 and clipboard
+   both ways with the server's desktop clipboard tools. Return from each send must
+   follow the actual library write. Resize the Xvnc desktop using its supported
+   RandR controls; verify Desktop event, sink dimensions and subsequent pixels,
+   without adding a manual full/incremental update request on resize.
+
+5. Leave Xvnc idle. Time out/drop a pending pump future, send input and await its
+   completion, change the server desktop, then resume pump: it must deliver the
+   one retained native result. Close while a pump is waiting and verify no live
+   rd-vnc thread/socket remains. Separately use a pausing loopback relay in front
+   of this real server to stall native handshake, mid-rectangle read and a large
+   outgoing clipboard write; cancel connect/input or close, and verify shutdown
+   wakes the outstanding native operation and join completes. A cancelled input
+   must leave no later queued key/pointer write after the policy guard releases.
+
+Existing tests/vnc_session.rs was updated for library-owned automatic requests;
+its authentication fixture uses an independent OpenSSL-derived challenge vector,
+not the removed local DES implementation. It remains supplemental wire-contract
+coverage, not evidence that the real-server scenarios above ran.

@@ -1,7 +1,22 @@
-# Coverage against the original RustDesk core
+# Historical coverage against the original RustDesk core
 
-Every row is backed by the engine source or by a measurement in this repository;
-"absent" means the code explicitly refuses or disables the path, not that it is
+All capability tables, roadmap notes, and measurements below are historical
+snapshots, not acceptance results for
+the current product or instructions for rebuilding the active chain. In
+particular, their host-side `--fps` examples predate client-controlled frame
+rates: the current host has no `--fps` option, and the connecting client supplies
+`LoginRequest.option.custom_fps`. See [MODERN_RUNTIME.md](MODERN_RUNTIME.md) for
+the current request/default/range contract. A requested rate is not a measured
+receive, presentation, or physical display rate.
+
+The current product boundary also supersedes the historical gap list: camera
+viewing/streaming, text chat and voice calls are deliberately excluded by the
+user's 2026-09-24 decision. They must not be restored as parity work in either
+bridge or its paired consumer. Desktop video, desktop audio playback, screen
+recording and local QR scanning are separate capabilities; this exclusion neither
+removes them nor establishes that an unavailable capability is implemented.
+
+"Absent" means the code explicitly refuses or disables the path, not that it is
 unfinished-but-present.
 
 Legend: **yes** implemented and exercised · **partial** present with a stated
@@ -66,3 +81,132 @@ limit · **no** deliberately absent.
    engine can be a host there.
 5. HDR source metadata for the Windows desktop path, or state the limit in the
    product rather than in the code comment.
+
+## Measured against a live Windows peer (2026-09-17)
+
+`rd-engine-viewer 192.168.108.155:21119 rdetest2026 12` against the engine's own
+Windows host (`rd-engine-windows-host --listen 0.0.0.0:21119 --codec auto --fps 60
+--bitrate 20000000`), 2560x1440 desktop:
+
+| Number | Value |
+| --- | --- |
+| Authentication | 107 ms |
+| First frame | 366 ms |
+| Frames in 12 s | 638 (≈ 53 fps) |
+| Inter-frame gap | min 0.01 ms, avg 18.25 ms, max 96.71 ms over 637 samples |
+| Codec | H265, 12 keyframes, 17,467,500 encoded bytes for 151,533 in the sampled record |
+
+## On the Pad (2026-09-17)
+
+Same host, same password, driven from the client's own UI on a HUAWEI MatePad
+11.5''S (HarmonyOS NEXT). The engine's snapshot, read once a second through the
+HAR while the client showed the session:
+
+```
+{"codec":"H265","phase":"streaming","pushed_units":596->1126,
+ "received_units":596->1127,"render_submissions":595->1126}
+```
+
+| Number | Value |
+| --- | --- |
+| Frames in 9.093 s | 530 (58.3 fps; per-second deltas 50-61) |
+| Received vs pushed vs rendered | equal within one frame at every sample |
+| Codec | H265, decoded by the device's hardware decoder |
+
+Two things this settles. The client's surface is bound and being presented into
+- it reports the remote-control session as active and its window holds the
+preview `XComponent` - and the engine holds **no queue**: every frame it
+received in that window was pushed and rendered, with at most one frame in
+flight, which is the no-queue property the runtime is built for.
+
+Interop against unmodified official binaries is still open, and so is a
+glass-to-glass latency figure; the counters above bound the engine's own path,
+not the network or the panel.
+
+## Latency on the Pad (2026-09-17)
+
+The same session, read through the client's own telemetry once a second. The
+engine now times each unit from the moment the decoder owns it to the moment its
+picture is submitted for rendering, and the client turns those sums into a mean:
+
+| Number | Value |
+| --- | --- |
+| Backend-to-render-submission, mean | **9.09 ms** over 301 frames in 5.043 s |
+| Worst single frame | **48.9 ms** |
+| Frame rate in the same window | 59.5 fps |
+| Units queued at every sample | **0** |
+
+What this figure is and is not: it starts when the unit is pushed into the
+device's hardware decoder and ends at the render submission, so it includes the
+codec's own output pipeline depth and excludes the network, the panel and
+scanout. It is not a measurement of the decode work alone - the hardware codec
+exposes no decode interval, and this layer reports none rather than a zero
+standing in for one (`decodeTimingAvailable` is false). The no-queue property is
+separate and holds: at every one-second sample received, decoded, submitted and
+rendered counts were equal, and nothing waited for a decoder slot - admission
+refuses rather than queues, so no frame spends time in one.
+
+## Against the unmodified official RustDesk (2026-09-17)
+
+Two directions, both against the official 1.4.9 host on the same box:
+
+| Direction | Result |
+| --- | --- |
+| Engine viewer -> official host | `auth_ms=160..197`, `authorized`, H265, 2560x1440, `first_frame_ms=406`, 161 frames in 8 s |
+| Pad (client on the engine) -> official host | `phase=streaming`, 40 s of session, 1910 -> 2012 frames in 2 s (51 fps), mean backend-to-render-submission 14.0 ms, worst 63.7 ms, nothing queued |
+
+The same viewer against the engine's own host on the same box: `auth_ms=114`,
+H265, `first_frame_ms=442`, mean gap 18.14 ms.
+
+Two things this settles. The engine speaks the official wire contract in both
+directions, including the two-stage credential (SHA256 of the password and the
+peer's salt, then SHA256 of that and the peer's challenge), which the official
+host accepts byte for byte. And the Pad's own client, driven by the engine,
+holds a session with an unmodified official host, which is what the ArkTS
+client's contract was written against.
+
+The engine host enforces its password through the same exchange; the value it
+compares is the one `--password` carries. A host started without an interactive
+stdin cannot approve a session interactively, and `--test-auto-approve` is what
+the test host uses for that case.
+
+## 2K at 120 fps on the Pad (2026-09-17)
+
+The engine's host captured 2560x1440 at `--fps 120 --bitrate 40000000` and the
+Pad's client, driven by the engine, held the session:
+
+| Number | Value |
+| --- | --- |
+| Frames in 1.008 s | 113 (about 112 fps) |
+| Received / decoded / submitted / rendered | equal at every sample, nothing queued |
+| Mean backend-to-render-submission | 11.3 ms (1.2887 s over 114 calls) |
+| Worst single frame | 124.2 ms, against 55.7 ms at 60 fps |
+
+The decode and submission path really does run at 112 fps; what the eye sees is
+bounded by the device's own panel, which reports 60 Hz. The worst-frame figure
+doubling with the frame rate is the load, not a queue: submission stayed equal to
+arrival throughout.
+
+The same session-view tree that carries the picture is the client's
+`rustdesk-preview-input-layer` over the `XComponent` the decoder presents into;
+the client's metrics live in its `SessionToolbar`, fed from the snapshot fields
+this engine reports, and that toolbar is not part of the always-present tree.
+
+### Correction: `--fps` is a ceiling, measured together on one timeline
+
+The 120 fps figure above is the host's configured rate, not what it achieves.
+Sampling both ends over the same ten seconds:
+
+| Side | Reading | Rate |
+| --- | --- | --- |
+| Host (its own log) | `sent_units` 30781 -> 31445 | 66.4 /s |
+| Pad (its own snapshot) | `decodedFrames` 31119 -> 31721 over 9.135 s | 65.9 /s |
+| Pad | `receivedPackets` 31120 -> 31721 | nothing queued |
+
+So on an idle desktop this producer sends about 66 a second while configured for
+120, and the Pad decodes and renders every unit that arrives - received, decoded
+and rendered stayed equal. The 112 fps window recorded in the section above was
+measured while the desktop was changing, which is the behaviour this producer
+shows: it is change-driven. The displayed figure in the client was therefore
+truthful in both windows, and the ceiling is upstream of the Pad, not in the
+client and not in the panel.

@@ -1,7 +1,8 @@
 //! Peer handshake only. No legacy runtime/configuration, no socket-address identity.
+use base::message_proto::{Message, PublicKey, SignedId, message};
 use hbb_common::{
-    message_proto::{IdPk, Message, PublicKey, SignedId, message},
     protobuf::Message as _,
+    rendezvous_proto::IdPk,
     sodiumoxide::{
         self,
         crypto::{box_, secretbox, sign},

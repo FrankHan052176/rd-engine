@@ -1,0 +1,77 @@
+--- a/src/interface/windows.rs
++++ b/src/interface/windows.rs
+@@ -13,35 +13,54 @@
+ use crate::ip::{Ipv4Net, Ipv6Net};
+ 
+ 
++// rd-engine: API output size is not the allocation's ownership size.
++struct AdapterAllocation {
++    ptr: *mut IP_ADAPTER_ADDRESSES_LH,
++    allocated_size: usize,
++}
++
++impl AdapterAllocation {
++    fn new(allocated_size: usize) -> Self {
++        Self {
++            ptr: unsafe { allocate(allocated_size) } as *mut IP_ADAPTER_ADDRESSES_LH,
++            allocated_size,
++        }
++    }
++}
++
++impl Drop for AdapterAllocation {
++    fn drop(&mut self) {
++        unsafe { deallocate(self.ptr as *mut u8, self.allocated_size) };
++    }
++}
++
+ // Get network interfaces using the IP Helper API
+ // Reference: https://docs.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getadaptersaddresses
+ pub fn interfaces() -> Vec<Interface> {
+     let mut interfaces: Vec<Interface> = vec![];
+     let mut dwsize: u32 = 2000;
+-    let mut mem = unsafe { allocate(dwsize as usize) } as *mut IP_ADAPTER_ADDRESSES_LH;
++    let mut mem = AdapterAllocation::new(dwsize as usize);
+     let mut retries = 3;
+     let mut ret_val;
+     loop {
+-        let old_size = dwsize as usize;
+         ret_val = unsafe {
+             GetAdaptersAddresses(
+                 AF_UNSPEC,
+                 Default::default(),
+                 std::ptr::null_mut::<std::ffi::c_void>(),
+-                mem,
++                mem.ptr,
+                 &mut dwsize,
+             )
+         };
+         if ret_val != ERROR_BUFFER_OVERFLOW.0 || retries <= 0 {
+             break;
+         }
+-        unsafe { deallocate(mem as *mut u8, old_size as usize) };
+-        mem = unsafe { allocate(dwsize as usize) as *mut IP_ADAPTER_ADDRESSES_LH };
++        mem = AdapterAllocation::new(dwsize as usize);
+         retries -= 1;
+     }
+     if ret_val == NO_ERROR.0 {
+         // Enumerate all adapters
+-        let mut cur = mem;
++        let mut cur = mem.ptr;
+         while !cur.is_null() {
+             let if_type: u32 = unsafe { (*cur).IfType };
+             match InterfaceType::try_from(if_type) {
+@@ -126,13 +145,6 @@
+             interfaces.push(interface);
+             cur = unsafe { (*cur).Next };
+         }
+-    } else {
+-        unsafe {
+-            deallocate(mem as *mut u8, dwsize as usize);
+-        }
+-    }
+-    unsafe {
+-        deallocate(mem as *mut u8, dwsize as usize);
+     }
+     return interfaces;
+ }

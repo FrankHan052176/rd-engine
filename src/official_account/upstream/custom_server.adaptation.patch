@@ -1,0 +1,21 @@
+--- a/upstream/custom_server.rs
++++ b/upstream/custom_server.rs
+@@ -1,3 +1,6 @@
++// SPDX-License-Identifier: AGPL-3.0-only
++// RustDesk contributors; pin 092a961b629d318fe290eeafac0cd214a1e9deeb.
++// Modified 2026-09-23: shared derive import; no Debug/Clone or upstream tests.
+ use hbb_common::{
+     bail,
+     base64::{
+@@ -7,9 +10,9 @@
+     sodiumoxide::crypto::sign,
+     ResultType,
+ };
+-use serde_derive::{Deserialize, Serialize};
++use hbb_common::serde_derive::{Deserialize, Serialize};
+ 
+-#[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
++#[derive(PartialEq, Default, Serialize, Deserialize)]
+ pub struct CustomServer {
+     #[serde(default)]
+     pub key: String,

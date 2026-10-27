@@ -1,11 +1,9 @@
 //! Pure authentication state. Local providers supply policy and credentials;
 //! no Config, stable identity inferred from IP, or legacy session objects.
-use hbb_common::{
-    message_proto::{
-        Auth2FA, Hash, LoginRequest, PeerInfo, login_request, option_message::BoolOption,
-    },
-    sodiumoxide::{crypto::hash::sha256, randombytes, utils},
+use base::message_proto::{
+    Auth2FA, Hash, LoginRequest, PeerInfo, login_request, option_message::BoolOption,
 };
+use hbb_common::sodiumoxide::{crypto::hash::sha256, randombytes, utils};
 
 pub const WRONG_PASSWORD: &str = "Wrong Password";
 pub const TWO_FACTOR_REQUIRED: &str = "2FA Required";
@@ -26,26 +24,42 @@ pub fn password_response(h1: &[u8; 32], challenge: &str) -> [u8; 32] {
 
 /// Deliberately not Debug/Clone. Stored h1 values are password-equivalent.
 pub struct Passwords {
-    values: Vec<[u8; 32]>,
+    values: std::sync::Arc<PasswordValues>,
 }
+struct PasswordValues { values: Vec<[u8; 32]>, temporary: Option<usize> }
 impl Passwords {
     pub fn from_salted(values: Vec<[u8; 32]>) -> Self {
-        Self { values }
+        Self { values: std::sync::Arc::new(PasswordValues { values, temporary: None }) }
     }
-    fn verify(&self, hash: &Hash, response: &[u8]) -> bool {
-        if response.len() != 32 {
-            return false;
-        }
+    /// The checked host owner identifies its temporary verifier explicitly;
+    /// permanent/preset matches must never count as temporary failures.
+    pub(crate) fn from_host(temporary: Option<[u8; 32]>, permanent: Option<[u8; 32]>) -> Self {
+        let mut values = Vec::with_capacity(usize::from(temporary.is_some()) + usize::from(permanent.is_some()));
+        let temporary_index = temporary.map(|h1| { values.push(h1); 0 });
+        if let Some(h1) = permanent { values.push(h1); }
+        Self { values: std::sync::Arc::new(PasswordValues { values, temporary: temporary_index }) }
+    }
+    /// Shares the zeroizing verifier owner, never copies password-equivalent bytes.
+    pub(crate) fn shared(&self) -> Self {
+        Self { values: self.values.clone() }
+    }
+    fn verify(&self, hash: &Hash, response: &[u8]) -> (bool, Option<bool>) {
+        if response.len() != 32 { return (false, self.values.temporary.map(|_| false)); }
         let mut valid = false;
-        for value in &self.values {
+        let mut temporary_match = false;
+        for (index, value) in self.values.values.iter().enumerate() {
             let mut expected = password_response(value, &hash.challenge);
-            valid |= utils::memcmp(&expected, response);
+            let matched = utils::memcmp(&expected, response);
+            valid |= matched;
+            temporary_match |= self.values.temporary == Some(index) && matched;
             utils::memzero(&mut expected);
         }
-        valid
+        let temporary_outcome = if temporary_match { Some(true) }
+            else if !valid && self.values.temporary.is_some() { Some(false) } else { None };
+        (valid, temporary_outcome)
     }
 }
-impl Drop for Passwords {
+impl Drop for PasswordValues {
     fn drop(&mut self) {
         for value in &mut self.values {
             utils::memzero(value);
@@ -130,6 +144,9 @@ impl SecondFactorProvider for UnsupportedSecondFactor {
 pub trait AttemptPolicy: Send {
     fn allow(&mut self, second_factor: bool) -> Result<(), &'static str>;
     fn outcome(&mut self, second_factor: bool, accepted: bool);
+    /// Only a real enabled temporary verifier match, or a complete primary
+    /// mismatch after all enabled permanent/preset verifiers failed, reaches this.
+    fn temporary_password_outcome(&mut self, _matched: bool) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,29 +270,29 @@ impl HostAuthentication {
         if !request.os_login.username.is_empty() || !request.os_login.password.is_empty() {
             return self.error("OS login is unsupported for this session", true);
         }
-        if let Some(first) = &self.request {
-            if first.my_id != request.my_id {
-                return self.error("Connection not allowed", true);
-            }
+        // Freeze every material claim shown to the local approver. A retry may
+        // change only its challenge response, never identity, options or role.
+        let response = std::mem::take(&mut request.password);
+        request.os_login = Default::default();
+        if self.request.as_ref().is_some_and(|first| first != &request) {
+            return self.error("Connection request changed", true);
         }
         if request.my_id.is_empty() {
             return self.error("Connection not allowed", true);
         }
         self.state = HostAuthState::AwaitLogin;
-        let nonempty = !request.password.is_empty();
+        let nonempty = !response.is_empty();
         let valid = if self.config.policy != PrimaryPolicy::ClickOnly && nonempty {
             if let Err(error) = self.config.attempts.allow(false) {
                 return self.error(error, false);
             }
-            let valid = self.config.passwords.verify(&self.hash, &request.password);
+            let (valid, temporary) = self.config.passwords.verify(&self.hash, &response);
             self.config.attempts.outcome(false, valid);
+            if let Some(matched) = temporary { self.config.attempts.temporary_password_outcome(matched); }
             valid
         } else {
             false
         };
-        // Do not retain wire password or OS credentials in session metadata.
-        request.password = Default::default();
-        request.os_login = Default::default();
         self.request = Some(request);
         if valid {
             self.grant = self
@@ -351,11 +368,10 @@ impl HostAuthentication {
     }
 
     fn authorize(&mut self) -> AuthAction {
-        // Viewer preferences can only remove grants. NotSet never creates one.
+        // Keyboard is the local permission, not the viewer's mutable disable
+        // preference. The peer's original reader combines both admission states.
+        // Other unavailable adapters retain their existing preference ceiling.
         if let Some(options) = self.request.as_ref().and_then(|v| v.option.as_ref()) {
-            if options.disable_keyboard.enum_value() == Ok(BoolOption::Yes) {
-                self.grant.keyboard = false;
-            }
             if options.disable_clipboard.enum_value() == Ok(BoolOption::Yes) {
                 self.grant.clipboard = false;
             }

@@ -1,0 +1,1974 @@
+# Official-client host-control and ID-only consumer integration.
+#
+# Upstream: rustdesk/rustdesk 092a961b629d318fe290eeafac0cd214a1e9deeb
+# Apply LAST from the pinned official client flutter/ directory, after:
+#   1. official-client-cpu-rgba.patch sha256=e62036de24c6a1c161d0728e677b5baaa9a6b7a3c10da3ea00ae8801e380823b
+#   2. official-client-account-safety.patch sha256=9848b19f66d3d3a3aebb22f6f1dee359671b383f964b5ca99918026720a75d81
+#   3. official-client-flutter-lock.patch sha256=b9ce3121921bbf5efe3707320a31ec1e570a179959862d34582d1c9f0fb6305b
+#   4. official-client-lan-actions.patch sha256=dcb64d874b704257fd7678f8005820bac2611fedbc72d5359219e338b588f260
+#   5. official-client-product-scope.patch sha256=a753eaf399db8456a755c4f7b6feb23a88c3f5fadbf474e56e53b177a3c1a56f
+#
+# Original upstream Git blobs (before the prerequisite patch chain):
+#   flutter/lib/models/server_model.dart 031a6250942b43bf4bf7be62a31d561d9d0c09af
+#   flutter/lib/desktop/pages/server_page.dart b1ca18b2b0f9036c62ceccdd78175b16322f6c06
+#   flutter/lib/common.dart b80e0b5f958071d288af1a1f84c095f2cfb892d9
+#   flutter/lib/desktop/widgets/tabbar_widget.dart 9ef7d38d96016775db81201976a9e2dcf9eeffe4
+#   flutter/lib/main.dart 5f234cb69528f61d16d4b6826171c6ab27afb926
+#   flutter/lib/models/native_model.dart 93f06d55d11581b70b1f36ba3e1a94bd46d8f38a
+#   flutter/lib/models/model.dart 3572b9728ad8171e481ff3e06c5a26fa6045cbe3
+#   flutter/lib/desktop/pages/desktop_home_page.dart 6d370cbb0d466a8b25744683140d0957f75d2fad
+#   flutter/lib/desktop/pages/connection_page.dart 1d4928bbd4716e1780433f930a698f13a72e606f
+#   flutter/lib/models/peer_model.dart 3171b373a90f5c0e51a935f4a6f4e75bb0eb9dae
+#   flutter/lib/common/widgets/autocomplete.dart e83f5fb4131b07e9da8e3e3e465e522b3c6da9c2
+#   flutter/lib/common/widgets/peer_card.dart 1f9f3ed7f481c86460b3c8ec8a174284665e95ae
+#   flutter/lib/common/formatter/id_formatter.dart c2329d53fa3e757106a573c775ab7ae99eec804f
+#   flutter/lib/utils/multi_window_manager.dart 9e26f8cf9a6188c247c48363e221873d12e7f2eb
+#   flutter/lib/desktop/pages/remote_tab_page.dart 0b94a491613cd82a3a152f7fcb2d562966e9889d
+#   flutter/lib/desktop/pages/remote_page.dart 3e98418b18a0d24e498b8619d8fde4750dbe7362
+#   flutter/lib/mobile/pages/remote_page.dart edcfe2bcadb314c0a13594fdc7e964aaf7820b2a
+#   flutter/lib/mobile/pages/connection_page.dart ff5dc828cc56108088432dd47f0a1728d945b588
+#   flutter/lib/desktop/widgets/remote_toolbar.dart 19b3fa985572bdfbf57d0393586de5ee2da41fcd
+#
+# Exact prerequisite-chain file bytes (SHA-256):
+#   lib/models/server_model.dart d4de7b8de6b8b2834dc88faa7b4a244b51c983a5c71ec94b253dcdcc524d515c
+#   lib/desktop/pages/server_page.dart 59bc6a4657e61527710652a14c457d0c5ae45fbd1e577f195bb6f844d73fd136
+#   lib/common.dart 1071db1822f884143d8a60dd9620cf435b4a670978c7d6f15f18a10a106d1823
+#   lib/desktop/widgets/tabbar_widget.dart 7ad7d587e6c3c212bf4ef58a93d24b0bff781741493936d08474d59cf42b7b30
+#   lib/main.dart 9e90e81845797da4adf770b26d92996ba6b175ab8cbc0a8869a351cbce34a02a
+#   lib/models/native_model.dart 14b12d6b313f95cb53bc8c70f26800d54d8279cf408415136f7740af000268c8
+#   lib/models/model.dart b355eb48e35d9a58590481b87b0f98d58725963fe6b16f27e7b1aa3e922f87ea
+#   lib/desktop/pages/desktop_home_page.dart c5e0997513eed3572582dfc7f4844f60b1c1f35ad5e6f7ab5c83df13d097c133
+#   lib/desktop/pages/connection_page.dart ac3f011014a748dcf46800065dc57825b03f44a3af115a086b94b25abf939628
+#   lib/models/peer_model.dart 4eae9664abaa10f72f7af8d8ea37c0330a6e358bb58cb54002a57a985da31c82
+#   lib/common/widgets/autocomplete.dart 5f04f0f8daa1f262b93c827d195bc3d2e6a0b867f2379a7525395526bbc060bb
+#   lib/common/widgets/peer_card.dart 45cff1c2db0fd00894dc7c62446554aa5428c94fe0c2011f3bbd0ca02edd0526
+#   lib/common/formatter/id_formatter.dart f6c5a030af69433e665a688a937c2d68236be7e993321076cf1ae11b4f2f2e55
+#   lib/utils/multi_window_manager.dart 28a501f51770bda7bddc1115e336de1a8541f9997160e080631ad2852b0a4855
+#   lib/desktop/pages/remote_tab_page.dart 2616d94f69629c378e67bd14ad52165e624f5e37ebe4fa616b189b9857e1d38f
+#   lib/desktop/pages/remote_page.dart b06af2ff8cbd764c9dac9bd769bbabd182b6ecd0e09ac01c30e3f9130236657c
+#   lib/mobile/pages/remote_page.dart 198e0905fb01501c65299d83d852faa4fddbcedfac12bc0dea03eef7618b9c87
+#   lib/mobile/pages/connection_page.dart 8a39e3b6a31bfd522ec6ca28de60a7ba032a44f8f0de60718bed41e6fd8de651
+#   lib/desktop/widgets/remote_toolbar.dart 06e5d45638f476031be08502bc8585a3c7bf52a8e93cf3a6f0445deeef87e5ab
+#
+# Adaptation: await existing CM native results; only full owner snapshots/events
+# update authorization, permissions, and closed state. CM events trigger a full
+# refresh because event/Future ports can deliver out of order. Keep click/mouse
+# guards fail-closed and avoid CM credential reads. Intercept native CM close
+# before startup; close only after a current full snapshot has no live peers.
+# Await checked host Stop only at final main-process exit, not homepage hide,
+# and serialize main-window close across checked stop and failure recovery.
+# Retain native initialization/host errors until the global listener is ready.
+# Surface them through the existing home error card and CM error state; keep
+# status reads fallible and make initial CM attach/config failure visible.
+#
+# Paired FRB route-intent contract: hidden boolean rustdeskIdOnly is not proof
+# of a user decision. Serialized peer JSON always restores ID-only, including
+# a previously saved false. Malformed metadata is rejected. Only a current
+# text edit or trusted in-memory/window session handoff can retain manual
+# intent; LAN selections and derived copies never silently choose direct.
+# Peer IDs, text, titles, cache keys and window IDs remain raw. At the three
+# FFI session routing boundaries only, encode ID-only intent as exactly
+# rd-engine-id-only-v1:// + base64url_no_pad(UTF-8 raw ID). This is a restriction,
+# never an authentication or input-permission grant. Window reuse/handoff and
+# cached session data must preserve the (raw ID, intent) pair.
+# This consumer MUST be paired with the matching FRB decoder/session fence.
+# Web cannot consume this FRB marker and explicitly rejects ID-only startup.
+# Unsupported file/port-forward/terminal modes keep their existing refusal;
+# their callers remain conservatively ID-only, not newly implemented modes.
+#
+# Account safety and excluded-feature patches remain prerequisites, unmodified.
+# No new native API, generated code, dependency, or build-script change.
+# Validation is patch/text replay only; no formatter, linter, build, tests,
+# dependency resolution, application launch, or visual/runtime acceptance.
+#
+diff --git a/lib/models/server_model.dart b/lib/models/server_model.dart
+--- a/lib/models/server_model.dart
++++ b/lib/models/server_model.dart
+@@ -37,6 +37,23 @@
+   bool _allowNumericOneTimePassword = false;
+   String _approveMode = "";
+   int _zeroClientLengthCounter = 0;
++  String? _clientsState;
++  String? _clientStateError;
++  int _clientStateRevision = 0;
++
++  String? get clientStateError => _clientStateError;
++  String _hostError = '';
++  String get hostError => _hostError;
++
++  void setHostError(String error) {
++    if (_hostError != error) {
++      _hostError = error;
++      notifyListeners();
++    }
++    if (desktopType == DesktopType.cm && error.isNotEmpty) {
++      _setClientStateError(error);
++    }
++  }
+ 
+   late String _emptyIdShow;
+   late final IDTextEditingController _serverId;
+@@ -175,41 +192,65 @@
+     }
+     */
+ 
++    var refreshing = false;
+     timerCallback() async {
+-      final connectionStatus =
+-          jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
+-      final statusNum = connectionStatus['status_num'] as int;
+-      if (statusNum != _connectStatus) {
+-        _connectStatus = statusNum;
+-        notifyListeners();
+-      }
+-
+-      if (desktopType == DesktopType.cm) {
+-        final res = await bind.cmCheckClientsLength(length: _clients.length);
+-        if (res != null) {
+-          debugPrint("clients not match!");
+-          updateClientState(res);
++      if (refreshing) return;
++      refreshing = true;
++      try {
++        if (desktopType == DesktopType.cm) {
++          try {
++            if (!await updateClientState()) return;
++            final approveMode = await bind.mainGetOption(key: kOptionApproveMode);
++            if (_approveMode != approveMode) {
++              _approveMode = approveMode;
++              notifyListeners();
++            }
++            if (_clients.isEmpty) {
++              hideCmWindow();
++              if (_zeroClientLengthCounter++ == 12) {
++                // 6 seconds of authoritative empty snapshots.
++                windowManager.close();
++              }
++            } else {
++              _zeroClientLengthCounter = 0;
++              if (!hideCm) showCmWindow();
++            }
++          } catch (e) {
++            _setClientStateError(e.toString());
++          }
+         } else {
+-          if (_clients.isEmpty) {
+-            hideCmWindow();
+-            if (_zeroClientLengthCounter++ == 12) {
+-              // 6 second
+-              windowManager.close();
++          try {
++            final connectionStatus = jsonDecode(await bind.mainGetConnectStatus())
++                as Map<String, dynamic>;
++            final statusNum = connectionStatus['status_num'] as int;
++            if (statusNum != _connectStatus) {
++              _connectStatus = statusNum;
++              notifyListeners();
+             }
+-          } else {
+-            _zeroClientLengthCounter = 0;
+-            if (!hideCm) showCmWindow();
++          } catch (e) {
++            if (_connectStatus != -1) {
++              _connectStatus = -1;
++              notifyListeners();
++            }
++            rethrow;
+           }
++          await updatePasswordModel();
+         }
+-      }
+-
+-      updatePasswordModel();
++      } catch (e) {
++        setHostError(e.toString());
++      } finally {
++        refreshing = false;
++      }
+     }
+ 
+     if (!isTest) {
+       Future.delayed(Duration.zero, () async {
+-        if (await bind.optionSynced()) {
+-          await timerCallback();
++        try {
++          if (await bind.optionSynced()) {
++            await timerCallback();
++          }
++        } catch (e) {
++          setHostError(e.toString());
+         }
+       });
+       Timer.periodic(Duration(milliseconds: 500), (timer) async {
+@@ -251,6 +292,7 @@
+   }
+ 
+   updatePasswordModel() async {
++    if (desktopType == DesktopType.cm) return;
+     var update = false;
+     final temporaryPassword = await bind.mainGetTemporaryPassword();
+     final verificationMethod =
+@@ -472,8 +514,8 @@
+ 
+   /// Stop the screen sharing service.
+   Future<void> stopService() async {
++    if (!await closeAll()) return;
+     _isStart = false;
+-    closeAll();
+     await parent.target?.invokeMethod("stop_service");
+     await bind.mainStopService();
+     notifyListeners();
+@@ -512,84 +554,100 @@
+     notifyListeners();
+   }
+ 
+-  // force
+-  updateClientState([String? json]) async {
+-    if (isTest) return;
+-    var res = await bind.cmGetClientsState();
+-    List<dynamic> clientsJson;
++  void _setClientStateError(String? error) {
++    if (_clientStateError != error) {
++      _clientStateError = error;
++      notifyListeners();
++    }
++    if (error != null) {
++      _zeroClientLengthCounter = 0;
++      if (desktopType == DesktopType.cm && !hideCm) showCmWindow();
++    }
++  }
++
++  Future<bool> updateClientState() async {
++    if (isTest) return false;
++    final revision = ++_clientStateRevision;
+     try {
+-      clientsJson = jsonDecode(res);
+-    } catch (e) {
+-      debugPrint("Failed to decode clientsJson: '$res', error $e");
+-      return;
+-    }
+-
+-    final oldClientLenght = _clients.length;
+-    _clients.clear();
+-    tabController.state.value.tabs.clear();
+-
+-    for (var clientJson in clientsJson) {
+-      try {
+-        final client = Client.fromJson(clientJson);
+-        _clients.add(client);
+-        _addTab(client);
+-      } catch (e) {
+-        debugPrint("Failed to decode clientJson '$clientJson', error $e");
+-      }
+-    }
+-    if (desktopType == DesktopType.cm) {
+-      if (_clients.isEmpty) {
+-        hideCmWindow();
+-      } else if (!hideCm) {
+-        showCmWindow();
+-      }
+-    }
+-    if (_clients.length != oldClientLenght) {
++      final res = await bind.cmGetClientsState();
++      if (revision != _clientStateRevision) return false;
++      if (_clientsState == res) {
++        _setClientStateError(null);
++        return true;
++      }
++      // Parse the entire snapshot before replacing any previously confirmed state.
++      final clients = (jsonDecode(res) as List)
++          .map((json) => Client.fromJson(json))
++          .toList();
++      final ids = clients.map((client) => client.id).toSet();
++      final tabs = tabController.state.value;
++      final selected = tabs.selected < tabs.tabs.length
++          ? tabs.selectedTabInfo.key
++          : null;
++      _clients.removeWhere((client) => !ids.contains(client.id));
++      tabs.tabs.removeWhere((tab) => !ids.contains(int.parse(tab.key)));
++      for (final client in clients) {
++        _updateClient(client);
++      }
++      tabs.scrollController.itemCount = tabs.tabs.length;
++      if (selected == null || !tabController.jumpToByKey(selected)) {
++        tabController.jumpTo(0);
++      }
++      _clientsState = res;
++      _clientStateError = null;
++      if (desktopType == DesktopType.cm) {
++        if (_clients.isEmpty) {
++          hideCmWindow();
++        } else if (!hideCm) {
++          showCmWindow();
++        }
++      }
+       notifyListeners();
+       if (isAndroid) androidUpdatekeepScreenOn();
+-    }
++      return true;
++    } catch (e) {
++      if (revision == _clientStateRevision) {
++        _setClientStateError(e.toString());
++      }
++      return false;
++    }
++  }
++
++  void _updateClient(Client client) {
++    final index = _clients.indexWhere((c) => c.id == client.id);
++    final wasAuthorized = index >= 0 && _clients[index].authorized;
++    if (index < 0) {
++      _clients.add(client);
++    } else {
++      _clients[index].updateFrom(client);
++      client = _clients[index];
++    }
++    if (client.authorized && !wasAuthorized) {
++      parent.target?.dialogManager.dismissByTag(getLoginDialogTag(client.id));
++      if (isAndroid && !client.isFileTransfer && !client.isTerminal) {
++        parent.target?.invokeMethod("start_capture");
++      }
++      parent.target?.invokeMethod("cancel_notification", client.id);
++    }
++    _addTab(client);
+   }
+ 
+   void addConnection(Map<String, dynamic> evt) {
++    if (desktopType == DesktopType.cm) {
++      // The event and command ports may deliver out of order.
++      _clientsState = null;
++      updateClientState();
++      return;
++    }
+     try {
+       final client = Client.fromJson(jsonDecode(evt["client"]));
+-      if (client.authorized) {
+-        parent.target?.dialogManager.dismissByTag(getLoginDialogTag(client.id));
+-        final index = _clients.indexWhere((c) => c.id == client.id);
+-        if (index < 0) {
+-          _clients.add(client);
+-        } else {
+-          if (_clients[index].authorized) {
+-            _clients[index].privacyMode = client.privacyMode;
+-            notifyListeners();
+-            return;
+-          }
+-          _clients[index].authorized = true;
+-          _clients[index].privacyMode = client.privacyMode;
+-        }
+-      } else {
+-        final index = _clients.indexWhere((c) => c.id == client.id);
+-        if (index >= 0) {
+-          _clients[index].privacyMode = client.privacyMode;
+-          notifyListeners();
+-          return;
+-        }
+-        _clients.add(client);
+-      }
+-      _addTab(client);
+-      // remove disconnected
+-      final index_disconnected = _clients
+-          .indexWhere((c) => c.disconnected && c.peerId == client.peerId);
+-      if (index_disconnected >= 0) {
+-        _clients.removeAt(index_disconnected);
+-        tabController.remove(index_disconnected);
+-      }
+-      if (desktopType == DesktopType.cm && !hideCm) {
+-        showCmWindow();
+-      }
++      final isNew = !_clients.any((c) => c.id == client.id);
++      ++_clientStateRevision;
++      _clientsState = null;
++      _updateClient(client);
+       scrollToBottom();
+       notifyListeners();
+-      if (isAndroid && !client.authorized) showLoginDialog(client);
++      if (isAndroid && isNew && !client.authorized) showLoginDialog(client);
+       if (isAndroid) androidUpdatekeepScreenOn();
+     } catch (e) {
+       debugPrint("Failed to call loginRequest,error:$e");
+@@ -597,12 +655,20 @@
+   }
+ 
+   void _addTab(Client client) {
+-    tabController.add(TabInfo(
++    final tab = TabInfo(
+         key: client.id.toString(),
+         label: client.name,
+         closable: false,
+         onTap: () {},
+-        page: desktop.buildConnectionCard(client)));
++        page: desktop.buildConnectionCard(client));
++    final tabs = tabController.state.value.tabs;
++    final index = tabs.indexWhere((existing) => existing.key == tab.key);
++    if (index >= 0) {
++      tabs[index] = tab;
++      tabController.state.refresh();
++      return;
++    }
++    tabController.add(tab);
+     Future.delayed(Duration.zero, () async {
+       if (!hideCm) windowOnTop(null);
+     });
+@@ -682,26 +748,25 @@
+     });
+   }
+ 
+-  void sendLoginResponse(Client client, bool res) async {
+-    if (res) {
+-      bind.cmLoginRes(connId: client.id, res: res);
+-      if (!client.isFileTransfer && !client.isTerminal) {
+-        parent.target?.invokeMethod("start_capture");
+-      }
+-      parent.target?.invokeMethod("cancel_notification", client.id);
+-      client.authorized = true;
+-      notifyListeners();
+-    } else {
+-      bind.cmLoginRes(connId: client.id, res: res);
+-      parent.target?.invokeMethod("cancel_notification", client.id);
+-      final index = _clients.indexOf(client);
+-      tabController.remove(index);
+-      _clients.remove(client);
+-      if (isAndroid) androidUpdatekeepScreenOn();
++  Future<bool> sendLoginResponse(Client client, bool res) async {
++    try {
++      await bind.cmLoginRes(connId: client.id, res: res);
++      // The acknowledgment records a decision, not successful authorization.
++      await updateClientState();
++      return true;
++    } catch (e) {
++      showToast('${translate("Error")}: $e');
++      return false;
+     }
+   }
+ 
+   void onClientRemove(Map<String, dynamic> evt) {
++    ++_clientStateRevision;
++    _clientsState = null;
++    if (desktopType == DesktopType.cm) {
++      updateClientState();
++      return;
++    }
+     try {
+       final id = int.parse(evt['id'] as String);
+       final close = (evt['close'] as String) == 'true';
+@@ -731,13 +796,29 @@
+   /// `byOperator` false means the CM's window went away rather than a person asking for the
+   /// peers to go. The sessions end either way; only the close reason differs, and with it
+   /// whether the peer is allowed to reconnect. See `ipc::Data::CmWindowClosed`.
+-  Future<void> closeAll({bool byOperator = true}) async {
+-    await Future.wait(_clients.map((client) => byOperator
+-        ? bind.cmCloseConnection(connId: client.id)
+-        : bind.cmCloseConnectionWindow(connId: client.id)));
+-    _clients.clear();
+-    tabController.state.value.tabs.clear();
+-    if (isAndroid) androidUpdatekeepScreenOn();
++  Future<bool> closeAll({bool byOperator = true}) async {
++    await Future.wait(_clients
++        .where((client) =>
++            !client.disconnected && client.phase != 'quarantined')
++        .map((client) => byOperator
++            ? bind.cmCloseConnection(connId: client.id)
++            : bind.cmCloseConnectionWindow(connId: client.id)));
++    final revision = _clientStateRevision + 1;
++    if (!await updateClientState()) return false;
++    // A superseding refresh or a newly arrived peer keeps the CM alive.
++    if (revision != _clientStateRevision) return false;
++    for (final client in _clients) {
++      if (client.phase == 'quarantined') {
++        final error = client.error;
++        final message = error == null || error.isEmpty
++            ? 'Host resource reclamation is unconfirmed.'
++            : error;
++        showToast('${translate("Error")}: $message');
++        return false;
++      }
++    }
++    return _clients.every((client) =>
++        client.disconnected && client.phase == 'disconnected');
+   }
+ 
+   void jumpTo(int id) {
+@@ -797,6 +878,8 @@
+   bool blockInput = false;
+   bool privacyMode = false;
+   bool disconnected = false;
++  String phase = "";
++  String? error;
+   bool fromSwitch = false;
+ 
+   RxInt unreadFileLogCount = 0.obs;
+@@ -826,6 +909,30 @@
+     privacyMode = json['privacy_mode'] ?? privacyMode;
+     disconnected = json['disconnected'];
++    phase = json['phase'] ?? '';
++    error = json['error'];
+     fromSwitch = json['from_switch'];
++  }
++
++  void updateFrom(Client client) {
++    authorized = client.authorized;
++    isFileTransfer = client.isFileTransfer;
++    isTerminal = client.isTerminal;
++    portForward = client.portForward;
++    name = client.name;
++    avatar = client.avatar;
++    peerId = client.peerId;
++    keyboard = client.keyboard;
++    clipboard = client.clipboard;
++    audio = client.audio;
++    file = client.file;
++    restart = client.restart;
++    recording = client.recording;
++    blockInput = client.blockInput;
++    privacyMode = client.privacyMode;
++    disconnected = client.disconnected;
++    phase = client.phase;
++    error = client.error;
++    fromSwitch = client.fromSwitch;
+   }
+ 
+   Map<String, dynamic> toJson() {
+@@ -848,6 +955,8 @@
+     data['privacy_mode'] = privacyMode;
+     data['disconnected'] = disconnected;
++    data['phase'] = phase;
++    data['error'] = error;
+     data['from_switch'] = fromSwitch;
+     return data;
+   }
+ 
+diff --git a/lib/desktop/pages/server_page.dart b/lib/desktop/pages/server_page.dart
+--- a/lib/desktop/pages/server_page.dart
++++ b/lib/desktop/pages/server_page.dart
+@@ -37,6 +37,7 @@
+ class _DesktopServerPageState extends State<DesktopServerPage>
+     with WindowListener, AutomaticKeepAliveClientMixin {
+   final tabController = gFFI.serverModel.tabController;
++  bool _closing = false;
+ 
+   _DesktopServerPageState() {
+     gFFI.ffiModel.updateEventListener(gFFI.sessionId, "");
+@@ -59,20 +60,25 @@
+   }
+ 
+   @override
+-  void onWindowClose() {
+-    // Other platforms keep the old behaviour exactly: the ambiguity this guards against is a
+-    // Linux session logout, which closes every window in the session.
++  void onWindowClose() async {
++    if (_closing) return;
++    _closing = true;
++    // Keep event delivery alive until the owner has completed every close.
+     final byOperator = _cmClosedByOperator || !isLinux;
+-    Future.wait(
+-            [gFFI.serverModel.closeAll(byOperator: byOperator), gFFI.close()])
+-        .then((_) {
++    try {
++      if (!await gFFI.serverModel.closeAll(byOperator: byOperator)) return;
++      await gFFI.close();
+       if (isMacOS) {
+         RdPlatformChannel.instance.terminate();
+       } else {
+-        windowManager.setPreventClose(false);
+-        windowManager.close();
++        await windowManager.setPreventClose(false);
++        await windowManager.close();
+       }
+-    });
++    } catch (e) {
++      showToast('${translate("Error")}: $e');
++    } finally {
++      _closing = false;
++    }
+     super.onWindowClose();
+   }
+ 
+@@ -93,7 +99,19 @@
+         builder: (context, serverModel, child) {
+           final body = Scaffold(
+             backgroundColor: Theme.of(context).colorScheme.background,
+-            body: ConnectionManager(),
++            body: Column(
++              children: [
++                if (serverModel.clientStateError != null)
++                  Padding(
++                    padding: const EdgeInsets.all(8),
++                    child: Text(
++                      '${translate("Error")}: ${serverModel.clientStateError}',
++                      style: TextStyle(color: Theme.of(context).colorScheme.error),
++                    ),
++                  ),
++                Expanded(child: ConnectionManager()),
++              ],
++            ),
+           );
+           return isLinux
+               ? buildVirtualWindowFrame(context, body)
+@@ -596,7 +614,7 @@
+ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+   late final client = widget.client;
+   Widget buildPermissionIcon(bool enabled, IconData iconData,
+-      Function(bool)? onTap, String tooltipText,
++      Future<void> Function(bool)? onTap, String tooltipText,
+       {required bool canModify}) {
+     return Tooltip(
+       message: "$tooltipText: ${enabled ? "ON" : "OFF"}",
+@@ -611,8 +629,9 @@
+         padding: EdgeInsets.all(8.0),
+         child: InkWell(
+           onTap: canModify
+-              ? () =>
+-                  checkClickTime(widget.client.id, () => onTap?.call(!enabled))
++              ? () => checkClickTime(widget.client.id, () async {
++                    await onTap?.call(!enabled);
++                  })
+               : null,
+           child: Column(
+             mainAxisAlignment: MainAxisAlignment.spaceAround,
+@@ -628,6 +647,12 @@
+         ),
+       ),
+     );
++  }
++
++  Future<void> switchPermission(String name, bool enabled) async {
++    await bind.cmSwitchPermission(
++        connId: client.id, name: name, enabled: enabled);
++    await gFFI.serverModel.updateClientState();
+   }
+ 
+   @override
+@@ -672,78 +697,42 @@
+                 buildPermissionIcon(
+                   client.keyboard,
+                   Icons.keyboard,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "keyboard", enabled: enabled);
+-                    setState(() {
+-                      client.keyboard = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("keyboard", enabled),
+                   translate('Enable keyboard/mouse'),
+                   canModify: canModifyPermission,
+                 ),
+                 buildPermissionIcon(
+                   client.clipboard,
+                   Icons.assignment_rounded,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "clipboard", enabled: enabled);
+-                    setState(() {
+-                      client.clipboard = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("clipboard", enabled),
+                   translate('Enable clipboard'),
+                   canModify: canModifyPermission,
+                 ),
+                 buildPermissionIcon(
+                   client.audio,
+                   Icons.volume_up_rounded,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "audio", enabled: enabled);
+-                    setState(() {
+-                      client.audio = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("audio", enabled),
+                   translate('Enable audio'),
+                   canModify: canModifyPermission,
+                 ),
+                 buildPermissionIcon(
+                   client.file,
+                   Icons.upload_file_rounded,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "file", enabled: enabled);
+-                    setState(() {
+-                      client.file = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("file", enabled),
+                   translate('Enable file copy and paste'),
+                   canModify: canModifyPermission,
+                 ),
+                 buildPermissionIcon(
+                   client.restart,
+                   Icons.restart_alt_rounded,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "restart", enabled: enabled);
+-                    setState(() {
+-                      client.restart = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("restart", enabled),
+                   translate('Enable remote restart'),
+                   canModify: canModifyPermission,
+                 ),
+                 buildPermissionIcon(
+                   client.recording,
+                   Icons.videocam_rounded,
+-                  (enabled) {
+-                    bind.cmSwitchPermission(
+-                        connId: client.id, name: "recording", enabled: enabled);
+-                    setState(() {
+-                      client.recording = enabled;
+-                    });
+-                  },
++                  (enabled) => switchPermission("recording", enabled),
+                   translate('Enable recording session'),
+                   canModify: canModifyPermission,
+                 ),
+@@ -752,15 +741,7 @@
+                   buildPermissionIcon(
+                     client.blockInput,
+                     Icons.block,
+-                    (enabled) {
+-                      bind.cmSwitchPermission(
+-                          connId: client.id,
+-                          name: "block_input",
+-                          enabled: enabled);
+-                      setState(() {
+-                        client.blockInput = enabled;
+-                      });
+-                    },
++                    (enabled) => switchPermission("block_input", enabled),
+                     translate('Enable blocking user input'),
+                     canModify: canModifyPermission,
+                   ),
+@@ -768,15 +749,7 @@
+                   buildPermissionIcon(
+                     client.privacyMode,
+                     Icons.visibility_off,
+-                    (enabled) {
+-                      bind.cmSwitchPermission(
+-                          connId: client.id,
+-                          name: "privacy_mode",
+-                          enabled: enabled);
+-                      setState(() {
+-                        client.privacyMode = enabled;
+-                      });
+-                    },
++                    (enabled) => switchPermission("privacy_mode", enabled),
+                     translate('Enable privacy mode'),
+                     canModify: canModifyPermission,
+                   )
+@@ -887,10 +860,10 @@
+       children: [
+         Offstage(
+           offstage: !showElevation || !showAccept,
+-          child: buildButton(context, color: Colors.green[700], onClick: () {
+-            handleAccept(context);
+-            handleElevate(context);
+-            windowManager.minimize();
++          child: buildButton(context, color: Colors.green[700], onClick: () async {
++            if (await handleAccept(context) && client.authorized) {
++              handleElevate(context);
++            }
+           },
+               text: 'Accept and Elevate',
+               icon: Icon(
+@@ -911,9 +884,8 @@
+                     buildButton(
+                       context,
+                       color: MyTheme.accent,
+-                      onClick: () {
+-                        handleAccept(context);
+-                        windowManager.minimize();
++                      onClick: () async {
++                        await handleAccept(context);
+                       },
+                       text: 'Accept',
+                       textColor: Colors.white,
+@@ -939,7 +911,7 @@
+ 
+   Widget buildButton(BuildContext context,
+       {required Color? color,
+-      GestureTapCallback? onClick,
++      FutureOr<void> Function()? onClick,
+       Widget? icon,
+       BoxBorder? border,
+       required String text,
+@@ -998,13 +970,16 @@
+         .marginAll(4);
+   }
+ 
+-  void handleDisconnect() {
+-    bind.cmCloseConnection(connId: client.id);
+-  }
+-
+-  void handleAccept(BuildContext context) {
++  Future<void> handleDisconnect() async {
++    await bind.cmCloseConnection(connId: client.id);
++    await gFFI.serverModel.updateClientState();
++  }
++
++  Future<bool> handleAccept(BuildContext context) async {
+     final model = Provider.of<ServerModel>(context, listen: false);
+-    model.sendLoginResponse(client, true);
++    final accepted = await model.sendLoginResponse(client, true);
++    if (accepted && client.authorized) await windowManager.minimize();
++    return accepted;
+   }
+ 
+   void handleElevate(BuildContext context) {
+@@ -1013,10 +988,11 @@
+     bind.cmElevatePortable(connId: client.id);
+   }
+ 
+-  void handleClose() async {
++  Future<void> handleClose() async {
+     await bind.cmRemoveDisconnectedConnection(connId: client.id);
+-    if (await bind.cmGetClientsLength() == 0) {
+-      windowManager.close();
++    if (await gFFI.serverModel.updateClientState() &&
++        gFFI.serverModel.clients.isEmpty) {
++      await windowManager.close();
+     }
+   }
+ 
+@@ -1025,17 +1001,19 @@
+   }
+ }
+ 
+-void checkClickTime(int id, Function() callback) async {
+-  if (allowRemoteCMModification()) {
+-    callback();
+-    return;
+-  }
+-  var clickCallbackTime = DateTime.now().millisecondsSinceEpoch;
+-  await bind.cmCheckClickTime(connId: id);
+-  Timer(const Duration(milliseconds: 120), () async {
+-    var d = clickCallbackTime - await bind.cmGetClickTime();
+-    if (d > 120) callback();
+-  });
++Future<void> checkClickTime(int id, FutureOr<void> Function() callback) async {
++  try {
++    if (!allowRemoteCMModification()) {
++      final clickCallbackTime = DateTime.now().millisecondsSinceEpoch;
++      await bind.cmCheckClickTime(connId: id);
++      await Future<void>.delayed(const Duration(milliseconds: 120));
++      final d = clickCallbackTime - await bind.cmGetClickTime();
++      if (d <= 120) return;
++    }
++    await callback();
++  } catch (e) {
++    showToast('${translate("Error")}: $e');
++  }
+ }
+ 
+ bool allowRemoteCMModification() {
+diff --git a/lib/common.dart b/lib/common.dart
+--- a/lib/common.dart
++++ b/lib/common.dart
+@@ -2519,6 +2519,7 @@
+     required bool isTerminal,
+     required bool isTcpTunneling,
+     required bool isRDP,
++    bool rustdeskIdOnly = true,
+     bool? forceRelay,
+     String? password,
+     String? connToken,
+@@ -2543,6 +2544,7 @@
+         forceRelay: forceRelay);
+   } else {
+     await rustDeskWinManager.newRemoteDesktop(id,
++        rustdeskIdOnly: rustdeskIdOnly,
+         password: password,
+         isSharedPassword: isSharedPassword,
+         forceRelay: forceRelay);
+@@ -2558,6 +2560,7 @@
+     bool isTerminal = false,
+     bool isTcpTunneling = false,
+     bool isRDP = false,
++    bool rustdeskIdOnly = true,
+     bool forceRelay = false,
+     String? password,
+     String? connToken,
+@@ -2568,6 +2571,7 @@
+       if (Get.isRegistered<IDTextEditingController>()) {
+         final idController = Get.find<IDTextEditingController>();
+         idController.text = formatID(id);
++        idController.rustdeskIdOnly = rustdeskIdOnly;
+       }
+       if (Get.isRegistered<TextEditingController>()) {
+         final fieldTextEditingController = Get.find<TextEditingController>();
+@@ -2586,6 +2590,7 @@
+     if (desktopType == DesktopType.main) {
+       await connectMainDesktop(
+         id,
++        rustdeskIdOnly: rustdeskIdOnly,
+         isFileTransfer: isFileTransfer,
+         isTerminal: isTerminal,
+         isTcpTunneling: isTcpTunneling,
+@@ -2597,6 +2602,7 @@
+     } else {
+       await rustDeskWinManager.call(WindowType.Main, kWindowConnect, {
+         'id': id,
++        'rustdeskIdOnly': rustdeskIdOnly,
+         'isFileTransfer': isFileTransfer,
+         'isTerminal': isTerminal,
+         'isTcpTunneling': isTcpTunneling,
+@@ -2652,6 +2658,7 @@
+             builder: (BuildContext context) => desktop_remote.RemotePage(
+               key: ValueKey(id),
+               id: id,
++              rustdeskIdOnly: rustdeskIdOnly,
+               toolbarState: ToolbarState(),
+               password: password,
+               isSharedPassword: isSharedPassword,
+@@ -2664,6 +2671,7 @@
+           MaterialPageRoute(
+             builder: (BuildContext context) => RemotePage(
+                 id: id,
++                rustdeskIdOnly: rustdeskIdOnly,
+                 password: password,
+                 isSharedPassword: isSharedPassword,
+                 forceRelay: forceRelay),
+@@ -2778,13 +2786,22 @@
+   return bool.hasEnvironment(kEnvPortableExecutable);
+ }
+ 
++bool _closingInactiveWindows = false;
++bool get isClosingInactiveWindows => _closingInactiveWindows;
++
+ /// Window status callback
+ Future<void> onActiveWindowChanged() async {
+   print(
+       "[MultiWindowHandler] active window changed: ${rustDeskWinManager.getActiveWindows()}");
+-  if (rustDeskWinManager.getActiveWindows().isEmpty) {
+-    // close all sub windows
++  if (rustDeskWinManager.getActiveWindows().isEmpty &&
++      !_closingInactiveWindows) {
++    _closingInactiveWindows = true;
+     try {
++      if (isWindows && !bind.isOutgoingOnly()) {
++        await bind.mainStopService();
++      }
++      if (rustDeskWinManager.getActiveWindows().isNotEmpty) return;
++      // Only retire the remaining windows after checked host cleanup.
+       if (isLinux) {
+         await Future.wait([
+           saveWindowPosition(WindowType.Main),
+@@ -2793,9 +2810,7 @@
+       } else {
+         await rustDeskWinManager.closeAllSubWindows();
+       }
+-    } catch (err) {
+-      debugPrintStack(label: "$err");
+-    } finally {
++      if (rustDeskWinManager.getActiveWindows().isNotEmpty) return;
+       debugPrint("Start closing RustDesk...");
+       await windowManager.setPreventClose(false);
+       await windowManager.close();
+@@ -2819,6 +2834,15 @@
+         periodic_immediate(
+             Duration(milliseconds: 30), RdPlatformChannel.instance.terminate);
+       }
++    } catch (err) {
++      debugPrintStack(label: "$err");
++      await windowManager.setPreventClose(true);
++      await rustDeskWinManager.registerActiveWindow(kMainWindowId);
++      await windowManager.show();
++      await windowManager.focus();
++      showToast('${translate("Error")}: $err');
++    } finally {
++      _closingInactiveWindows = false;
+     }
+   }
+ }
+@@ -3082,7 +3106,11 @@
+       !isMacOS ||
+       await callMainCheckSuperUserPermission();
+   if (checked) {
+-    mainSetBoolOption(kOptionStopService, !is_start);
++    try {
++      await mainSetBoolOption(kOptionStopService, !is_start);
++    } catch (e) {
++      showToast('${translate("Error")}: $e');
++    }
+   }
+ }
+ 
+@@ -3109,22 +3137,29 @@
+   return accessMode == 'view' || (isCustomAccessMode && !option);
+ }
+ 
++final _remoteBlockRevisions = Expando<int>();
++
+ // to-do: web not implemented
+ Future<void> shouldBeBlocked(RxBool block, WhetherUseRemoteBlock? use) async {
+-  if (use != null && !await use()) {
+-    block.value = false;
+-    return;
+-  }
+-  var time0 = DateTime.now().millisecondsSinceEpoch;
+-  await bind.mainCheckMouseTime();
+-  Timer(const Duration(milliseconds: 120), () async {
+-    var d = time0 - await bind.mainGetMouseTime();
+-    if (d < 120) {
+-      block.value = true;
+-    } else {
+-      block.value = false;
+-    }
+-  });
++  final revision = (_remoteBlockRevisions[block] ?? 0) + 1;
++  _remoteBlockRevisions[block] = revision;
++  block.value = true;
++  try {
++    if (use != null && !await use()) {
++      if (_remoteBlockRevisions[block] == revision) block.value = false;
++      return;
++    }
++    final time0 = DateTime.now().millisecondsSinceEpoch;
++    await bind.mainCheckMouseTime();
++    await Future<void>.delayed(const Duration(milliseconds: 120));
++    final d = time0 - await bind.mainGetMouseTime();
++    if (_remoteBlockRevisions[block] == revision) block.value = d <= 120;
++  } catch (e) {
++    if (_remoteBlockRevisions[block] != revision) return;
++    // Unknown activity must never unlock security settings or CM controls.
++    block.value = true;
++    showToast('${translate("Error")}: $e');
++  }
+ }
+ 
+ typedef WhetherUseRemoteBlock = Future<bool> Function();
+@@ -3137,7 +3172,6 @@
+         onEnter: (_) async {
+           await shouldBeBlocked(block, use);
+         },
+-        onExit: (event) => block.value = false,
+         child: Stack(children: [
+           // scope block tab
+           preventMouseKeyBuilder(child: child, block: block.value),
+@@ -3358,10 +3392,11 @@
+ //
+ // screenRect is used to move the new window to the specified screen and set fullscreen.
+ openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
+-    {Rect? screenRect}) {
++    {required bool rustdeskIdOnly, Rect? screenRect}) {
+   final args = {
+     'window_id': stateGlobal.windowId,
+     'peer_id': peerId,
++    'rustdeskIdOnly': rustdeskIdOnly,
+     'display': i,
+     'display_count': pi.displays.length,
+     'window_type': (kWindowType ?? WindowType.RemoteDesktop).wireValue,
+diff --git a/lib/desktop/widgets/tabbar_widget.dart b/lib/desktop/widgets/tabbar_widget.dart
+--- a/lib/desktop/widgets/tabbar_widget.dart
++++ b/lib/desktop/widgets/tabbar_widget.dart
+@@ -321,6 +321,7 @@
+       tabType == DesktopTabType.main ||
+       tabType == DesktopTabType.cm ||
+       tabType == DesktopTabType.install;
++  bool _closingMainWindow = false;
+ 
+   _DesktopTabState() : super();
+ 
+@@ -428,6 +429,24 @@
+ 
+   @override
+   void onWindowClose() async {
++    // The CM page awaits checked close; a second listener must not hide failures.
++    if (tabType == DesktopTabType.cm) return;
++    if (tabType == DesktopTabType.main) {
++      if (_closingMainWindow || isClosingInactiveWindows) return;
++      _closingMainWindow = true;
++      try {
++        await _handleWindowClose();
++      } catch (e) {
++        showToast('${translate("Error")}: $e');
++      } finally {
++        _closingMainWindow = false;
++      }
++    } else {
++      await _handleWindowClose();
++    }
++  }
++
++  Future<void> _handleWindowClose() async {
+     mainWindowClose() async => await windowManager.hide();
+     notMainWindowClose(WindowController windowController) async {
+       if (controller.length != 0) {
+@@ -467,6 +486,9 @@
+     if (isMainWindow) {
+       if (rustDeskWinManager.getActiveWindows().contains(kMainWindowId)) {
+         await rustDeskWinManager.unregisterActiveWindow(kMainWindowId);
++        if (rustDeskWinManager.getActiveWindows().contains(kMainWindowId)) {
++          return;
++        }
+       }
+       // macOS specific workaround, the window is not hiding when in fullscreen.
+       if (isMacOS && await windowManager.isFullScreen()) {
+diff --git a/lib/main.dart b/lib/main.dart
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -106,6 +106,7 @@
+     debugPrint("--cm started");
+     desktopType = DesktopType.cm;
+     await windowManager.ensureInitialized();
++    await windowManager.setPreventClose(true);
+     runConnectionManagerScreen();
+   } else if (args.contains('--install')) {
+     runInstallPage();
+@@ -138,9 +139,13 @@
+   await initEnv(kAppTypeMain);
+   checkUpdate();
+   // trigger connection status updater
+-  await bind.mainCheckConnectStatus();
+-  if (startService) {
+-    gFFI.serverModel.startService();
++  try {
++    await bind.mainCheckConnectStatus();
++    if (startService) {
++      await gFFI.serverModel.startService();
++    }
++  } catch (e) {
++    gFFI.serverModel.setHostError(e.toString());
+   }
+   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
+   gFFI.userModel.refreshCurrentUser();
+@@ -273,11 +278,16 @@
+     const DesktopServerPage(),
+     MyTheme.currentThemeMode(),
+   );
+-  final hide = await bind.cmGetConfig(name: "hide_cm") == 'true';
+-  gFFI.serverModel.hideCm = hide;
+-  if (hide) {
+-    await hideCmWindow(isStartup: true);
+-  } else {
++  try {
++    final hide = await bind.cmGetConfig(name: "hide_cm") == 'true';
++    gFFI.serverModel.hideCm = hide;
++    if (hide) {
++      await hideCmWindow(isStartup: true);
++    } else {
++      await showCmWindow(isStartup: true);
++    }
++  } catch (e) {
++    gFFI.serverModel.setHostError(e.toString());
+     await showCmWindow(isStartup: true);
+   }
+   setResizable(false);
+diff --git a/lib/models/native_model.dart b/lib/models/native_model.dart
+--- a/lib/models/native_model.dart
++++ b/lib/models/native_model.dart
+@@ -52,6 +52,7 @@
+   late RustdeskImpl _ffiBind;
+   late String _appType;
+   StreamEventHandler? _eventCallback;
++  Map<String, dynamic>? _pendingHostError;
+ 
+   PlatformFFI._();
+ 
+@@ -237,6 +238,12 @@
+       );
+     } catch (e) {
+       debugPrintStack(label: 'initialize failed: $e');
++      final event = <String, dynamic>{'name': 'host_error', 'error': e.toString()};
++      if (_eventCallback == null) {
++        _pendingHostError = event;
++      } else {
++        await _eventCallback!(event);
++      }
+     }
+     version = await getVersion();
+   }
+@@ -270,6 +277,8 @@
+           if (!await tryHandle(event)) {
+             if (_eventCallback != null) {
+               await _eventCallback!(event);
++            } else if (event['name'] == 'host_error') {
++              _pendingHostError = event;
+             }
+           }
+         } catch (e) {
+@@ -281,6 +290,9 @@
+ 
+   void setEventCallback(StreamEventHandler fun) async {
+     _eventCallback = fun;
++    final pending = _pendingHostError;
++    _pendingHostError = null;
++    if (pending != null) await fun(pending);
+   }
+ 
+   void setRgbaCallback(void Function(int, Uint8List) fun) async {}
+diff --git a/lib/models/model.dart b/lib/models/model.dart
+--- a/lib/models/model.dart
++++ b/lib/models/model.dart
+@@ -65,6 +65,7 @@
+   bool secure = false;
+   bool direct = false;
+   String streamType = '';
++  bool rustdeskIdOnly = true;
+ 
+   CachedPeerData();
+ 
+@@ -79,6 +80,7 @@
+       'secure': secure,
+       'direct': direct,
+       'streamType': streamType,
++      'rustdeskIdOnly': rustdeskIdOnly,
+     });
+   }
+ 
+@@ -98,6 +100,7 @@
+       data.secure = map['secure'];
+       data.direct = map['direct'];
+       data.streamType = map['streamType'];
++      data.rustdeskIdOnly = (map['rustdeskIdOnly'] as bool?) ?? true;
+       return data;
+     } catch (e) {
+       debugPrint('Failed to parse CachedPeerData: $e');
+@@ -395,6 +398,8 @@
+         parent.target?.serverModel.addConnection(evt);
+       } else if (name == 'on_client_remove') {
+         parent.target?.serverModel.onClientRemove(evt);
++      } else if (name == 'host_error') {
++        parent.target?.serverModel.setHostError(evt['error'] as String);
+       } else if (name == 'update_quality_status') {
+         parent.target?.qualityMonitorModel.updateQualityStatus(evt);
+       } else if (name == 'update_block_input_state') {
+@@ -1556,6 +1561,7 @@
+         : screenRectList.length;
+     for (var i = 1; i < length; i++) {
+       openMonitorInNewTabOrWindow(i, peerId, _pi,
++          rustdeskIdOnly: parent.target!.rustdeskIdOnly,
+           screenRect: screenRectList[i]);
+     }
+   }
+@@ -3708,6 +3714,7 @@
+   var version = '';
+   var connType = ConnType.defaultConn;
+   var closed = false;
++  bool rustdeskIdOnly = true;
+ 
+   /// dialogManager use late to ensure init after main page binding [globalKey]
+   late final dialogManager = OverlayDialogManager();
+@@ -3782,6 +3789,7 @@
+   /// Start with the given [id]. Only transfer file if [isFileTransfer], only port forward if [isPortForward].
+   void start(
+     String id, {
++    bool rustdeskIdOnly = true,
+     bool isFileTransfer = false,
+     bool isPortForward = false,
+     bool isRdp = false,
+@@ -3795,6 +3803,17 @@
+     int? display,
+     List<int>? displays,
+   }) {
++    if (id.isEmpty || id.startsWith('rd-engine-id-only-v1://')) {
++      throw const FormatException('Expected a raw remote peer ID');
++    }
++    if (isWeb && rustdeskIdOnly) {
++      throw UnsupportedError('ID-only routing is unsupported by the web bridge');
++    }
++    this.rustdeskIdOnly = rustdeskIdOnly;
++    ffiModel.cachedPeerData.rustdeskIdOnly = rustdeskIdOnly;
++    final ffiId = rustdeskIdOnly
++        ? 'rd-engine-id-only-v1://${base64Url.encode(utf8.encode(id)).replaceAll('=', '')}'
++        : id;
+     closed = false;
+     if (isMobile) mobileReset();
+     assert(
+@@ -3822,7 +3841,7 @@
+       // ignore: unused_local_variable
+       final addRes = bind.sessionAddSync(
+         sessionId: sessionId,
+-        id: id,
++        id: ffiId,
+         isFileTransfer: isFileTransfer,
+         isPortForward: isPortForward,
+         isRdp: isRdp,
+@@ -3861,12 +3880,12 @@
+     // Any operations that depend on the stream should be carefully handled.
+     late final Stream<EventToUI> stream;
+     if (isNewPeer || display == null || displays == null) {
+-      stream = bind.sessionStart(sessionId: sessionId, id: id);
++      stream = bind.sessionStart(sessionId: sessionId, id: ffiId);
+     } else {
+       // We have to put displays in `sessionStart()` to make sure the stream is ready
+       // and then the displays' capturing requests can be sent.
+       stream = bind.sessionStartWithDisplays(
+-          sessionId: sessionId, id: id, displays: Int32List.fromList(displays));
++          sessionId: sessionId, id: ffiId, displays: Int32List.fromList(displays));
+     }
+ 
+     if (isWeb) {
+@@ -3899,7 +3918,11 @@
+         // Session is read to be moved to a new window.
+         // Get the cached data and handle the cached data.
+         Future.delayed(Duration.zero, () async {
+-          final args = jsonEncode({'id': id, 'close': display == null});
++          final args = jsonEncode({
++            'id': id,
++            'rustdeskIdOnly': rustdeskIdOnly,
++            'close': display == null,
++          });
+           final cachedData = await DesktopMultiWindow.invokeMethod(
+               tabWindowId, kWindowEventGetCachedSessionData, args);
+           if (cachedData == null) {
+@@ -3911,6 +3934,9 @@
+           if (data == null) {
+             debugPrint('Unreachable, the cached data cannot be decoded.');
+             return;
++          }
++          if (data.rustdeskIdOnly != rustdeskIdOnly) {
++            throw StateError('Cached session route intent does not match');
+           }
+           ffiModel.setPermissions(data.permissions);
+           await ffiModel.handleCachedPeerData(data, id);
+diff --git a/lib/desktop/pages/desktop_home_page.dart b/lib/desktop/pages/desktop_home_page.dart
+--- a/lib/desktop/pages/desktop_home_page.dart
++++ b/lib/desktop/pages/desktop_home_page.dart
+@@ -428,6 +428,9 @@
+   }
+ 
+   Widget buildHelpCards(String updateUrl) {
++    if (systemError.isNotEmpty) {
++      return buildInstallCard("", systemError, "", () {});
++    }
+     if (!bind.isCustomClient() &&
+         updateUrl.isNotEmpty &&
+         !isCardClosed &&
+@@ -453,9 +456,6 @@
+           link: isToUpdate
+               ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
+               : null);
+-    }
+-    if (systemError.isNotEmpty) {
+-      return buildInstallCard("", systemError, "", () {});
+     }
+ 
+     if (isWindows && !bind.isDisableInstallation()) {
+@@ -695,18 +695,29 @@
+   @override
+   void initState() {
+     super.initState();
++    systemError = gFFI.serverModel.hostError;
++    gFFI.serverModel.addListener(_onHostErrorChanged);
+     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
+-      await gFFI.serverModel.fetchID();
+-      final error = await bind.mainGetError();
+-      if (systemError != error) {
+-        systemError = error;
+-        setState(() {});
+-      }
+-      final v = await mainGetBoolOption(kOptionStopService);
+-      if (v != svcStopped.value) {
+-        svcStopped.value = v;
+-        setState(() {});
+-      }
++      String? refreshError;
++      try {
++        await gFFI.serverModel.fetchID();
++        final v = await mainGetBoolOption(kOptionStopService);
++        if (!mounted) return;
++        if (v != svcStopped.value) {
++          svcStopped.value = v;
++          setState(() {});
++        }
++      } catch (e) {
++        refreshError = e.toString();
++      }
++      try {
++        final error = await bind.mainGetError();
++        gFFI.serverModel.setHostError(
++            error.isNotEmpty ? error : refreshError ?? '');
++      } catch (e) {
++        gFFI.serverModel.setHostError(e.toString());
++      }
++      if (!mounted) return;
+       if (watchIsCanScreenRecording) {
+         if (bind.mainIsCanScreenRecording(prompt: false)) {
+           watchIsCanScreenRecording = false;
+@@ -799,6 +810,7 @@
+         }
+         await connectMainDesktop(
+           call.arguments['id'],
++          rustdeskIdOnly: (call.arguments['rustdeskIdOnly'] as bool?) ?? true,
+           isFileTransfer: call.arguments['isFileTransfer'],
+           isTerminal: call.arguments['isTerminal'],
+           isTcpTunneling: call.arguments['isTcpTunneling'],
+@@ -811,27 +823,18 @@
+         return RdPlatformChannel.instance
+             .bumpMouse(dx: call.arguments['dx'], dy: call.arguments['dy']);
+       } else if (call.method == kWindowEventMoveTabToNewWindow) {
+-        final args = call.arguments.split(',');
+-        if (args[3] == 'ViewCamera') {
++        final args = jsonDecode(call.arguments) as Map<String, dynamic>;
++        if (args['window_type'] == 'ViewCamera') {
+           rejectCameraConnection();
+           return false;
+         }
+-        int? windowId;
+-        try {
+-          windowId = int.parse(args[0]);
+-        } catch (e) {
+-          debugPrint("Failed to parse window id '${call.arguments}': $e");
+-        }
+-        WindowType? windowType;
+-        try {
+-          windowType = WindowType.values.byName(args[3]);
+-        } catch (e) {
+-          debugPrint("Failed to parse window type '${call.arguments}': $e");
+-        }
+-        if (windowId != null && windowType != null) {
+-          await rustDeskWinManager.moveTabToNewWindow(
+-              windowId, args[1], args[2], windowType);
+-        }
++        await rustDeskWinManager.moveTabToNewWindow(
++          args['window_id'] as int,
++          args['id'] as String,
++          args['session_id'] as String,
++          WindowType.values.byName(args['window_type'] as String),
++          rustdeskIdOnly: (args['rustdeskIdOnly'] as bool?) ?? true,
++        );
+       } else if (call.method == kWindowEventOpenMonitorSession) {
+         final args = jsonDecode(call.arguments);
+         final windowId = args['window_id'] as int;
+@@ -841,7 +844,8 @@
+         final windowType = args['window_type'] as int;
+         final screenRect = parseParamScreenRect(args);
+         await rustDeskWinManager.openMonitorSession(
+-            windowId, peerId, display, displayCount, screenRect, windowType);
++            windowId, peerId, display, displayCount, screenRect, windowType,
++            rustdeskIdOnly: (args['rustdeskIdOnly'] as bool?) ?? true);
+       } else if (call.method == kWindowEventRemoteWindowCoords) {
+         final windowId = int.tryParse(call.arguments);
+         if (windowId != null) {
+@@ -874,8 +878,16 @@
+     }
+   }
+ 
++  void _onHostErrorChanged() {
++    final error = gFFI.serverModel.hostError;
++    if (mounted && systemError != error) {
++      setState(() => systemError = error);
++    }
++  }
++
+   @override
+   void dispose() {
++    gFFI.serverModel.removeListener(_onHostErrorChanged);
+     _uniLinksSubscription?.cancel();
+     Get.delete<RxBool>(tag: 'stop-service');
+     _updateTimer?.cancel();
+diff --git a/lib/desktop/pages/connection_page.dart b/lib/desktop/pages/connection_page.dart
+--- a/lib/desktop/pages/connection_page.dart
++++ b/lib/desktop/pages/connection_page.dart
+@@ -53,7 +53,7 @@
+   void initState() {
+     super.initState();
+     _updateTimer = periodic_immediate(Duration(seconds: 1), () async {
+-      updateStatus();
++      await updateStatus();
+     });
+   }
+ 
+@@ -167,23 +167,29 @@
+     );
+   }
+ 
+-  updateStatus() async {
+-    final status =
+-        jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
+-    final statusNum = status['status_num'] as int;
+-    if (statusNum == 0) {
+-      stateGlobal.svcStatus.value = SvcStatus.connecting;
+-    } else if (statusNum == -1) {
++  Future<void> updateStatus() async {
++    try {
++      final status =
++          jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
++      final statusNum = status['status_num'] as int;
++      if (statusNum == 0) {
++        stateGlobal.svcStatus.value = SvcStatus.connecting;
++      } else if (statusNum == -1) {
++        stateGlobal.svcStatus.value = SvcStatus.notReady;
++      } else if (statusNum == 1) {
++        stateGlobal.svcStatus.value = SvcStatus.ready;
++      } else {
++        stateGlobal.svcStatus.value = SvcStatus.notReady;
++      }
++      _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
++      final videoConnCount = status['video_conn_count'];
++      if (videoConnCount is int) {
++        stateGlobal.videoConnCount.value = videoConnCount;
++      }
++    } catch (e) {
+       stateGlobal.svcStatus.value = SvcStatus.notReady;
+-    } else if (statusNum == 1) {
+-      stateGlobal.svcStatus.value = SvcStatus.ready;
+-    } else {
+-      stateGlobal.svcStatus.value = SvcStatus.notReady;
++      gFFI.serverModel.setHostError(e.toString());
+     }
+-    _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
+-    try {
+-      stateGlobal.videoConnCount.value = status['video_conn_count'] as int;
+-    } catch (_) {}
+   }
+ }
+ 
+@@ -333,6 +339,7 @@
+       bool isTcpTunneling = false}) {
+     var id = _idController.id;
+     connect(context, id,
++        rustdeskIdOnly: _idController.rustdeskIdOnly,
+         isFileTransfer: isFileTransfer,
+         isTerminal: isTerminal,
+         isTcpTunneling: isTcpTunneling);
+@@ -437,6 +444,7 @@
+                           inputFormatters: [IDTextInputFormatter()],
+                           onChanged: (v) {
+                             _idController.id = v;
++                            _idController.rustdeskIdOnly = false;
+                           },
+                           onSubmitted: (_) {
+                             onConnect();
+@@ -446,6 +454,7 @@
+                   onSelected: (option) {
+                     setState(() {
+                       _idController.id = option.id;
++                      _idController.rustdeskIdOnly = option.rustdeskIdOnly;
+                       FocusScope.of(context).unfocus();
+                     });
+                   },
+diff --git a/lib/models/peer_model.dart b/lib/models/peer_model.dart
+--- a/lib/models/peer_model.dart
++++ b/lib/models/peer_model.dart
+@@ -7,6 +7,7 @@
+ 
+ class Peer {
+   final String id;
++  bool rustdeskIdOnly;
+   String hash; // personal ab hash password
+   String password; // shared ab password
+   String username; // pc username
+@@ -30,8 +31,14 @@
+     return id;
+   }
+ 
++  // Serialized peers cannot prove a current local manual-input decision.
++  // Even a previously persisted false must be restricted again on reload.
+   Peer.fromJson(Map<String, dynamic> json)
+       : id = json['id'] ?? '',
++        rustdeskIdOnly = json['rustdeskIdOnly'] == null ||
++                json['rustdeskIdOnly'] is bool
++            ? true
++            : throw const FormatException('Invalid peer route intent metadata'),
+         hash = json['hash'] ?? '',
+         password = json['password'] ?? '',
+         username = json['username'] ?? '',
+@@ -50,6 +57,7 @@
+   Map<String, dynamic> toJson() {
+     return <String, dynamic>{
+       "id": id,
++      'rustdeskIdOnly': rustdeskIdOnly,
+       "hash": hash,
+       "password": password,
+       "username": username,
+@@ -85,6 +93,7 @@
+   Map<String, dynamic> toGroupCacheJson() {
+     return <String, dynamic>{
+       "id": id,
++      'rustdeskIdOnly': rustdeskIdOnly,
+       "username": username,
+       "hostname": hostname,
+       "platform": platform,
+@@ -95,6 +104,7 @@
+ 
+   Peer({
+     required this.id,
++    this.rustdeskIdOnly = true,
+     required this.hash,
+     required this.password,
+     required this.username,
+@@ -130,6 +140,7 @@
+         );
+   bool equal(Peer other) {
+     return id == other.id &&
++        rustdeskIdOnly == other.rustdeskIdOnly &&
+         hash == other.hash &&
+         password == other.password &&
+         username == other.username &&
+@@ -148,6 +159,7 @@
+   factory Peer.copy(Peer other) {
+     final peer = Peer(
+         id: other.id,
++        rustdeskIdOnly: other.rustdeskIdOnly,
+         hash: other.hash,
+         password: other.password,
+         username: other.username,
+diff --git a/lib/common/widgets/autocomplete.dart b/lib/common/widgets/autocomplete.dart
+--- a/lib/common/widgets/autocomplete.dart
++++ b/lib/common/widgets/autocomplete.dart
+@@ -18,15 +18,17 @@
+ }) {
+   final combinedPeers = <String, Peer>{};
+ 
+-  void addPeer(Peer peer) {
++  void addPeer(Peer peer, {bool rustdeskIdOnly = false}) {
+     if (peer.id.isEmpty) {
+       return;
+     }
++    final idOnly = rustdeskIdOnly || peer.rustdeskIdOnly;
+     final existingPeer = combinedPeers[peer.id];
+     if (existingPeer == null) {
+-      combinedPeers[peer.id] = Peer.copy(peer);
+-    } else if (peer.online) {
+-      existingPeer.online = true;
++      combinedPeers[peer.id] = Peer.copy(peer)..rustdeskIdOnly = idOnly;
++    } else {
++      existingPeer.rustdeskIdOnly = existingPeer.rustdeskIdOnly || idOnly;
++      if (peer.online) existingPeer.online = true;
+     }
+   }
+ 
+@@ -37,7 +39,7 @@
+     addPeer(peer);
+   }
+   for (final peer in lanPeers) {
+-    addPeer(peer);
++    addPeer(peer, rustdeskIdOnly: true);
+   }
+   for (final peer in recentPeers) {
+     addPeer(peer);
+diff --git a/lib/common/widgets/peer_card.dart b/lib/common/widgets/peer_card.dart
+--- a/lib/common/widgets/peer_card.dart
++++ b/lib/common/widgets/peer_card.dart
+@@ -1560,6 +1560,7 @@
+     }
+   }
+   connect(context, peer.id,
++      rustdeskIdOnly: tab == PeerTabIndex.lan || peer.rustdeskIdOnly,
+       password: password,
+       isSharedPassword: isSharedPassword,
+       isFileTransfer: isFileTransfer,
+diff --git a/lib/common/formatter/id_formatter.dart b/lib/common/formatter/id_formatter.dart
+--- a/lib/common/formatter/id_formatter.dart
++++ b/lib/common/formatter/id_formatter.dart
+@@ -3,6 +3,15 @@
+ 
+ class IDTextEditingController extends TextEditingController {
+   IDTextEditingController({String? text}) : super(text: text);
++
++  // Programmatic text changes have no proof of a manual direct-connect intent.
++  bool rustdeskIdOnly = true;
++
++  @override
++  set value(TextEditingValue newValue) {
++    rustdeskIdOnly = true;
++    super.value = newValue;
++  }
+ 
+   String get id => trimID(value.text);
+ 
+diff --git a/lib/utils/multi_window_manager.dart b/lib/utils/multi_window_manager.dart
+--- a/lib/utils/multi_window_manager.dart
++++ b/lib/utils/multi_window_manager.dart
+@@ -68,10 +68,11 @@
+   final List<int> _terminalWindows = List.empty(growable: true);
+ 
+   moveTabToNewWindow(int windowId, String peerId, String sessionId,
+-      WindowType windowType) async {
++      WindowType windowType, {required bool rustdeskIdOnly}) async {
+     var params = {
+       'type': windowType.wireValue,
+       'id': peerId,
++      'rustdeskIdOnly': rustdeskIdOnly,
+       'tab_window_id': windowId,
+       'session_id': sessionId,
+     };
+@@ -90,7 +91,7 @@
+   // This function must be called in the main window thread.
+   // Because the _remoteDesktopWindows is managed in that thread.
+   openMonitorSession(int windowId, String peerId, int display, int displayCount,
+-      Rect? screenRect, int windowType) async {
++      Rect? screenRect, int windowType, {required bool rustdeskIdOnly}) async {
+     if (windowType != WindowType.RemoteDesktop.wireValue) {
+       if (windowType == 3) {
+         rejectCameraConnection();
+@@ -107,6 +108,7 @@
+             kWindowEventActiveDisplaySession,
+             jsonEncode({
+               'id': peerId,
++              'rustdeskIdOnly': rustdeskIdOnly,
+               'display': display,
+             }))) {
+           return;
+@@ -120,6 +122,7 @@
+     var params = {
+       'type': windowType,
+       'id': peerId,
++      'rustdeskIdOnly': rustdeskIdOnly,
+       'tab_window_id': windowId,
+       'display': display,
+       'displays': displays,
+@@ -223,6 +226,7 @@
+     String methodName,
+     String remoteId,
+     List<int> windows, {
++    bool rustdeskIdOnly = true,
+     String? password,
+     bool? forceRelay,
+     String? switchUuid,
+@@ -233,6 +237,7 @@
+     var params = {
+       "type": type.wireValue,
+       "id": remoteId,
++      'rustdeskIdOnly': rustdeskIdOnly,
+       "password": password,
+       "forceRelay": forceRelay
+     };
+@@ -257,7 +262,11 @@
+     if (windows.length > 1 || !openInTabs) {
+       for (final windowId in windows) {
+         if (await DesktopMultiWindow.invokeMethod(
+-            windowId, kWindowEventActiveSession, remoteId)) {
++            windowId,
++            kWindowEventActiveSession,
++            type == WindowType.RemoteDesktop
++                ? jsonEncode({'id': remoteId, 'rustdeskIdOnly': rustdeskIdOnly})
++                : remoteId)) {
+           return MultiWindowCallResult(windowId, null);
+         }
+       }
+@@ -268,6 +277,7 @@
+ 
+   Future<MultiWindowCallResult> newRemoteDesktop(
+     String remoteId, {
++    bool rustdeskIdOnly = true,
+     String? password,
+     bool? isSharedPassword,
+     String? switchUuid,
+@@ -278,6 +288,7 @@
+       kWindowEventNewRemoteDesktop,
+       remoteId,
+       _remoteDesktopWindows,
++      rustdeskIdOnly: rustdeskIdOnly,
+       password: password,
+       forceRelay: forceRelay,
+       switchUuid: switchUuid,
+diff --git a/lib/desktop/pages/remote_tab_page.dart b/lib/desktop/pages/remote_tab_page.dart
+--- a/lib/desktop/pages/remote_tab_page.dart
++++ b/lib/desktop/pages/remote_tab_page.dart
+@@ -91,6 +91,7 @@
+         page: RemotePage(
+           key: ValueKey(peerId),
+           id: peerId!,
++          rustdeskIdOnly: (params['rustdeskIdOnly'] as bool?) ?? true,
+           sessionId: sessionId == null ? null : SessionID(sessionId),
+           tabWindowId: tabWindowId,
+           display: display,
+@@ -275,7 +276,13 @@
+           await DesktopMultiWindow.invokeMethod(
+               kMainWindowId,
+               kWindowEventMoveTabToNewWindow,
+-              '${windowId()},$key,$sessionId,RemoteDesktop');
++              jsonEncode({
++                'window_id': windowId(),
++                'id': key,
++                'session_id': sessionId.toString(),
++                'window_type': 'RemoteDesktop',
++                'rustdeskIdOnly': remotePage.rustdeskIdOnly,
++              }));
+           cancelFunc();
+         },
+         padding: padding,
+@@ -417,6 +424,13 @@
+   _update_remote_count() =>
+       RemoteCountState.find().value = tabController.length;
+ 
++  void _checkRouteIntent(String id, bool rustdeskIdOnly) {
++    final page = tabController.widget(id);
++    if (page is RemotePage && page.rustdeskIdOnly != rustdeskIdOnly) {
++      throw StateError('Session route intent conflicts with the existing connection');
++    }
++  }
++
+   Future<dynamic> _remoteMethodHandler(call, fromWindowId) async {
+     debugPrint(
+         "[Remote Page] call ${call.method} with args ${call.arguments} from window $fromWindowId");
+@@ -430,7 +444,9 @@
+         rejectCameraConnection();
+         return false;
+       }
+-      final id = args['id'];
++      final id = args['id'] as String;
++      final rustdeskIdOnly = (args['rustdeskIdOnly'] as bool?) ?? true;
++      _checkRouteIntent(id, rustdeskIdOnly);
+       final switchUuid = args['switch_uuid'];
+       final sessionId = args['session_id'];
+       final tabWindowId = args['tab_window_id'];
+@@ -467,6 +483,7 @@
+         page: RemotePage(
+           key: ValueKey(id),
+           id: id,
++          rustdeskIdOnly: rustdeskIdOnly,
+           sessionId: sessionId == null ? null : SessionID(sessionId),
+           tabWindowId: tabWindowId,
+           display: display,
+@@ -486,14 +503,18 @@
+     } else if (call.method == kWindowActionRebuild) {
+       reloadCurrentWindow();
+     } else if (call.method == kWindowEventActiveSession) {
+-      final jumpOk = tabController.jumpToByKey(call.arguments);
++      final args = jsonDecode(call.arguments) as Map<String, dynamic>;
++      final id = args['id'] as String;
++      _checkRouteIntent(id, (args['rustdeskIdOnly'] as bool?) ?? true);
++      final jumpOk = tabController.jumpToByKey(id);
+       if (jumpOk) {
+         windowOnTop(windowId());
+       }
+       return jumpOk;
+     } else if (call.method == kWindowEventActiveDisplaySession) {
+       final args = jsonDecode(call.arguments);
+-      final id = args['id'];
++      final id = args['id'] as String;
++      _checkRouteIntent(id, (args['rustdeskIdOnly'] as bool?) ?? true);
+       final display = args['display'];
+       final jumpOk = tabController.jumpToByKeyAndDisplay(id, display);
+       if (jumpOk) {
+@@ -514,17 +535,19 @@
+       // Ready to show new window and close old tab.
+       final args = jsonDecode(call.arguments);
+       final id = args['id'];
+-      final close = args['close'];
+-      RemotePage? remotePage;
+-      try {
+-        remotePage = tabController.state.value.tabs
+-            .firstWhere((tab) => tab.key == id)
+-            .page as RemotePage;
+-        returnValue = remotePage.ffi.ffiModel.cachedPeerData.toString();
+-      } catch (e) {
+-        debugPrint('Failed to get cached session data: $e');
+-      }
+-      if (close && returnValue != null && remotePage != null) {
++      final close = args['close'] as bool;
++      final rustdeskIdOnly = (args['rustdeskIdOnly'] as bool?) ?? true;
++      final remotePage = tabController.widget(id);
++      if (remotePage is! RemotePage) {
++        throw StateError('The source session is no longer available');
++      }
++      final cachedData = remotePage.ffi.ffiModel.cachedPeerData;
++      if (remotePage.rustdeskIdOnly != rustdeskIdOnly ||
++          cachedData.rustdeskIdOnly != rustdeskIdOnly) {
++        throw StateError('Cached session route intent does not match');
++      }
++      returnValue = cachedData.toString();
++      if (close) {
+         remotePage.releaseMacOSInputForTabTransfer();
+         closeSessionOnDispose[id] = false;
+         tabController.closeBy(id);
+diff --git a/lib/desktop/pages/remote_page.dart b/lib/desktop/pages/remote_page.dart
+--- a/lib/desktop/pages/remote_page.dart
++++ b/lib/desktop/pages/remote_page.dart
+@@ -36,6 +36,7 @@
+   RemotePage({
+     Key? key,
+     required this.id,
++    this.rustdeskIdOnly = true,
+     required this.toolbarState,
+     this.sessionId,
+     this.tabWindowId,
+@@ -51,6 +52,7 @@
+   }
+ 
+   final String id;
++  final bool rustdeskIdOnly;
+   final SessionID? sessionId;
+   final int? tabWindowId;
+   final int? display;
+@@ -166,6 +168,7 @@
+     _ffi.canvasModel.initializeEdgeScrollFallback(this);
+     _ffi.start(
+       widget.id,
++      rustdeskIdOnly: widget.rustdeskIdOnly,
+       password: widget.password,
+       isSharedPassword: widget.isSharedPassword,
+       switchUuid: widget.switchUuid,
+diff --git a/lib/mobile/pages/remote_page.dart b/lib/mobile/pages/remote_page.dart
+--- a/lib/mobile/pages/remote_page.dart
++++ b/lib/mobile/pages/remote_page.dart
+@@ -42,12 +42,14 @@
+   RemotePage(
+       {Key? key,
+       required this.id,
++      this.rustdeskIdOnly = true,
+       this.password,
+       this.isSharedPassword,
+       this.forceRelay})
+       : super(key: key);
+ 
+   final String id;
++  final bool rustdeskIdOnly;
+   final String? password;
+   final bool? isSharedPassword;
+   final bool? forceRelay;
+@@ -93,6 +95,7 @@
+     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
+     gFFI.start(
+       widget.id,
++      rustdeskIdOnly: widget.rustdeskIdOnly,
+       password: widget.password,
+       isSharedPassword: widget.isSharedPassword,
+       forceRelay: widget.forceRelay,
+diff --git a/lib/mobile/pages/connection_page.dart b/lib/mobile/pages/connection_page.dart
+--- a/lib/mobile/pages/connection_page.dart
++++ b/lib/mobile/pages/connection_page.dart
+@@ -100,7 +100,7 @@
+   /// Connects to the selected peer.
+   void onConnect() {
+     var id = _idController.id;
+-    connect(context, id);
++    connect(context, id, rustdeskIdOnly: _idController.rustdeskIdOnly);
+   }
+ 
+   void onFocusChanged() {
+@@ -229,6 +229,7 @@
+                         // keyboardType: TextInputType.number,
+                         onChanged: (String text) {
+                           _idController.id = text;
++                          _idController.rustdeskIdOnly = false;
+                         },
+                         style: const TextStyle(
+                           fontFamily: 'WorkSans',
+@@ -261,6 +262,7 @@
+                     onSelected: (option) {
+                       setState(() {
+                         _idController.id = option.id;
++                        _idController.rustdeskIdOnly = option.rustdeskIdOnly;
+                         FocusScope.of(context).unfocus();
+                       });
+                     },
+diff --git a/lib/desktop/widgets/remote_toolbar.dart b/lib/desktop/widgets/remote_toolbar.dart
+--- a/lib/desktop/widgets/remote_toolbar.dart
++++ b/lib/desktop/widgets/remote_toolbar.dart
+@@ -989,7 +989,8 @@
+         bind.sessionGetDisplaysAsIndividualWindows(sessionId: ffi.sessionId) ==
+             'Y';
+     if (isChooseDisplayToOpenInNewWindow) {
+-      openMonitorInNewTabOrWindow(target, ffi.id, _pi);
++      openMonitorInNewTabOrWindow(target, ffi.id, _pi,
++          rustdeskIdOnly: ffi.rustdeskIdOnly);
+     } else {
+       openMonitorInTheSameTab(target, ffi, _pi, updateCursorPos: false);
+     }
+@@ -1283,7 +1284,8 @@
+                   sessionId: ffi.sessionId) ==
+               'Y';
+       if (isChooseDisplayToOpenInNewWindow) {
+-        openMonitorInNewTabOrWindow(i, ffi.id, pi);
++        openMonitorInNewTabOrWindow(i, ffi.id, pi,
++            rustdeskIdOnly: ffi.rustdeskIdOnly);
+       } else {
+         openMonitorInTheSameTab(i, ffi, pi, updateCursorPos: !isMulti);
+       }

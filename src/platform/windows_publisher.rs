@@ -178,8 +178,23 @@ pub struct WindowsPublisher<C, E> {
     next_encode_pts_us: Option<i64>,
 }
 impl<C: TextureCapture, E: DirectNvenc<C::Frame>> WindowsPublisher<C, E> {
-    pub fn open(capture: C, encoder: E, config: ProducerConfig) -> Result<Self, ProducerError> {
-        validate_capability(config, encoder.capability())?;
+    /// A capability that fails validation hands both native owners back instead
+    /// of dropping them: an unsupported mode is not a licence to leak a capture
+    /// or an encoder, so the caller reclaims them through [`CloseQuarantine`].
+    pub fn open(
+        capture: C,
+        encoder: E,
+        config: ProducerConfig,
+    ) -> Result<Self, CloseQuarantine<C, E>> {
+        if let Err(error) = validate_capability(config, encoder.capability()) {
+            return Err(CloseQuarantine {
+                capture: ManuallyDrop::new(capture),
+                encoder: ManuallyDrop::new(encoder),
+                encoder_closed: false,
+                capture_closed: false,
+                last_error: error,
+            });
+        }
         Ok(Self {
             capture: ManuallyDrop::new(capture),
             encoder: ManuallyDrop::new(encoder),
@@ -642,23 +657,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn failed_close_retains_complete_publisher_for_retry() {
-        let source_color = sdr(DxgiFormat::B8G8R8A8Unorm);
-        let mut encoded_color = sdr(DxgiFormat::Nv12);
-        encoded_color.colorimetry.matrix = MatrixCoefficients::Bt709;
-        encoded_color.colorimetry.range = ColorRange::Limited;
-        let config = ProducerConfig {
-            codec: Codec::H264,
-            width: NonZeroU32::new(1920).unwrap(),
-            height: NonZeroU32::new(1080).unwrap(),
-            fps_numerator: NonZeroU32::new(120).unwrap(),
-            fps_denominator: NonZeroU32::new(1).unwrap(),
-            bitrate: NonZeroU32::new(20_000_000).unwrap(),
-            source_color,
-            encoded_color,
-        };
-        let capability = EncoderCapabilities {
+    /// A valid H.264 capability for this capture format at 1920x1080@120.
+    fn test_capability(
+        source_color: MediaColorContract,
+        encoded_color: MediaColorContract,
+    ) -> EncoderCapabilities {
+        EncoderCapabilities {
             codec: Codec::H264,
             adapter_luid: AdapterLuid(1),
             input_format: DxgiFormat::B8G8R8A8Unorm,
@@ -673,16 +677,44 @@ mod tests {
             accepts_direct_d3d11_resource: true,
             supports_main10: false,
             supports_hdr_static_metadata: false,
-        };
-        let publisher = WindowsPublisher::open(
+        }
+    }
+    /// The matching producer configuration for the capability above.
+    fn test_config(
+        source_color: MediaColorContract,
+        encoded_color: MediaColorContract,
+    ) -> ProducerConfig {
+        ProducerConfig {
+            codec: Codec::H264,
+            width: NonZeroU32::new(1920).unwrap(),
+            height: NonZeroU32::new(1080).unwrap(),
+            fps_numerator: NonZeroU32::new(120).unwrap(),
+            fps_denominator: NonZeroU32::new(1).unwrap(),
+            bitrate: NonZeroU32::new(20_000_000).unwrap(),
+            source_color,
+            encoded_color,
+        }
+    }
+
+    #[test]
+    fn failed_close_retains_complete_publisher_for_retry() {
+        let source_color = sdr(DxgiFormat::B8G8R8A8Unorm);
+        let mut encoded_color = sdr(DxgiFormat::Nv12);
+        encoded_color.colorimetry.matrix = MatrixCoefficients::Bt709;
+        encoded_color.colorimetry.range = ColorRange::Limited;
+        let config = test_config(source_color, encoded_color);
+        let capability = test_capability(source_color, encoded_color);
+        let publisher = match WindowsPublisher::open(
             Capture { close_attempts: 0 },
             Encoder {
                 capability,
                 close_attempts: 0,
             },
             config,
-        )
-        .unwrap();
+        ) {
+            Ok(publisher) => publisher,
+            Err(_) => panic!("the capability built here is valid"),
+        };
         let quarantine = publisher.close().unwrap_err();
         assert_eq!(quarantine.last_error(), ProducerError::EncoderFailed);
         assert!(!quarantine.encoder_closed());
@@ -696,6 +728,57 @@ mod tests {
         assert!(!quarantine.capture_closed());
         assert_eq!(quarantine.capture.close_attempts, 1);
         assert_eq!(quarantine.encoder.close_attempts, 2);
+
+        assert!(quarantine.retry().is_ok());
+    }
+
+    #[test]
+    fn validation_failure_hands_both_owners_back_for_checked_cleanup() {
+        let source_color = sdr(DxgiFormat::B8G8R8A8Unorm);
+        let mut encoded_color = sdr(DxgiFormat::Nv12);
+        encoded_color.colorimetry.matrix = MatrixCoefficients::Bt709;
+        encoded_color.colorimetry.range = ColorRange::Limited;
+        let mut capability = test_capability(source_color, encoded_color);
+        // A mode that cannot accept the capture resource directly is refused
+        // before anything is registered on either owner.
+        capability.accepts_direct_d3d11_resource = false;
+        let quarantine = match WindowsPublisher::open(
+            Capture { close_attempts: 0 },
+            Encoder {
+                capability,
+                close_attempts: 0,
+            },
+            test_config(source_color, encoded_color),
+        ) {
+            Ok(_) => panic!("an indirect-input encoder must not open"),
+            Err(quarantine) => quarantine,
+        };
+        assert_eq!(
+            quarantine.last_error(),
+            ProducerError::UnsupportedDirectInput
+        );
+        // Neither owner was closed by an ordinary drop: both are still here for
+        // the checked retry.
+        assert_eq!(quarantine.capture.close_attempts, 0);
+        assert_eq!(quarantine.encoder.close_attempts, 0);
+        assert!(!quarantine.capture_closed());
+        assert!(!quarantine.encoder_closed());
+
+        // The retry reclaims the encoder first; its own first attempt fails and
+        // is retained, so the capture is not released before the encoder is.
+        let quarantine = quarantine.retry().unwrap_err();
+        assert_eq!(quarantine.encoder.close_attempts, 1);
+        assert_eq!(quarantine.capture.close_attempts, 0);
+        assert!(!quarantine.encoder_closed());
+        assert!(!quarantine.capture_closed());
+
+        // The encoder is confirmed closed next, and the capture's own first
+        // attempt fails in its turn.
+        let quarantine = quarantine.retry().unwrap_err();
+        assert_eq!(quarantine.encoder.close_attempts, 2);
+        assert!(quarantine.encoder_closed());
+        assert_eq!(quarantine.capture.close_attempts, 1);
+        assert!(!quarantine.capture_closed());
 
         assert!(quarantine.retry().is_ok());
     }

@@ -3,13 +3,14 @@
 
 use crate::{
     media_color::{ColorPrimaries, ColorRange, MatrixCoefficients, MediaColorContract},
+    windows_input::{InputError, TargetBinding, binding_for_index},
     windows_native::{
         CaptureInfo, DesktopDuplicationCapture, DesktopDuplicationOpenQuarantine, NativeNvenc,
         NativeNvencOpenQuarantine, OutputInfo, enumerate_outputs,
     },
     windows_publisher::{
         CloseQuarantine, Codec as NativeCodec, DxgiFormat, ProducerConfig, ProducerError,
-        WindowsPublisher as NativePublisher,
+        TextureCapture, WindowsPublisher as NativePublisher,
     },
 };
 use hbb_common::bytes::Bytes;
@@ -42,14 +43,21 @@ pub enum CodecSelection {
 pub struct PublisherDisplay {
     pub width: i32,
     pub height: i32,
+    /// Desktop-space origin of the bound output, exactly as the adapter reports
+    /// it. `width`/`height` are this rectangle's size.
+    pub left: i32,
+    pub top: i32,
     pub name: String,
+    /// Opaque stable key of the bound output. It is the only thing a caller may
+    /// hand back to select this display again.
+    pub binding_key: String,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct SupportedCodecs {
     pub h264: bool,
     pub h265: bool,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PublisherConfig {
     pub codec: Codec,
     pub width: i32,
@@ -59,7 +67,10 @@ pub struct PublisherConfig {
     pub max_queued_units: usize,
     pub max_queued_bytes: usize,
     pub backend: PublisherBackend,
-    pub output_index: usize,
+    /// The exact output this pipeline may capture, bound by its stable key. The
+    /// capture and every check use this id and rectangle; an ordinal is never
+    /// re-resolved after binding.
+    pub(crate) binding: TargetBinding,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublisherError {
@@ -92,48 +103,67 @@ pub fn probe_display(
     output_index: usize,
 ) -> Result<PublisherDisplay, PublisherError> {
     select_backend(backend)?;
+    // The binding is resolved once and is what this report describes; the
+    // enumeration only supplies the label.
+    let binding = binding_for_index(output_index).map_err(map_input)?;
     let output = output(output_index)?;
-    let width = output.desktop_rect[2] - output.desktop_rect[0];
-    let height = output.desktop_rect[3] - output.desktop_rect[1];
+    if output.id != binding.output_id() {
+        // The display list changed between enumeration and binding, so either
+        // one alone would describe a display that is not the bound one.
+        return Err(PublisherError::OutputNotFound);
+    }
+    let (width, height) = (binding.width(), binding.height());
     if width <= 0 || height <= 0 {
         return Err(PublisherError::CaptureFailed);
     }
+    let rect = binding.desktop_rect();
     Ok(PublisherDisplay {
         width,
         height,
+        left: rect[0],
+        top: rect[1],
         name: output.device_name,
+        binding_key: binding.key().to_owned(),
     })
 }
 pub fn supported_codecs() -> Result<SupportedCodecs, PublisherError> {
-    let display = probe_display(PublisherBackend::Auto, 0)?;
+    select_backend(PublisherBackend::Auto)?;
+    let binding = binding_for_index(0).map_err(map_input)?;
     supported_codecs_for(&PublisherConfig {
         codec: Codec::H264,
-        width: display.width,
-        height: display.height,
+        width: binding.width(),
+        height: binding.height(),
         fps: 60,
         bitrate: 20_000_000,
         max_queued_units: 1,
         max_queued_bytes: 32 * 1024 * 1024,
         backend: PublisherBackend::Auto,
-        output_index: 0,
+        binding,
     })
 }
 pub fn supported_codecs_for(config: &PublisherConfig) -> Result<SupportedCodecs, PublisherError> {
     validate_config(config)?;
     select_backend(config.backend)?;
-    let h264 = probe_codec(*config, Codec::H264);
-    let h265 = probe_codec(*config, Codec::H265);
+    let h264 = probe_codec(config.clone(), Codec::H264)?;
+    let h265 = probe_codec(config.clone(), Codec::H265)?;
     if !h264 && !h265 {
         return Err(PublisherError::BackendUnavailable);
     }
     Ok(SupportedCodecs { h264, h265 })
 }
-fn probe_codec(mut config: PublisherConfig, codec: Codec) -> bool {
+/// Answers whether one codec can actually be opened on this bound output. An
+/// unsupported codec is `false` only once its native owners were reclaimed
+/// through the checked boundary; an open or close that leaves a quarantine is
+/// not a capability answer and stops the probe.
+fn probe_codec(mut config: PublisherConfig, codec: Codec) -> Result<bool, PublisherError> {
     config.codec = codec;
-    let Ok(publisher) = open_native(config) else {
-        return false;
-    };
-    close_native(publisher).is_ok()
+    match open_native(config) {
+        Ok(publisher) => close_native(publisher).map(|()| true),
+        Err(failure) => match failure.into_cleanup() {
+            Ok(()) => Ok(false),
+            Err(_) => Err(PublisherError::ReclamationUnconfirmed),
+        },
+    }
 }
 #[derive(Clone, Copy)]
 enum SelectedBackend {
@@ -166,6 +196,11 @@ fn validate_config(config: &PublisherConfig) -> Result<(), PublisherError> {
         || config.max_queued_bytes == 0
         || config.max_queued_bytes > 64 * 1024 * 1024
     {
+        return Err(PublisherError::InvalidConfig);
+    }
+    // The configured geometry is the bound output's own: a caller cannot publish
+    // a size the selected display does not have.
+    if config.binding.width() != config.width || config.binding.height() != config.height {
         return Err(PublisherError::InvalidConfig);
     }
     Ok(())
@@ -202,7 +237,7 @@ fn native_config(
         width,
         height,
         fps_numerator: NonZeroU32::new(config.fps).ok_or(PublisherError::InvalidConfig)?,
-        fps_denominator: NonZeroU32::new(1).unwrap(),
+        fps_denominator: NonZeroU32::MIN,
         bitrate: NonZeroU32::new(config.bitrate as u32).ok_or(PublisherError::InvalidConfig)?,
         source_color: info.descriptor.source_color,
         encoded_color: encoded_color(info.descriptor.source_color)?,
@@ -210,16 +245,89 @@ fn native_config(
 }
 type Pipeline = NativePublisher<DesktopDuplicationCapture, NativeNvenc>;
 type PipelineCloseQuarantine = CloseQuarantine<DesktopDuplicationCapture, NativeNvenc>;
-enum OpenQuarantine {
-    Capture(DesktopDuplicationOpenQuarantine),
-    Encoder(NativeNvencOpenQuarantine),
+
+/// A capture that still has to be reclaimed through a checked boundary: the raw
+/// handle of one that was never fully validated, or an opened capture that owns
+/// its device and allocation.
+enum CaptureQuarantine {
+    Raw(DesktopDuplicationOpenQuarantine),
+    Opened(DesktopDuplicationCapture),
 }
-impl OpenQuarantine {
+impl CaptureQuarantine {
     fn retry(self) -> Result<(), Self> {
         match self {
-            Self::Capture(value) => value.retry().map_err(Self::Capture),
-            Self::Encoder(value) => value.retry().map_err(Self::Encoder),
+            Self::Raw(quarantine) => quarantine.retry().map_err(Self::Raw),
+            // The capture's own close path reports an unconfirmed reclamation
+            // and keeps the owner alive for the next attempt.
+            Self::Opened(mut capture) => {
+                if capture.close().is_err() {
+                    return Err(Self::Opened(capture));
+                }
+                Ok(())
+            }
         }
+    }
+}
+/// Native owners a failed open left behind. At most one kind is populated per
+/// failure, and `retry` hands the quarantine back until every owner is confirmed
+/// gone. A constructed pair is reclaimed encoder-first because the encoder holds
+/// registrations on the capture.
+struct OpenQuarantine {
+    pipeline: Option<PipelineCloseQuarantine>,
+    encoder: Option<NativeNvencOpenQuarantine>,
+    capture: Option<CaptureQuarantine>,
+}
+impl OpenQuarantine {
+    fn capture(capture: CaptureQuarantine) -> Self {
+        Self {
+            pipeline: None,
+            encoder: None,
+            capture: Some(capture),
+        }
+    }
+    fn owners(encoder: Option<NativeNvencOpenQuarantine>, capture: CaptureQuarantine) -> Self {
+        Self {
+            pipeline: None,
+            encoder,
+            capture: Some(capture),
+        }
+    }
+    fn pipeline(pipeline: PipelineCloseQuarantine) -> Self {
+        Self {
+            pipeline: Some(pipeline),
+            encoder: None,
+            capture: None,
+        }
+    }
+    fn retry(mut self) -> Result<(), Self> {
+        if let Some(pipeline) = self.pipeline.take() {
+            match pipeline.retry() {
+                Ok(()) => {}
+                Err(pipeline) => {
+                    self.pipeline = Some(pipeline);
+                    return Err(self);
+                }
+            }
+        }
+        if let Some(encoder) = self.encoder.take() {
+            match encoder.retry() {
+                Ok(()) => {}
+                Err(encoder) => {
+                    self.encoder = Some(encoder);
+                    return Err(self);
+                }
+            }
+        }
+        if let Some(capture) = self.capture.take() {
+            match capture.retry() {
+                Ok(()) => {}
+                Err(capture) => {
+                    self.capture = Some(capture);
+                    return Err(self);
+                }
+            }
+        }
+        Ok(())
     }
 }
 struct OpenFailure {
@@ -228,8 +336,17 @@ struct OpenFailure {
 }
 fn open_native(config: PublisherConfig) -> Result<Pipeline, OpenFailure> {
     select_backend(config.backend).map_err(OpenFailure::plain)?;
-    let selected = output(config.output_index).map_err(OpenFailure::plain)?;
-    let capture = DesktopDuplicationCapture::open(selected.id, 100).map_err(|error| {
+    let binding = config.binding.clone();
+    // The capture is opened on the bound output id and nowhere else. The binding
+    // is checked on both sides of that open: a display that changed underneath
+    // must not be captured under the requested configuration.
+    binding
+        .verify_current()
+        .map_err(map_input)
+        .map_err(OpenFailure::plain)?;
+    // Keep idle acquisition bounded so stop and keyframe requests stay responsive.
+    // No new desktop pixels means no frame; only real DXGI presents are emitted.
+    let capture = DesktopDuplicationCapture::open(binding.output_id(), 2).map_err(|error| {
         let mapped = if error.error() == ProducerError::ReclamationUnconfirmed {
             PublisherError::ReclamationUnconfirmed
         } else {
@@ -237,30 +354,68 @@ fn open_native(config: PublisherConfig) -> Result<Pipeline, OpenFailure> {
         };
         OpenFailure {
             error: mapped,
-            quarantine: error.into_quarantine().map(OpenQuarantine::Capture),
+            quarantine: error
+                .into_quarantine()
+                .map(CaptureQuarantine::Raw)
+                .map(OpenQuarantine::capture),
         }
     })?;
-    let native = native_config(config, capture.capture_info()).map_err(OpenFailure::plain)?;
-    let encoder = NativeNvenc::new(native, &capture).map_err(|error| {
-        let mapped = if error.error() == ProducerError::ReclamationUnconfirmed {
-            PublisherError::ReclamationUnconfirmed
-        } else {
-            PublisherError::EncoderFailed
-        };
-        OpenFailure {
-            error: mapped,
-            quarantine: error.into_quarantine().map(OpenQuarantine::Encoder),
+    if let Err(error) = binding.verify_current() {
+        return Err(OpenFailure {
+            error: map_input(error),
+            quarantine: Some(OpenQuarantine::capture(CaptureQuarantine::Opened(capture))),
+        });
+    }
+    let native = match native_config(config.clone(), capture.capture_info()) {
+        Ok(native) => native,
+        Err(error) => {
+            // The capture is already open: it is closed through the checked
+            // boundary instead of being dropped.
+            return Err(OpenFailure {
+                error,
+                quarantine: Some(OpenQuarantine::capture(CaptureQuarantine::Opened(capture))),
+            });
         }
-    })?;
-    NativePublisher::open(capture, encoder, native)
-        .map_err(map_producer)
-        .map_err(OpenFailure::plain)
+    };
+    let encoder = match NativeNvenc::new(native, &capture) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            let mapped = if error.error() == ProducerError::ReclamationUnconfirmed {
+                PublisherError::ReclamationUnconfirmed
+            } else {
+                PublisherError::EncoderFailed
+            };
+            return Err(OpenFailure {
+                error: mapped,
+                // An encoder quarantined mid-creation and the capture it was
+                // being built on both have to be reclaimed, encoder first.
+                quarantine: Some(OpenQuarantine::owners(
+                    error.into_quarantine(),
+                    CaptureQuarantine::Opened(capture),
+                )),
+            });
+        }
+    };
+    NativePublisher::open(capture, encoder, native).map_err(|owners| OpenFailure {
+        // A capability that failed validation is not a licence to drop either
+        // owner: they are handed back for the checked close.
+        error: map_producer(owners.last_error()),
+        quarantine: Some(OpenQuarantine::pipeline(owners)),
+    })
 }
 impl OpenFailure {
     fn plain(error: PublisherError) -> Self {
         Self {
             error,
             quarantine: None,
+        }
+    }
+    /// Reclaims whatever the failed open left behind. `Ok` means the answer a
+    /// caller may act on was earned; `Err` returns the retained quarantine.
+    fn into_cleanup(self) -> Result<(), OpenQuarantine> {
+        match self.quarantine {
+            Some(quarantine) => quarantine.retry(),
+            None => Ok(()),
         }
     }
 }
@@ -270,6 +425,18 @@ fn close_native(publisher: Pipeline) -> Result<(), PublisherError> {
         Err(quarantine) => quarantine
             .retry()
             .map_err(|_| PublisherError::ReclamationUnconfirmed),
+    }
+}
+/// Maps a refused display binding. A binding that is no longer attached is not a
+/// capability answer and never falls back to another output; an unconfirmed
+/// reclamation keeps its own meaning.
+fn map_input(error: InputError) -> PublisherError {
+    match error {
+        InputError::InvalidInput | InputError::OutputChanged => PublisherError::OutputNotFound,
+        InputError::ReclamationUnconfirmed => PublisherError::ReclamationUnconfirmed,
+        // No adapter on this build, no ordinary interactive desktop, or an
+        // injection path that cannot work here.
+        _ => PublisherError::UnsupportedPlatform,
     }
 }
 fn map_producer(error: ProducerError) -> PublisherError {
@@ -561,7 +728,12 @@ fn worker_main(
                 drop(state);
                 shared.changed.notify_one();
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // The producer refuses early frames rather than emitting them, so
+                // an idle poll has to come back soon; without this the loop would
+                // spin at full speed between frames.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             Err(error) => break Some(map_producer(error)),
         }
     };

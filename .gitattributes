@@ -1,0 +1,33 @@
+# End-of-line rules for the native provenance byte contract.
+#
+# native/frb/UPSTREAM.lock pins the SHA-256 of every source file under the five
+# trees below, and scripts/verify-native-provenance.sh re-hashes those
+# working-tree bytes (`--require-tracked` is the first step of the Windows
+# workflow). Under core.autocrlf=true a clean Windows checkout of the same
+# commit would be written as CRLF, hash differently and fail closed, and a CRLF
+# copy of the verifier would not even be interpretable by bash. An explicit
+# `text` keeps core.autocrlf out of the decision (it is only consulted when
+# `text` is unspecified) and `eol=lf` prevents conversion to CRLF on checkout.
+#
+# When this applies: Git reads .gitattributes from the index while checking out
+# a tree, so these rules are already in force for the very first checkout of a
+# clean clone - no working-tree copy has to exist first - and they also
+# normalize on checkin afterwards. No workflow step configures line endings
+# after the fact, and no path outside this list changes.
+#
+# Why exactly these paths: they are the `Trees:` field of
+# native/frb/UPSTREAM.lock (native/frb also holds the lock itself) plus the
+# verifier the workflow invokes by path. Every locked file is LF-only today, so
+# on a clean checkout these rules are byte-neutral; they only forbid a rewrite.
+# Keep in sync with `trees` in scripts/verify-native-provenance.sh.
+native/vnc/** text eol=lf
+native/windows-input/** text eol=lf
+native/windows-decoder/** text eol=lf
+native/frb/** text eol=lf
+vendor/ironrdp-pdu/** text eol=lf
+# Named again although native/frb/** already covers it: the lock is the contract
+# those digests are compared against, and it must not inherit CRLF downstream.
+native/frb/UPSTREAM.lock text eol=lf
+# The verifier itself, invoked as `bash scripts/verify-native-provenance.sh`:
+# only this script, not the rest of scripts/.
+scripts/verify-native-provenance.sh text eol=lf

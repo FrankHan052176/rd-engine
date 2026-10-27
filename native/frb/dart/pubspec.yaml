@@ -1,0 +1,16 @@
+name: rd_engine_frb
+version: 0.1.0
+publish_to: none
+description: Generated non-HarmonyOS rd-engine bindings for the pinned official RustDesk client.
+environment:
+  sdk: '>=3.1.0 <4.0.0'
+dependencies:
+  flutter_rust_bridge: 1.80.1
+  ffi: ^2.1.0
+  meta: ^1.9.1
+  uuid: ^3.0.7
+  freezed_annotation: ^2.4.1
+dev_dependencies:
+  build_runner: ^2.4.6
+  freezed: ^2.4.2
+  ffigen: ^8.0.2

@@ -1,0 +1,1015 @@
+--- a/libs/base/Cargo.toml
++++ b/libs/base/Cargo.toml
+@@ -50,7 +50,7 @@
+ [target.'cfg(target_os = "macos")'.dependencies]
+ osascript = "0.3"
+ 
+-[target.'cfg(target_os = "linux")'.dependencies]
++[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+ sctk = { package = "smithay-client-toolkit", version = "0.20.0", default-features = false, features = [
+     "calloop",
+ ] }
+--- a/libs/base/examples/system_message.rs
++++ b/libs/base/examples/system_message.rs
+@@ -1,11 +1,11 @@
+ extern crate base;
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+ use base::platform::linux;
+ #[cfg(target_os = "macos")]
+ use base::platform::macos;
+ 
+ fn main() {
+-    #[cfg(target_os = "linux")]
++    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+     let res = linux::system_message("test title", "test message", true);
+     #[cfg(target_os = "macos")]
+     let res = macos::alert(
+@@ -15,6 +15,9 @@
+         "test message".to_owned(),
+         ["Ok".to_owned()].to_vec(),
+     );
+-    #[cfg(any(target_os = "linux", target_os = "macos"))]
++    #[cfg(any(
++        all(target_os = "linux", not(target_env = "ohos")),
++        target_os = "macos"
++    ))]
+     println!("result {:?}", &res);
+ }
+--- a/libs/base/src/platform/mod.rs
++++ b/libs/base/src/platform/mod.rs
+@@ -1,4 +1,4 @@
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+ pub mod linux;
+ 
+ #[cfg(target_os = "macos")]
+@@ -53,7 +53,7 @@
+         stack.join("\n").to_string()
+     );
+     if !info.is_empty() {
+-        #[cfg(target_os = "linux")]
++        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+         linux::system_message(
+             "RustDesk",
+             &format!("Got signal {} and exit.{}", sig, info),
+--- a/libs/enigo/Cargo.toml
++++ b/libs/enigo/Cargo.toml
+@@ -22,8 +22,8 @@
+ serde = { version = "1.0", optional = true }
+ serde_derive = { version = "1.0", optional = true }
+ log = "0.4"
+-rdev = { git = "https://github.com/rustdesk-org/rdev" }
+-tfc = { git = "https://github.com/rustdesk-org/The-Fat-Controller", branch = "history/rebase_upstream_20240722" }
++rdev = { git = "https://github.com/rustdesk-org/rdev", rev = "23e24dd6b35452a495dae0ae6d99395e9755ab0f" }
++tfc = { git = "https://github.com/rustdesk-org/The-Fat-Controller", rev = "78bb80a8e596e4c14ae57c8448f5fca75f91f2b0" }
+ hbb_common = { path = "../hbb_common" }
+ base = { path = "../base" }
+ 
+--- a/libs/hbb_common/Cargo.toml
++++ b/libs/hbb_common/Cargo.toml
+@@ -30,18 +30,18 @@
+ serde = "1.0"
+ serde_json = "1.0"
+ lazy_static = "1.5"
+-confy = { git = "https://github.com/rustdesk-org/confy" }
++confy = { git = "https://github.com/rustdesk-org/confy", rev = "83db9ec19a2f97e9718aef69e4fc5611bb382479" }
+ dirs-next = "2.0"
+ sodiumoxide = "0.2"
+ regex = "1.11"
+-tokio-socks = { git = "https://github.com/rustdesk-org/tokio-socks" }
++tokio-socks = { git = "https://github.com/rustdesk-org/tokio-socks", rev = "bdb9aa3de5bac41602d0742b8ef6bbc6bfebd127" }
+ chrono = "0.4"
+ libc = "0.2"
+ dlopen = "0.1"
+ toml = "0.7"
+ uuid = { version = "1.16", features = ["v4"] }
+ # new sysinfo issue: https://github.com/rustdesk/rustdesk/pull/6330#issuecomment-2270871442
+-sysinfo = { git = "https://github.com/rustdesk-org/sysinfo", branch = "rlim_max" }
++sysinfo = { git = "https://github.com/rustdesk-org/sysinfo", rev = "90b1705d909a4902dbbbdea37ee64db17841077d" }
+ # new flexi_logger failed on nightly rustc 1.75 for x86
+ thiserror = "1.0"
+ httparse = "1.10"
+@@ -56,9 +56,6 @@
+     "tls12",
+     "ring",
+ ], default-features = false }
+-tokio-native-tls = "0.3"
+-tokio-tungstenite = { version = "0.26", features = ["native-tls", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+-tungstenite = { version = "0.26", features = ["native-tls", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+ rustls-platform-verifier = "0.6"
+ rustls-pki-types = "1.11"
+ rustls-native-certs = "0.8"
+@@ -71,10 +68,19 @@
+ webrtc = { version = "0.13.0", optional = true }
+ libloading = "0.8"
+ 
+-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
++[target.'cfg(target_env = "ohos")'.dependencies]
++tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
++tungstenite = { version = "0.26", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
++
++[target.'cfg(not(target_env = "ohos"))'.dependencies]
++tokio-native-tls = "0.3"
++tokio-tungstenite = { version = "0.26", features = ["native-tls", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
++tungstenite = { version = "0.26", features = ["native-tls", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
++
++[target.'cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))'.dependencies]
+ mac_address = "1.1"
+-default_net = { git = "https://github.com/rustdesk-org/default_net" }
+-machine-uid = { git = "https://github.com/rustdesk-org/machine-uid" }
++default_net = { git = "https://github.com/rustdesk-org/default_net", rev = "78f8f70cd85151a3a2c4a3230d80d5272703c02e" }
++machine-uid = { git = "https://github.com/rustdesk-org/machine-uid", rev = "381ff579c1dc3a6c54db9dfec47c44bcb0246542" }
+ 
+ [build-dependencies]
+ protobuf-codegen = { version = "3.7" }
+@@ -84,6 +90,6 @@
+ webrtc = "0.13.0" # keep in lockstep with [dependencies] webrtc (rustc 1.75 pin, see above)
+ 
+ 
+-[target.'cfg(target_os = "linux")'.dependencies]
++[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+ users = { version = "0.11" }
+ x11 = "2.21"
+--- a/libs/hbb_common/src/config.rs
++++ b/libs/hbb_common/src/config.rs
+@@ -59,6 +59,159 @@
+ 
+ type Size = (i32, i32, i32, i32);
+ type KeyPair = (Vec<u8>, Vec<u8>);
++
++// The checked main-process host initializer seeds the existing Config caches
++// only after a validated durable commit. It does not create a second identity.
++static CHECKED_CONFIG_SEED: std::sync::LazyLock<Mutex<Option<Config>>> = std::sync::LazyLock::new(|| Mutex::new(None));
++static CHECKED_CONFIG2_SEED: std::sync::LazyLock<Mutex<Option<Config2>>> = std::sync::LazyLock::new(|| Mutex::new(None));
++static CHECKED_LOCAL_CONFIG_SEED: std::sync::LazyLock<Mutex<Option<LocalConfig>>> = std::sync::LazyLock::new(|| Mutex::new(None));
++static CHECKED_HOST_WRITER: Mutex<()> = Mutex::new(());
++
++/// Native-only checked material. Never Debug/Serialize: H1 is password-equivalent.
++pub struct CheckedHostConfig {
++    pub id: String,
++    pub secret_key: sign::SecretKey,
++    pub public_key: sign::PublicKey,
++    pub registration_uuid: Vec<u8>,
++    pub salt: String,
++    pub permanent_h1: Option<[u8; 32]>,
++    pub local_password_set: bool,
++    pub preset_password: bool,
++    pub rendezvous_server: String,
++    pub options: HashMap<String, String>,
++}
++impl Drop for CheckedHostConfig {
++    fn drop(&mut self) {
++        sodiumoxide::utils::memzero(&mut self.registration_uuid);
++        if let Some(h1) = self.permanent_h1.as_mut() { sodiumoxide::utils::memzero(h1); }
++    }
++}
++
++/// Checked, unpublished configuration. The owner can retire the old run and
++/// account scope after inspecting `config`, before any shared cache changes.
++pub struct PreparedHostConfig {
++    pub config: CheckedHostConfig,
++    identity: Config,
++    options: Config2,
++    local: LocalConfig,
++}
++
++fn checked_host_read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
++    let mut file = match fs::File::open(path) {
++        Ok(file) => file,
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++        Err(_) => return Err(anyhow!("Unable to read existing host configuration")),
++    };
++    if file.metadata()?.len() > 1024 * 1024 { return Err(anyhow!("Host configuration is too large")); }
++    let mut text = String::new();
++    file.read_to_string(&mut text).map_err(|_| anyhow!("Invalid host configuration encoding"))?;
++    if text.trim().is_empty() { return Err(anyhow!("Existing host configuration is empty or truncated")); }
++    let value: toml::Value = toml::from_str(&text).map_err(|_| anyhow!("Malformed existing host configuration"))?;
++    for key in ["id", "enc_id", "password", "salt", "rendezvous_server", "unlock_pin", "trusted_devices"] {
++        if value.get(key).is_some_and(|value| !value.is_str()) { return Err(anyhow!("Invalid host configuration field")); }
++    }
++    if let Some(pair) = value.get("key_pair") {
++        let pair = pair.as_array().ok_or_else(|| anyhow!("Invalid stored identity keypair"))?;
++        if pair.len() != 2 || pair.iter().any(|part| part.as_array().is_none_or(|bytes|
++            bytes.iter().any(|byte| byte.as_integer().is_none_or(|byte| !(0..=255).contains(&byte))))) {
++            return Err(anyhow!("Invalid stored identity keypair"));
++        }
++    }
++    if let Some(options) = value.get("options") {
++        if options.as_table().is_none_or(|options| options.values().any(|value| !value.is_str())) {
++            return Err(anyhow!("Invalid stored host options"));
++        }
++    }
++    let result = toml::from_str(&text).map(Some).map_err(|_| anyhow!("Malformed existing host configuration"));
++    unsafe { sodiumoxide::utils::memzero(text.as_bytes_mut()); }
++    result
++}
++
++fn checked_host_key_pair(pair: &KeyPair) -> Result<(sign::SecretKey, sign::PublicKey)> {
++    let sk = sign::SecretKey::from_slice(&pair.0).ok_or_else(|| anyhow!("Invalid existing signing key"))?;
++    let pk = sign::PublicKey::from_slice(&pair.1).ok_or_else(|| anyhow!("Invalid existing public key"))?;
++    let proof = b"rd-engine checked existing host identity";
++    if !sign::verify_detached(&sign::sign_detached(proof, &sk), proof, &pk) {
++        return Err(anyhow!("Existing signing keypair does not match"));
++    }
++    Ok((sk, pk))
++}
++
++fn checked_host_decrypt(storage: &str, uuid: &[u8], pk: &[u8]) -> Result<String> {
++    if storage.starts_with(PASSWORD_ENC_VERSION) {
++        permanent_password::checked_decrypt(storage, PASSWORD_ENC_VERSION, uuid, pk)
++    } else { Ok(storage.to_owned()) }
++}
++
++fn checked_host_machine_uuid() -> Option<Vec<u8>> {
++    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
++    { return machine_uid::get().ok().filter(|id| !id.is_empty()).map(String::into_bytes); }
++    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
++    { None }
++}
++
++/// Same-directory staging, checked sync and atomic replace under the caller's
++/// CHECKED_HOST_WRITER guard. The deadline guard runs after staging and platform
++/// path preparation, immediately before the replace syscall.
++/// A later directory-sync failure cannot undo a successful replace.
++fn checked_host_store<T: serde::Serialize>(
++    path: &Path,
++    value: &T,
++    replace: bool,
++    before_replace: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    let parent = path.parent().ok_or_else(|| anyhow!("Invalid host configuration location"))?;
++    fs::create_dir_all(parent).map_err(|_| anyhow!("Unable to prepare host configuration directory"))?;
++    let temporary = parent.join(format!(".host-{}.tmp", uuid::Uuid::new_v4()));
++    struct Staged(PathBuf);
++    impl Drop for Staged { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
++    let staged = Staged(temporary);
++    let mut options = fs::OpenOptions::new();
++    options.create_new(true).write(true);
++    #[cfg(unix)]
++    { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
++    let mut file = options.open(&staged.0).map_err(|_| anyhow!("Unable to stage host configuration"))?;
++    let mut bytes = toml::to_string(value).map_err(|_| anyhow!("Unable to encode host configuration"))?.into_bytes();
++    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
++    sodiumoxide::utils::memzero(&mut bytes);
++    written.map_err(|_| anyhow!("Unable to flush host configuration"))?;
++    drop(file);
++    checked_host_replace(&staged.0, path, replace, before_replace)?;
++    #[cfg(unix)]
++    fs::File::open(parent).and_then(|file| file.sync_all()).map_err(|_| anyhow!("Unable to sync host configuration directory"))?;
++    Ok(())
++}
++
++#[cfg(windows)]
++fn checked_host_replace(
++    from: &Path,
++    to: &Path,
++    replace: bool,
++    before_replace: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    use std::os::windows::ffi::OsStrExt;
++    #[link(name = "kernel32")]
++    unsafe extern "system" { fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32; }
++    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
++    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
++    // WRITE_THROUGH; no COPY_ALLOWED. First creation must not overwrite a race.
++    let flags = 0x8 | if replace { 0x1 } else { 0 };
++    before_replace()?;
++    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
++        Err(anyhow!("Unable to commit host configuration"))
++    } else { Ok(()) }
++}
++#[cfg(not(windows))]
++fn checked_host_replace(
++    from: &Path,
++    to: &Path,
++    replace: bool,
++    before_replace: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    before_replace()?;
++    (if replace { fs::rename(from, to) } else { fs::hard_link(from, to) })
++        .map_err(|_| anyhow!("Unable to commit host configuration"))
++}
+ 
+ lazy_static::lazy_static! {
+     static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
+@@ -92,7 +245,7 @@
+     pub static ref APP_DIR: RwLock<String> = Default::default();
+ }
+ 
+-#[cfg(any(target_os = "android", target_os = "ios"))]
++#[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+ lazy_static::lazy_static! {
+     pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
+ }
+@@ -134,7 +287,10 @@
+ 
+ // Keep Linux/macOS IPC parent directory rules in one place to avoid drift between
+ // `ipc_path()` and Unix `ipc_path_for_uid()`.
+-#[cfg(any(target_os = "linux", target_os = "macos"))]
++#[cfg(any(
++    all(target_os = "linux", not(target_env = "ohos")),
++    target_os = "macos"
++))]
+ #[inline]
+ fn ipc_parent_dir_for_uid(uid: u32, postfix: &str) -> String {
+     let app_name = APP_NAME.read().unwrap().clone();
+@@ -456,7 +612,7 @@
+     *ONLINE.lock().unwrap().values().max().unwrap_or(&0)
+ }
+ 
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
++#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+ fn patch(path: PathBuf) -> PathBuf {
+     if let Some(_tmp) = path.to_str() {
+         #[cfg(windows)]
+@@ -468,7 +624,7 @@
+             .into();
+         #[cfg(target_os = "macos")]
+         return _tmp.replace("Application Support", "Preferences").into();
+-        #[cfg(target_os = "linux")]
++        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+         {
+             if _tmp == "/root" {
+                 if let Ok(user) = crate::sh::run_cmds_trim_newline("whoami") {
+@@ -488,6 +644,7 @@
+ 
+ impl Config2 {
+     fn load() -> Config2 {
++        if let Some(config) = CHECKED_CONFIG2_SEED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() { return config; }
+         let mut config = Config::load_::<Config2>("2");
+         let mut store = false;
+         if let Some(mut socks) = config.socks {
+@@ -607,6 +764,7 @@
+     }
+ 
+     fn load() -> Config {
++        if let Some(config) = CHECKED_CONFIG_SEED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() { return config; }
+         let mut config = Config::load_::<Config>("");
+         let mut store = false;
+         if let Err(err) = Self::validate_or_decrypt_permanent_password_storage(&mut config) {
+@@ -732,6 +890,216 @@
+         Config::store_(&config, "");
+     }
+ 
++    /// Checked host startup/refresh. Missing files are first-run state; malformed,
++    /// unreadable or conflicting existing identity material is never replaced.
++    pub fn checked_host_prepare() -> Result<PreparedHostConfig> {
++        let _writer = CHECKED_HOST_WRITER.lock().map_err(|_| anyhow!("Host configuration writer unavailable"))?;
++        sodiumoxide::init().map_err(|_| anyhow!("Crypto initialization failed"))?;
++        let raw = checked_host_read::<Config>(&Self::file())?;
++        let missing = raw.is_none();
++        if missing && KEY_PAIR.lock().map_err(|_| anyhow!("Identity cache unavailable"))?.is_some() {
++            return Err(anyhow!("Previously loaded host identity file disappeared"));
++        }
++        let mut config = raw.unwrap_or_default();
++        let mut config2 = checked_host_read::<Config2>(&Config2::file())?.unwrap_or_default();
++        let local = checked_host_read::<LocalConfig>(&Self::file_("_local"))?.unwrap_or_default();
++        let remote_cm = get_or(&OVERWRITE_LOCAL_SETTINGS, &local.options, &DEFAULT_LOCAL_SETTINGS,
++            "allow-remote-cm-modification").unwrap_or_default();
++        if !matches!(remote_cm.as_str(), "" | "Y" | "N") { return Err(anyhow!("Invalid local remote CM policy")); }
++        if !config.key_pair.0.is_empty() || !config.key_pair.1.is_empty() {
++            checked_host_key_pair(&config.key_pair)?;
++            let cache = KEY_PAIR.lock().map_err(|_| anyhow!("Identity cache unavailable"))?;
++            if cache.as_ref().is_some_and(|cached| cached != &config.key_pair) {
++                return Err(anyhow!("Existing identity differs from the loaded identity"));
++            }
++        } else if !missing {
++            if KEY_PAIR.lock().map_err(|_| anyhow!("Identity cache unavailable"))?.is_some() {
++                return Err(anyhow!("Existing identity lost its loaded signing key"));
++            }
++            // An existing empty keypair is legitimate before first registration,
++            // but only if the file still contains its valid original public ID.
++            if config.id.is_empty() && config.enc_id.is_empty() { return Err(anyhow!("Existing identity is incomplete")); }
++        }
++        let machine_uuid = checked_host_machine_uuid();
++        if !config.enc_id.is_empty() {
++            let uuid = machine_uuid.as_deref().unwrap_or(&config.key_pair.1);
++            let id = permanent_password::checked_decrypt(&config.enc_id, PASSWORD_ENC_VERSION, uuid, &config.key_pair.1)?;
++            if !config.id.is_empty() && config.id != id {
++                return Err(anyhow!("Existing identity cannot be decrypted consistently"));
++            }
++            config.id = id;
++        }
++        if missing {
++            config.id = Self::gen_id().ok_or_else(|| anyhow!("Unable to create the official device ID"))?;
++        }
++        if !(6..=512).contains(&config.id.len()) || !config.id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)) {
++            return Err(anyhow!("Invalid existing device ID"));
++        }
++        let mut needs_store = missing;
++        if config.key_pair.0.is_empty() && config.key_pair.1.is_empty() {
++            let (pk, sk) = sign::gen_keypair();
++            config.key_pair = (sk.0.to_vec(), pk.0.to_vec());
++            needs_store = true;
++        }
++        checked_host_key_pair(&config.key_pair)?;
++        if config.salt.is_empty() {
++            if config.password.starts_with("01") { return Err(anyhow!("Stored verifier is missing its salt")); }
++            config.salt = Self::get_auto_password(DEFAULT_SALT_LEN);
++            needs_store = true;
++        }
++        // Match hbb_common's Windows UUID choice without invoking its keypair
++        // generation fallback before the identity has durably committed.
++        let uuid = machine_uuid.unwrap_or_else(|| config.key_pair.1.clone());
++        if uuid.is_empty() || uuid.len() > 64 { return Err(anyhow!("Official registration UUID unavailable")); }
++        // Validate all credentials before publishing the Config cache. Prefix
++        // corruption never falls through to treating ciphertext as plaintext.
++        let local_h1 = permanent_password::checked_local_h1(&config.password, &config.salt, &uuid, &config.key_pair.1)?;
++        let (preset_storage, preset_salt) = Self::get_preset_password_storage_and_salt();
++        let local_password_set = local_h1.is_some();
++        let preset_password = !local_password_set && !preset_storage.is_empty();
++        let (salt, permanent_h1) = if local_password_set {
++            (config.salt.clone(), local_h1)
++        } else if preset_password {
++            if preset_salt.is_empty() {
++                (config.salt.clone(), Some(compute_permanent_password_h1(&preset_storage, &config.salt)))
++            } else {
++                let h1 = decode_preset_password_h1_from_storage(&preset_storage).ok_or_else(|| anyhow!("Invalid preset password verifier"))?;
++                (preset_salt, Some(h1))
++            }
++        } else { (config.salt.clone(), None) };
++        if !config2.trusted_devices.is_empty() { return Err(anyhow!("Stored trusted-device authentication is unsupported by this host")); }
++        if config2.socks.is_some()
++            || Self::get_socks_from_custom_client_advanced_settings(&*OVERWRITE_SETTINGS.read().map_err(|_| anyhow!("Options policy unavailable"))?).is_some()
++            || Self::get_socks_from_custom_client_advanced_settings(&*DEFAULT_SETTINGS.read().map_err(|_| anyhow!("Options policy unavailable"))?).is_some() {
++            return Err(anyhow!("Configured host proxy transport is unsupported"));
++        }
++        config2.unlock_pin = checked_host_decrypt(&config2.unlock_pin, &uuid, &config.key_pair.1)?;
++        let (secret_key, public_key) = checked_host_key_pair(&config.key_pair)?;
++        if needs_store { checked_host_store(&Self::file(), &config, !missing, || Ok(()))?; }
++        let mut options = DEFAULT_SETTINGS.read().map_err(|_| anyhow!("Default options unavailable"))?.clone();
++        options.extend(config2.options.clone());
++        options.extend(OVERWRITE_SETTINGS.read().map_err(|_| anyhow!("Options policy unavailable"))?.clone());
++        options.insert("allow-remote-cm-modification".into(), remote_cm);
++        // Same endpoint precedence as get_rendezvous_server/get_rendezvous_servers,
++        // evaluated against this prepared record rather than the published cache.
++        let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().map_err(|_| anyhow!("Server policy unavailable"))?.clone();
++        if rendezvous_server.is_empty() { rendezvous_server = options.get("custom-rendezvous-server").cloned().unwrap_or_default(); }
++        if rendezvous_server.is_empty() { rendezvous_server = PROD_RENDEZVOUS_SERVER.read().map_err(|_| anyhow!("Server policy unavailable"))?.clone(); }
++        if rendezvous_server.is_empty() { rendezvous_server = config2.rendezvous_server.clone(); }
++        if rendezvous_server.is_empty() && config2.serial > SERIAL {
++            rendezvous_server = options.get("rendezvous-servers").and_then(|servers| servers.split(',').find(|server| server.contains('.'))).unwrap_or_default().to_owned();
++        }
++        if rendezvous_server.is_empty() { rendezvous_server = RENDEZVOUS_SERVERS.first().copied().unwrap_or_default().to_owned(); }
++        if !rendezvous_server.contains(':') { rendezvous_server = format!("{rendezvous_server}:{RENDEZVOUS_PORT}"); }
++        let checked = CheckedHostConfig { id: config.id.clone(), secret_key, public_key,
++            registration_uuid: uuid, salt, permanent_h1, local_password_set, preset_password,
++            rendezvous_server, options };
++        Ok(PreparedHostConfig { config: checked, identity: config, options: config2, local })
++    }
++
++    pub fn checked_host_initialize() -> Result<CheckedHostConfig> {
++        Self::checked_host_commit(Self::checked_host_prepare()?)
++    }
++
++    /// Publish exactly the validated snapshot. Call only after the owner has
++    /// retired any old run/account scope that differs from this configuration.
++    pub fn checked_host_commit(prepared: PreparedHostConfig) -> Result<CheckedHostConfig> {
++        let _writer = CHECKED_HOST_WRITER.lock().map_err(|_| anyhow!("Host configuration writer unavailable"))?;
++        let uuid = checked_host_machine_uuid().unwrap_or_else(|| prepared.identity.key_pair.1.clone());
++        if uuid != prepared.config.registration_uuid { return Err(anyhow!("Official device UUID changed during checked initialization")); }
++        let mut key_pair = KEY_PAIR.lock().map_err(|_| anyhow!("Identity cache unavailable"))?;
++        if key_pair.as_ref().is_some_and(|pair| pair != &prepared.identity.key_pair) { return Err(anyhow!("Loaded signing identity changed during checked publication")); }
++        *CHECKED_CONFIG_SEED.lock().map_err(|_| anyhow!("Identity cache unavailable"))? = Some(prepared.identity.clone());
++        let mut identity = CONFIG.write().map_err(|_| anyhow!("Identity cache unavailable"))?;
++        *CHECKED_CONFIG2_SEED.lock().map_err(|_| anyhow!("Options cache unavailable"))? = Some(prepared.options.clone());
++        let mut options = CONFIG2.write().map_err(|_| anyhow!("Options cache unavailable"))?;
++        *CHECKED_LOCAL_CONFIG_SEED.lock().map_err(|_| anyhow!("Local options cache unavailable"))? = Some(prepared.local.clone());
++        let mut local = LOCAL_CONFIG.write().map_err(|_| anyhow!("Local options cache unavailable"))?;
++        *key_pair = Some(prepared.identity.key_pair.clone());
++        *identity = prepared.identity;
++        *options = prepared.options;
++        *local = prepared.local;
++        *CHECKED_CONFIG_SEED.lock().map_err(|_| anyhow!("Identity cache unavailable"))? = None;
++        *CHECKED_CONFIG2_SEED.lock().map_err(|_| anyhow!("Options cache unavailable"))? = None;
++        *CHECKED_LOCAL_CONFIG_SEED.lock().map_err(|_| anyhow!("Local options cache unavailable"))? = None;
++        Ok(prepared.config)
++    }
++
++    /// The caller serializes this with credential revision publication. Success
++    /// means the checked atomic file replacement completed, not a cache write.
++    /// The pre-replace guard runs after staging under the configuration locks;
++    /// it must not re-enter configuration or host-owner locks.
++    pub fn checked_set_permanent_password(
++        password: &str,
++        before_replace: impl FnOnce() -> Result<()>,
++    ) -> Result<()> {
++        let _writer = CHECKED_HOST_WRITER.lock().map_err(|_| anyhow!("Host configuration writer unavailable"))?;
++        if Self::is_disable_change_permanent_password() { return Err(anyhow!("Permanent password changes are disabled")); }
++        let mut current = CONFIG.write().map_err(|_| anyhow!("Identity cache unavailable"))?;
++        let stored = checked_host_read::<Config>(&Self::file())?.ok_or_else(|| anyhow!("Host identity file disappeared"))?;
++        if stored.key_pair != current.key_pair || stored.salt != current.salt || stored.password != current.password
++            || stored.enc_id != current.enc_id || !stored.id.is_empty() && stored.id != current.id {
++            return Err(anyhow!("Existing credential configuration changed; refresh is required"));
++        }
++        let mut next = current.clone();
++        if next.salt.is_empty() { return Err(anyhow!("Checked password salt unavailable")); }
++        next.password = if password.is_empty() { String::new() } else {
++            let mut h1 = compute_permanent_password_h1(password, &next.salt);
++            let encoded = encode_permanent_password_encrypted_storage_from_h1(&h1);
++            sodiumoxide::utils::memzero(&mut h1);
++            encoded.ok_or_else(|| anyhow!("Unable to encode permanent password"))?
++        };
++        checked_host_store(&Self::file(), &next, true, before_replace)?;
++        *current = next;
++        Ok(())
++    }
++
++    /// Preserves unrelated fields and their original encrypted storage. This
++    /// commits storage only; checked_host_commit publishes under the owner scope fence.
++    /// Uses the same pre-replace guard contract as checked_set_permanent_password.
++    pub fn checked_set_options(
++        mut options: HashMap<String, String>,
++        before_replace: impl FnOnce() -> Result<()>,
++    ) -> Result<()> {
++        let _writer = CHECKED_HOST_WRITER.lock().map_err(|_| anyhow!("Host configuration writer unavailable"))?;
++        options.remove("allow-remote-cm-modification");
++        if OVERWRITE_SETTINGS.read().map_err(|_| anyhow!("Options policy unavailable"))?.iter()
++            .any(|(key, value)| options.get(key).is_some_and(|requested| requested != value)) {
++            return Err(anyhow!("Host option is locked by deployment policy"));
++        }
++        Self::purify_options(&mut options);
++        let stored = checked_host_read::<Config2>(&Config2::file())?;
++        let replace = stored.is_some();
++        let mut next = stored.unwrap_or_default();
++        next.options = options;
++        checked_host_store(&Config2::file(), &next, replace, before_replace)?;
++        Ok(())
++    }
++
++    /// Official CM policy is LOCAL configuration, not the ordinary service
++    /// options file. Only the serialized main owner invokes this checked writer.
++    /// Uses the same pre-replace guard contract as checked_set_permanent_password.
++    pub fn checked_set_remote_cm_policy(
++        value: String,
++        before_replace: impl FnOnce() -> Result<()>,
++    ) -> Result<()> {
++        if !matches!(value.as_str(), "" | "Y" | "N") { return Err(anyhow!("Invalid local remote CM policy")); }
++        let _writer = CHECKED_HOST_WRITER.lock().map_err(|_| anyhow!("Host configuration writer unavailable"))?;
++        let key = "allow-remote-cm-modification";
++        if OVERWRITE_LOCAL_SETTINGS.read().map_err(|_| anyhow!("Local policy unavailable"))?.get(key).is_some_and(|forced| forced != &value) {
++            return Err(anyhow!("Local remote CM policy is locked by deployment policy"));
++        }
++        let stored = checked_host_read::<LocalConfig>(&Self::file_("_local"))?;
++        let replace = stored.is_some();
++        let mut next = stored.unwrap_or_default();
++        if value.is_empty() || !is_option_can_save(&OVERWRITE_LOCAL_SETTINGS, key, &DEFAULT_LOCAL_SETTINGS, &value) {
++            next.options.remove(key);
++        } else { next.options.insert(key.into(), value); }
++        checked_host_store(&Self::file_("_local"), &next, replace, before_replace)?;
++        *LOCAL_CONFIG.write().map_err(|_| anyhow!("Local options cache unavailable"))? = next;
++        Ok(())
++    }
++
+     pub fn file() -> PathBuf {
+         Self::file_("")
+     }
+@@ -763,9 +1131,9 @@
+     /// where an attacker can manipulate the environment variable to inject malicious
+     /// paths into privileged operations.
+     pub fn get_home() -> PathBuf {
+-        #[cfg(any(target_os = "android", target_os = "ios"))]
++        #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+         return PathBuf::from(APP_HOME_DIR.read().unwrap().as_str());
+-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+         {
+             if let Some(path) = dirs_next::home_dir() {
+                 patch(path)
+@@ -778,13 +1146,13 @@
+     }
+ 
+     pub fn path<P: AsRef<Path>>(p: P) -> PathBuf {
+-        #[cfg(any(target_os = "android", target_os = "ios"))]
++        #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+         {
+             let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
+             path.push(p);
+             return path;
+         }
+-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+         {
+             #[cfg(not(target_os = "macos"))]
+             let org = "".to_owned();
+@@ -817,7 +1185,7 @@
+                 return path.clone();
+             }
+         }
+-        #[cfg(target_os = "linux")]
++        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+         {
+             let mut path = Self::get_home();
+             path.push(format!(".local/share/logs/{}", *APP_NAME.read().unwrap()));
+@@ -853,23 +1221,31 @@
+         }
+         #[cfg(not(windows))]
+         {
+-            #[cfg(target_os = "android")]
++            #[cfg(any(target_os = "android", target_env = "ohos"))]
+             use std::os::unix::fs::PermissionsExt;
+-            #[cfg(target_os = "android")]
++            #[cfg(any(target_os = "android", target_env = "ohos"))]
+             let mut path: PathBuf =
+                 format!("{}/{}", *APP_DIR.read().unwrap(), *APP_NAME.read().unwrap()).into();
+-            #[cfg(any(target_os = "linux", target_os = "macos"))]
++            #[cfg(any(
++                all(target_os = "linux", not(target_env = "ohos")),
++                target_os = "macos"
++            ))]
+             let mut path: PathBuf = {
+                 let uid = unsafe { libc::geteuid() as u32 };
+                 ipc_parent_dir_for_uid(uid, postfix).into()
+             };
+-            #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
++            #[cfg(not(any(
++                target_os = "android",
++                target_env = "ohos",
++                all(target_os = "linux", not(target_env = "ohos")),
++                target_os = "macos"
++            )))]
+             let mut path: PathBuf = format!("/tmp/{}", *APP_NAME.read().unwrap()).into();
+-            // Android stores IPC sockets under app-controlled directories. Create the IPC parent
++            // Android/OHOS stores IPC sockets under app-controlled directories. Create the IPC parent
+             // dir and enforce the expected mode here. On other Unix platforms, `ipc_path()` is
+             // intentionally side-effect free (no mkdir/chmod); callers should enforce directory and
+             // socket permissions at the IPC server boundary.
+-            #[cfg(target_os = "android")]
++            #[cfg(any(target_os = "android", target_env = "ohos"))]
+             {
+                 fs::create_dir_all(&path).ok();
+                 let path_mode = if is_service_ipc_postfix(postfix) {
+@@ -884,7 +1260,10 @@
+         }
+     }
+ 
+-    #[cfg(any(target_os = "linux", target_os = "macos"))]
++    #[cfg(any(
++        all(target_os = "linux", not(target_env = "ohos")),
++        target_os = "macos"
++    ))]
+     pub fn ipc_path_for_uid(uid: u32, postfix: &str) -> String {
+         let parent = ipc_parent_dir_for_uid(uid, postfix);
+         format!("{parent}/ipc{postfix}")
+@@ -1017,12 +1396,12 @@
+         std::cmp::max(CONFIG2.read().unwrap().serial, SERIAL)
+     }
+ 
+-    #[cfg(any(target_os = "android", target_os = "ios"))]
++    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+     fn gen_id() -> Option<String> {
+         Self::get_auto_id()
+     }
+ 
+-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
++    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+     fn gen_id() -> Option<String> {
+         let hostname_as_id = BUILTIN_SETTINGS
+             .read()
+@@ -1044,7 +1423,7 @@
+     }
+ 
+     fn get_auto_id() -> Option<String> {
+-        #[cfg(any(target_os = "android", target_os = "ios"))]
++        #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+         {
+             return Some(
+                 rand::thread_rng()
+@@ -1053,7 +1432,7 @@
+             );
+         }
+ 
+-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+         {
+             let mut id = 0u32;
+             if let Ok(Some(ma)) = mac_address::get_mac_address() {
+@@ -2140,6 +2519,7 @@
+ 
+ impl LocalConfig {
+     fn load() -> LocalConfig {
++        if let Some(config) = CHECKED_LOCAL_CONFIG_SEED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() { return config; }
+         Config::load_::<LocalConfig>("_local")
+     }
+ 
+@@ -3657,7 +4037,10 @@
+     }
+ 
+     #[test]
+-    #[cfg(any(target_os = "linux", target_os = "macos"))]
++    #[cfg(any(
++        all(target_os = "linux", not(target_env = "ohos")),
++        target_os = "macos"
++    ))]
+     fn test_uinput_ipc_path_is_shared_across_uids() {
+         const ROOT_UID: u32 = 0;
+         const USER_UID: u32 = 1000;
+--- a/libs/hbb_common/src/config/permanent_password.rs
++++ b/libs/hbb_common/src/config/permanent_password.rs
+@@ -187,6 +187,59 @@
+     None
+ }
+ 
++/// Checked native host adapter. Current/potential encrypted storage never falls
++/// back to an authentication password when decoding fails. Legacy unprefixed
++/// plaintext remains compatible and is hashed exactly once with the stable salt.
++pub(super) fn checked_local_h1(storage: &str, salt: &str, uuid: &[u8], pk: &[u8]) -> anyhow::Result<Option<[u8; 32]>> {
++    if storage.is_empty() { return Ok(None); }
++    if salt.is_empty() { return Err(anyhow::anyhow!("Permanent password salt unavailable")); }
++    if storage.starts_with(PERMANENT_PASSWORD_ENC_VERSION) {
++        let mut hashed = checked_decrypt(storage, PERMANENT_PASSWORD_ENC_VERSION, uuid, pk)?;
++        let result = decode_permanent_password_h1_from_hashed_storage(&hashed).map(Some)
++            .ok_or_else(|| anyhow::anyhow!("Invalid stored permanent password verifier"));
++        unsafe { sodiumoxide::utils::memzero(hashed.as_bytes_mut()); }
++        return result;
++    }
++    if storage.starts_with(PASSWORD_ENC_VERSION) {
++        let mut plain = checked_decrypt(storage, PASSWORD_ENC_VERSION, uuid, pk)?;
++        let h1 = compute_permanent_password_h1(&plain, salt);
++        unsafe { sodiumoxide::utils::memzero(plain.as_bytes_mut()); }
++        return Ok(Some(h1));
++    }
++    Ok(Some(compute_permanent_password_h1(storage, salt)))
++}
++
++/// Explicit-material adapter of password_security::symmetric_crypt and
++/// open_secretbox_payload at the recorded common pin. The original helpers call
++/// get_uuid -> get_key_pair and may generate/write identity during decryption.
++/// Checked startup supplies its frozen UUID/EXISTING fallback key instead.
++pub(super) fn checked_decrypt(storage: &str, prefix: &str, uuid: &[u8], pk: &[u8]) -> anyhow::Result<String> {
++    use sodiumoxide::crypto::secretbox;
++    let encoded = storage.strip_prefix(prefix).ok_or_else(|| anyhow::anyhow!("Invalid encrypted storage prefix"))?;
++    let bytes = base64::decode(encoded, base64::Variant::Original).map_err(|_| anyhow::anyhow!("Invalid encrypted storage encoding"))?;
++    for material in [uuid, pk] {
++        if material.is_empty() { continue; }
++        let mut key = secretbox::Key([0; secretbox::KEYBYTES]);
++        let length = material.len().min(secretbox::KEYBYTES);
++        key.0[..length].copy_from_slice(&material[..length]);
++        let mut opened = None;
++        if bytes.first() == Some(&1) && bytes.len() >= 1 + secretbox::NONCEBYTES + secretbox::MACBYTES {
++            let mut nonce = secretbox::Nonce([0; secretbox::NONCEBYTES]);
++            nonce.0.copy_from_slice(&bytes[1..1 + secretbox::NONCEBYTES]);
++            opened = secretbox::open(&bytes[1 + secretbox::NONCEBYTES..], &nonce, &key).ok();
++        }
++        if opened.is_none() {
++            opened = secretbox::open(&bytes, &secretbox::Nonce([0; secretbox::NONCEBYTES]), &key).ok();
++        }
++        if let Some(mut plain) = opened {
++            let result = std::str::from_utf8(&plain).map(str::to_owned).map_err(|_| anyhow::anyhow!("Invalid decrypted storage encoding"));
++            sodiumoxide::utils::memzero(&mut plain);
++            return result;
++        }
++    }
++    Err(anyhow::anyhow!("Stored security value cannot be decrypted with the existing identity"))
++}
++
+ // Salt can be updated only when the password is empty, plaintext, or decryptable
+ // legacy storage. Current-prefixed storage is treated as salt-bound.
+ pub(super) fn password_is_empty_or_not_hashed(permanent_password_storage: &str) -> bool {
+--- a/libs/hbb_common/src/fingerprint.rs
++++ b/libs/hbb_common/src/fingerprint.rs
+@@ -223,9 +223,9 @@
+             platform: std::env::consts::OS.to_string(),
+             arch: std::env::consts::ARCH.to_string(),
+             id,
+-            #[cfg(any(target_os = "android", target_os = "ios"))]
++            #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+             addr: "0".repeat(16),
+-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
++            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+             addr: {
+                 let mut addr = default_net::get_mac().map(|m| m.addr).unwrap_or_default();
+                 if addr.is_empty() {
+--- a/libs/hbb_common/src/lib.rs
++++ b/libs/hbb_common/src/lib.rs
+@@ -27,7 +27,7 @@
+ pub mod config;
+ pub mod mem;
+ pub use lazy_static;
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
++#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+ pub use mac_address;
+ pub use rand;
+ pub use regex;
+@@ -39,12 +39,12 @@
+ pub use chrono;
+ pub use directories_next;
+ pub use libc;
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+ pub mod sh;
+ pub use base64;
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
++#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+ pub use dlopen;
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
++#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+ pub use machine_uid;
+ pub use serde_derive;
+ pub use serde_json;
+@@ -68,10 +68,10 @@
+ pub mod tls;
+ pub mod verifier;
+ pub use async_recursion;
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+ pub use users;
+ pub use libloading;
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+ pub use x11;
+ 
+ pub type SessionID = uuid::Uuid;
+@@ -316,7 +316,7 @@
+ /// - Windows shutdown: "The media is write protected. (os error 19)"
+ /// - macOS (hard to reproduce, reproduced at login screen): "No matching IOPlatformUUID in `ioreg -rd1 -c IOPlatformExpertDevice` command"
+ pub fn get_uuid() -> Vec<u8> {
+-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
++    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+     {
+         use std::sync::atomic::{AtomicUsize, Ordering};
+ 
+--- a/libs/hbb_common/src/proxy.rs
++++ b/libs/hbb_common/src/proxy.rs
+@@ -9,6 +9,7 @@
+ use httparse::{Error as HttpParseError, Response, EMPTY_HEADER};
+ use thiserror::Error as ThisError;
+ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufStream};
++#[cfg(not(target_env = "ohos"))]
+ use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
+ use tokio_rustls::{client::TlsStream as RustlsTlsStream, TlsConnector as RustlsTlsConnector};
+ use tokio_socks::{tcp::Socks5Stream, IntoTargetAddr, TargetAddr};
+@@ -45,6 +46,7 @@
+     HttpCode200(u16),
+     #[error("The proxy address resolution failed: {0}")]
+     AddressResolutionFailed(String),
++    #[cfg(not(target_env = "ohos"))]
+     #[error("The native tls error: {0}")]
+     NativeTlsError(#[from] tokio_native_tls::native_tls::Error),
+ }
+@@ -425,6 +427,7 @@
+                         )
+                         .await?
+                     }
++                    #[cfg(not(target_env = "ohos"))]
+                     TlsType::NativeTls => {
+                         self.https_connect_nativetls_wrap_danger(
+                             &url,
+@@ -434,6 +437,10 @@
+                             danger_accept_invalid_cert,
+                         )
+                         .await?
++                    }
++                    #[cfg(target_env = "ohos")]
++                    TlsType::NativeTls => {
++                        bail!("NativeTls is unavailable on OpenHarmony")
+                     }
+                     _ => {
+                         // Unreachable
+@@ -477,6 +484,7 @@
+         };
+     }
+ 
++    #[cfg(not(target_env = "ohos"))]
+     async fn https_connect_nativetls_wrap_danger<'a>(
+         &self,
+         url: &str,
+@@ -503,6 +511,7 @@
+         Ok(DynTcpStream(Box::new(s)))
+     }
+ 
++    #[cfg(not(target_env = "ohos"))]
+     pub async fn https_connect_nativetls<'a, Input>(
+         &self,
+         io: Input,
+@@ -584,16 +593,33 @@
+                     )
+                     .await?
+                 } else if !is_tls_type_cached {
+-                    log::warn!("Falling back to native-tls for HTTPS proxy server.");
+-                    self.https_connect_nativetls_wrap_danger(
+-                        &url,
+-                        local,
+-                        proxy,
+-                        &target_addr,
+-                        origin_danger_accept_invalid_cert,
+-                    )
+-                    .await?
++                    #[cfg(target_env = "ohos")]
++                    {
++                        log::error!(
++                            "Failed to connect to HTTPS proxy server with rustls: {:?}.",
++                            e
++                        );
++                        bail!(e)
++                    }
++                    #[cfg(not(target_env = "ohos"))]
++                    {
++                        log::warn!("Falling back to native-tls for HTTPS proxy server.");
++                        self.https_connect_nativetls_wrap_danger(
++                            &url,
++                            local,
++                            proxy,
++                            &target_addr,
++                            origin_danger_accept_invalid_cert,
++                        )
++                        .await?
++                    }
+                 } else {
++                    #[cfg(target_env = "ohos")]
++                    log::error!(
++                        "Failed to connect to HTTPS proxy server with rustls: {:?}.",
++                        e
++                    );
++                    #[cfg(not(target_env = "ohos"))]
+                     log::error!(
+                         "Failed to connect to HTTPS proxy server with native-tls: {:?}.",
+                         e
+--- a/libs/hbb_common/src/tls.rs
++++ b/libs/hbb_common/src/tls.rs
+@@ -40,6 +40,11 @@
+ 
+ #[inline]
+ pub fn upsert_tls_cache(url: &str, tls_type: TlsType, danger_accept_invalid_cert: bool) {
++    #[cfg(target_env = "ohos")]
++    if matches!(tls_type, TlsType::NativeTls) {
++        return;
++    }
++
+     if is_plain(url) {
+         return;
+     }
+--- a/libs/hbb_common/src/websocket.rs
++++ b/libs/hbb_common/src/websocket.rs
+@@ -20,6 +20,7 @@
+     time::Duration,
+ };
+ use tokio::{net::TcpStream, time::timeout};
++#[cfg(not(target_env = "ohos"))]
+ use tokio_native_tls::native_tls::TlsConnector;
+ use tokio_tungstenite::{
+     connect_async_tls_with_config, tungstenite::protocol::Message as WsMessage, Connector,
+@@ -43,11 +44,16 @@
+     ) -> ResultType<Option<Connector>> {
+         match tls_type {
+             TlsType::Plain => Ok(Some(Connector::Plain)),
++            #[cfg(not(target_env = "ohos"))]
+             TlsType::NativeTls => {
+                 let connector = TlsConnector::builder()
+                     .danger_accept_invalid_certs(danger_accept_invalid_certs)
+                     .build()?;
+                 Ok(Some(Connector::NativeTls(connector)))
++            }
++            #[cfg(target_env = "ohos")]
++            TlsType::NativeTls => {
++                bail!("NativeTls is unavailable on OpenHarmony")
+             }
+             TlsType::Rustls => {
+                 let connector = match crate::verifier::client_config(danger_accept_invalid_certs) {
+@@ -129,6 +135,7 @@
+                     )
+                     .await
+                 }
++                #[cfg(not(target_env = "ohos"))]
+                 (TlsType::Rustls, false, Some(_)) => {
+                     log::warn!(
+                         "WebSocket connection with rustls-tls failed, try native-tls: {}, {:?}",
+@@ -145,6 +152,7 @@
+                     )
+                     .await
+                 }
++                #[cfg(not(target_env = "ohos"))]
+                 (TlsType::NativeTls, _, None) => {
+                     log::warn!(
+                             "WebSocket connection with native-tls failed, try accept invalid certs: {}, {:?}",
+@@ -191,6 +199,7 @@
+         let stream = Self::connect(url.as_ref(), ms_timeout).await?;
+         let addr = match stream.get_ref() {
+             MaybeTlsStream::Plain(tcp) => tcp.peer_addr()?,
++            #[cfg(not(target_env = "ohos"))]
+             MaybeTlsStream::NativeTls(tls) => tls.get_ref().get_ref().get_ref().peer_addr()?,
+             MaybeTlsStream::Rustls(tls) => tls.get_ref().0.peer_addr()?,
+             _ => return Err(Error::new(ErrorKind::Other, "Unsupported stream type").into()),
+--- a/libs/scrap/Cargo.toml
++++ b/libs/scrap/Cargo.toml
+@@ -32,7 +32,7 @@
+ lazy_static = "1.4"
+ hbb_common = { path = "../hbb_common" }
+ base = { path = "../base" }
+-webm = { git = "https://github.com/rustdesk-org/rust-webm" }
++webm = { git = "https://github.com/rustdesk-org/rust-webm", rev = "d2c4d3ac133c7b0e4c0f656da710b48391981e64" }
+ serde = {version="1.0", features=["derive"]}
+ 
+ [dependencies.winapi]
+@@ -72,8 +72,9 @@
+ 
+ [dependencies.hwcodec]
+ git = "https://github.com/rustdesk-org/hwcodec"
++rev = "778df1f99597722473b29443bac22ae6c23946fe"
+ optional = true
+ 
+ [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+-nokhwa = { git = "https://github.com/rustdesk-org/nokhwa.git", branch = "fix_from_raw_parts", features = ["input-native"] }
++nokhwa = { git = "https://github.com/rustdesk-org/nokhwa.git", rev = "c2f74662b6ce117f7f94301693fdfadc0b1ec91a", features = ["input-native"] }
+ 

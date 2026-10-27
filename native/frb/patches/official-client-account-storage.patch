@@ -1,0 +1,811 @@
+# Official Android account master-key storage integration.
+#
+# Target: rustdesk/rustdesk at 092a961b629d318fe290eeafac0cd214a1e9deeb.
+# Apply from the independent official client's flutter/ directory, NOT the
+# separate R_RustDesk-Flutter HarmonyOS port. No manifest/minSdk/binding change.
+#
+#   git -C <official-client>/flutter apply --check <this file>
+#   git -C <official-client>/flutter apply         <this file>
+#
+# Independently fetched original files and Git blob identities:
+#   flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt
+#   blob 59a3b0fb4bdd92ef3302288efba78b86850a7420
+#   flutter/android/app/src/main/kotlin/ffi.kt
+#   blob 02e6606aec17ccc416fb461226975cb4eb1456b0
+#   flutter/android/app/proguard-rules
+#   blob 517402567c6b02a861d8faf56ed6fe67cb34b614
+#
+# Existing lifecycle inspected at this same revision:
+#   flutter/android/app/src/main/AndroidManifest.xml: MainApplication owner.
+#   flutter/android/app/src/main/kotlin/ffi.kt: System.loadLibrary("rustdesk").
+#   flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt:
+#     onCreate -> FFI.onAppStart(applicationContext), retained unchanged.
+#   libs/scrap/src/android/ffi.rs:23-33,444-518:
+#     JNI_OnLoad/NDK context, application GlobalRef, rustls hosted verifier init.
+#   flutter/android/app/build.gradle: minSdkVersion 22 (not raised), SDK 36.
+#
+# Operational added path:
+#   MainApplication.onCreate, AFTER the existing onAppStart
+#     -> FFI.initAccountStorage(OfficialAccountStorage(applicationContext))
+#     -> Java_ffi_FFI_initAccountStorage (int status, checked by Application)
+#     -> retained existing JavaVM + application helper GlobalRef in android.rs
+#     -> native load_key/create_key -> synchronous helper.loadKey/createKey
+#        (String root, String namespace, direct ByteBuffer[32]) -> int status.
+# No second Application, JVM, JNI_OnLoad, NDK initializer or media callback.
+# No raw key/exception/response logging, prompts, permissions or sharing grants.
+# No FRB public-account method changes. The only added Java native declaration is
+#   ffi.FFI.initAccountStorage(OfficialAccountStorage): Int
+#   (Lcom/carriez/flutter_hbb/OfficialAccountStorage;)I.
+#
+# Engine/FRB integration requirements (Main-owned, not modified by this patch):
+#   Android jni = { version = "=0.21.1", default-features = false, optional = true }
+#   selected by official-account; no jni invocation feature.
+#   storage -> official_account -> FRB cdylib publicly reexport
+#   android.rs::init_account_storage, export_name Java_ffi_FFI_initAccountStorage.
+#   Link the existing pinned Java_ffi_FFI_onAppStart and JNI_OnLoad lifecycle too;
+#   this patch deliberately does not replace those with account-only/no-op code.
+#   Startup closure also requires ndk-context = "=0.1.1" and the already selected
+#   hbb_common rustls-platform-verifier Android hosted initialization; retain the
+#   existing runner verifier Maven dependency/Proguard rules. No media feature is
+#   enabled for the account adapter. Main owns patch application/provenance scripts.
+#
+# New platform implementation, NOT a transplanted official account backend:
+#   API23+ non-exportable AndroidKeyStore AES256-GCM (IV12, tag128).
+#   API22 native AndroidKeyStore RSA2048, setEncryptionRequired, PKCS1 WRAP/UNWRAP
+#   of the actual random common master key, PLUS SHA256withRSA authentication.
+#   Trusted alias certificate verifies the signature BEFORE PKCS1 unwrap.
+#   Purpose/version/algorithm/random slot/application/profile/ciphertext are bound.
+#   No transient AES layer, software protection fallback, raw OS key export,
+#   SharedPreferences, provider-error rekey or secret-bearing plaintext file.
+#
+# RSA wrapping/generation reference (BSD-3-Clause notice retained in added file):
+#   juliansteenbakker/flutter_secure_storage v9.2.4 at a521cf170cb66fe6148ef822459adea33b311d67
+#   flutter_secure_storage/android/src/main/java/com/it_nomads/fluttersecurestorage/
+#     ciphers/RSACipher18Implementation.java
+#     blob c36fd54303d46b9796552aaf655d765d13bbc467
+#   flutter_secure_storage/LICENSE
+#     blob defe7c855aea6c6a59a2556a5dcd968dcbe9c33c
+# The reference is an established legacy pattern, not a claim that a current
+# flutter_secure_storage plugin supports API22. No plugin dependency is added.
+# Signature authentication, encrypted-at-rest requirement, immutable reservation,
+# domain binding, cleanup/error handling and JNI lifecycle are explicit adaptations.
+# Binary redistributors must retain the included BSD notice/license.
+#
+# Authoritative Android API/source basis (inspected, not runtime proof):
+#   developer.android.com/reference/android/security/KeyPairGeneratorSpec.Builder
+#     API18+, setEncryptionRequired: secure screen lock/unlocked required.
+#   developer.android.com/reference/android/security/keystore/KeyGenParameterSpec.Builder
+#     API23+, native AES-GCM; setUnlockedDeviceRequired has documented <=34 bugs.
+#   developer.android.com/reference/java/security/Signature: SHA256withRSA API1+.
+#   developer.android.com/reference/android/system/Os: API21+ file primitives.
+#   aosp-mirror/platform_frameworks_base at android-5.1.1_r38:
+#     keystore/java/android/security/AndroidKeyPairGenerator.java checks encrypted
+#     keystore UNLOCKED before generation (no UI) but deletes existing aliases.
+#     AndroidKeyStore.java/KeyStore.java fold alias lookup service errors to false.
+#   Same false-absence semantics also inspected at android-6.0.1_r81:
+#     keystore/java/android/security/keystore/AndroidKeyStoreSpi.java:797-805 and
+#     keystore/java/android/security/KeyStore.java:193-199. The single reservation
+#     discipline therefore protects this Android provider's AES branch as well.
+#
+# Private durable format, under the common already-locked namespace directory:
+#   master-key.android-slot: 41 NON-SECRET bytes, magic/version8 + algorithm1 +
+#     random256 alias suffix32. Add-only + fsync BEFORE exactly one OS keygen.
+#   master-key.android: same41-byte header + either IV12/GCM ciphertext48 (101B)
+#     or RSA ciphertext256/signature256 (553B). Strict exact bounds/regular files,
+#     no-follow opens, uid/mode checks, only ciphertext/non-secret slot staging,
+#     file+directory fsync and link(2) add-only publication. Master arrays are wiped;
+#     JCA/provider internal copies cannot be promised wiped. OS keys stay opaque.
+#   Retained algorithm/slot chooses legacy RSA even after an OS upgrade. No rekey.
+#   Existing reservations are load-only; incomplete/corrupt/unavailable state is
+#     an explicit error, preserved for operator diagnosis. Uncertain keygen or
+#     reservation durability may leave an unrecoverable attempt; no automatic
+#     reset/removal/retry or new recovery UI/API is provided. Random alias uniqueness
+#     is a cryptographic assumption, not a nonexistent Android OS add-only guarantee.
+#   API22 RSA requires an already configured secure screen lock. Removing/resetting
+#     that lock may invalidate/delete its OS key. No prompt or enrollment is made.
+#   Every call gates device/profile lock state; API35+ AES also requests OS-enforced
+#     unlocked-device use. API23-34 uses application lock gates, not a claimed
+#     equivalent hardware authorization. No hardware/StrongBox assurance is claimed.
+#
+# Verification policy for this work: source/provenance probes only; no formatter,
+# lint, build, test or target application run. Main performs integrated validation.
+# Android runtime (including API22, upgrade, restart, lock, corruption, filesystem
+# errors and release shrinking/JNI reachability) remains explicitly UNVERIFIED.
+diff --git a/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt b/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt
+index 59a3b0fb4bdd92ef3302288efba78b86850a7420..7ab47427b6e32d79c8902c7af7d593335f83ad83 100644
+--- a/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt
++++ b/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainApplication.kt
+@@ -13,5 +13,9 @@
+         super.onCreate()
+         Log.d(TAG, "App start")
+         FFI.onAppStart(applicationContext)
++        val accountStorageStatus = FFI.initAccountStorage(OfficialAccountStorage(applicationContext))
++        check(accountStorageStatus == 1) {
++            "rd-engine account storage initialization failed ($accountStorageStatus)"
++        }
+     }
+ }
+diff --git a/android/app/src/main/kotlin/ffi.kt b/android/app/src/main/kotlin/ffi.kt
+index 02e6606aec17ccc416fb461226975cb4eb1456b0..446c4cf0963991463c347aa3d32866104c0a6b2b 100644
+--- a/android/app/src/main/kotlin/ffi.kt
++++ b/android/app/src/main/kotlin/ffi.kt
+@@ -6,6 +6,7 @@
+ import java.nio.ByteBuffer
+ 
+ import com.carriez.flutter_hbb.RdClipboardManager
++import com.carriez.flutter_hbb.OfficialAccountStorage
+ 
+ object FFI {
+     init {
+@@ -14,6 +15,7 @@
+ 
+     external fun init(ctx: Context)
+     external fun onAppStart(ctx: Context)
++    external fun initAccountStorage(storage: OfficialAccountStorage): Int
+     external fun setClipboardManager(clipboardManager: RdClipboardManager)
+     external fun startServer(app_dir: String, home_dir: String, custom_client_config: String)
+     external fun startService()
+diff --git a/android/app/proguard-rules b/android/app/proguard-rules
+index 517402567c6b02a861d8faf56ed6fe67cb34b614..38e1de3c0d2a604c98572845bf9a15d7f21d74d0 100644
+--- a/android/app/proguard-rules
++++ b/android/app/proguard-rules
+@@ -1,3 +1,6 @@
++# JNI worker calls must retain this application-owned callback and nested API guards.
++-keep, includedescriptorclasses class com.carriez.flutter_hbb.OfficialAccountStorage** { *; }
++
+ # Keep class members from protobuf generated code.
+ -keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+   <fields>;
+diff --git a/android/app/src/main/kotlin/com/carriez/flutter_hbb/OfficialAccountStorage.kt b/android/app/src/main/kotlin/com/carriez/flutter_hbb/OfficialAccountStorage.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..506a966ef26eeafaee49078fa3f52c3abafe4fb3 100644
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/carriez/flutter_hbb/OfficialAccountStorage.kt
+@@ -0,0 +1,647 @@
++/*
++ * The RSA/PKCS1 WRAP/UNWRAP and legacy KeyPairGeneratorSpec pattern is adapted
++ * from flutter_secure_storage 9.2.4, commit
++ * a521cf170cb66fe6148ef822459adea33b311d67,
++ * flutter_secure_storage/android/src/main/java/com/it_nomads/fluttersecurestorage/
++ * ciphers/RSACipher18Implementation.java (blob c36fd54303d46b9796552aaf655d765d13bbc467).
++ * Signature authentication, mandatory encrypted-at-rest policy, immutable slot
++ * reservation, JNI integration and fallible file publication are rd-engine
++ * adaptations; the full plugin and its error-driven rekey behavior are NOT used.
++ * Source/binary distributions must retain this notice and the following license.
++ *
++ * BSD 3-Clause License
++ * 
++ * Copyright 2017 German Saprykin
++ * All rights reserved.
++ * 
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 
++ * * Redistributions of source code must retain the above copyright notice, this
++ *   list of conditions and the following disclaimer.
++ * 
++ * * Redistributions in binary form must reproduce the above copyright notice,
++ *   this list of conditions and the following disclaimer in the documentation
++ *   and/or other materials provided with the distribution.
++ * 
++ * * Neither the name of the copyright holder nor the names of its
++ *   contributors may be used to endorse or promote products derived from
++ *   this software without specific prior written permission.
++ * 
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++package com.carriez.flutter_hbb
++
++import android.app.KeyguardManager
++import android.content.Context
++import android.os.Build
++import android.os.UserManager
++import android.security.KeyPairGeneratorSpec
++import android.security.keystore.KeyGenParameterSpec
++import android.security.keystore.KeyInfo
++import android.security.keystore.KeyPermanentlyInvalidatedException
++import android.security.keystore.KeyProperties
++import android.security.keystore.UserNotAuthenticatedException
++import android.system.ErrnoException
++import android.system.Os
++import android.system.OsConstants
++import androidx.annotation.RequiresApi
++import java.io.File
++import java.io.FileDescriptor
++import java.io.IOException
++import java.math.BigInteger
++import java.nio.ByteBuffer
++import java.security.GeneralSecurityException
++import java.security.KeyPairGenerator
++import java.security.KeyStore
++import java.security.ProviderException
++import java.security.SecureRandom
++import java.security.Signature
++import java.security.UnrecoverableKeyException
++import java.security.interfaces.RSAPublicKey
++import java.util.Calendar
++import java.util.Locale
++import java.util.TimeZone
++import java.util.UUID
++import javax.crypto.AEADBadTagException
++import javax.crypto.BadPaddingException
++import javax.crypto.Cipher
++import javax.crypto.KeyGenerator
++import javax.crypto.SecretKey
++import javax.crypto.SecretKeyFactory
++import javax.crypto.spec.GCMParameterSpec
++import javax.crypto.spec.SecretKeySpec
++import javax.security.auth.x500.X500Principal
++
++/**
++ * rd-engine account-only platform integration, not upstream account business.
++ *
++ * The native owner holds the namespace's cross-process file lock throughout
++ * each synchronous call. Direct buffers never escape these calls. The common
++ * random master key is wrapped by a non-exportable AndroidKeyStore key: AES-GCM
++ * on API 23+, RSA/PKCS1 plus a trusted-alias RSA signature on API 22. The latter
++ * is project-maintained, based on the attributed wrapping reference above.
++ *
++ * One non-secret immutable reservation fixes the algorithm and random OS alias
++ * before exactly one key-generation attempt. Android's old containsAlias API
++ * folds service errors into false and generation can replace aliases. A random
++ * 256-bit suffix avoids reusing an old alias; this is random uniqueness, not an
++ * OS create-only primitive. An existing reservation NEVER permits regeneration.
++ * An interrupted or failed attempt with no usable key fails closed and retains
++ * its artifacts. There is no automatic reset, deletion, migration or recovery UI.
++ */
++class OfficialAccountStorage(context: Context) {
++    private val application = context.applicationContext
++
++    @Synchronized
++    fun loadKey(root: String, namespace: String, output: ByteBuffer): Int {
++        if (Build.VERSION.SDK_INT < 22) return UNSUPPORTED
++        return Platform.access(application) {
++            Platform.checkBuffer(output, true)
++            val directory = Platform.privateRoot(application, root, namespace)
++            val store = Platform.openKeyStore()
++            val slot = Platform.readSlot(directory)
++            val wrapped = Platform.readFile(directory, KEY_FILE, AES_WRAPPED_BYTES, RSA_WRAPPED_BYTES)
++            if (wrapped == null) {
++                // A reservation with an unavailable key is unresolved, not a
++                // fresh namespace. A valid key may finish interrupted wrapping.
++                if (slot != null) Platform.checkSlotKey(application, store, namespace, slot)
++                return@access ABSENT_OR_EXISTS
++            }
++            if (slot == null) throw Failure(CORRUPT)
++            val key = Platform.unwrap(application, store, namespace, slot, wrapped)
++            try {
++                Platform.checkUnlocked(application)
++                output.put(key)
++                SUCCESS
++            } finally {
++                key.fill(0)
++            }
++        }
++    }
++
++    @Synchronized
++    fun createKey(root: String, namespace: String, input: ByteBuffer): Int {
++        if (Build.VERSION.SDK_INT < 22) return UNSUPPORTED
++        return Platform.access(application) {
++            Platform.checkBuffer(input, false)
++            val directory = Platform.privateRoot(application, root, namespace)
++            val store = Platform.openKeyStore()
++            var slot = Platform.readSlot(directory)
++            val existing = Platform.readFile(directory, KEY_FILE, AES_WRAPPED_BYTES, RSA_WRAPPED_BYTES)
++            if (existing != null) {
++                if (slot == null) throw Failure(CORRUPT)
++                Platform.unwrap(application, store, namespace, slot, existing).fill(0)
++                return@access ABSENT_OR_EXISTS
++            }
++            if (slot == null) {
++                val algorithm = if (Build.VERSION.SDK_INT >= 23) AES_GCM else RSA_SIGNED
++                if (algorithm == RSA_SIGNED) Platform.checkLegacyLock(application)
++                val header = ByteArray(HEADER_BYTES)
++                MAGIC.copyInto(header)
++                header[MAGIC.size] = algorithm.toByte()
++                val randomSlot = ByteArray(SLOT_BYTES)
++                SecureRandom().nextBytes(randomSlot)
++                randomSlot.copyInto(header, MAGIC.size + 1)
++                val proposed = Slot(header)
++                // publish() fsyncs the reservation AND its directory. Any
++                // uncertainty aborts before key generation; bytes stay intact.
++                if (Platform.publish(directory, SLOT_FILE, header)) {
++                    slot = proposed
++                    Platform.generateSlotKey(application, store, namespace, proposed)
++                } else {
++                    slot = Platform.readSlot(directory) ?: throw Failure(CORRUPT)
++                }
++            }
++            val selected = slot ?: throw Failure(CORRUPT)
++            Platform.checkSlotKey(application, store, namespace, selected)
++            val candidate = ByteArray(KEY_BYTES)
++            try {
++                input.get(candidate)
++                val wrapped = Platform.wrap(application, store, namespace, selected, candidate)
++                Platform.checkUnlocked(application)
++                if (Platform.publish(directory, KEY_FILE, wrapped)) {
++                    SUCCESS
++                } else {
++                    val winner = Platform.readFile(directory, KEY_FILE, AES_WRAPPED_BYTES, RSA_WRAPPED_BYTES)
++                        ?: throw Failure(CORRUPT)
++                    Platform.unwrap(application, store, namespace, selected, winner).fill(0)
++                    ABSENT_OR_EXISTS
++                }
++            } finally {
++                candidate.fill(0)
++            }
++        }
++    }
++
++    private class Failure(val status: Int) : Exception()
++    private class Slot(val header: ByteArray) {
++        val algorithm: Int get() = header[MAGIC.size].toInt()
++        fun alias(namespace: String): String {
++            val hex = "0123456789abcdef"
++            val suffix = StringBuilder(SLOT_BYTES * 2)
++            for (index in MAGIC.size + 1 until header.size) {
++                val value = header[index].toInt() and 255
++                suffix.append(hex[value ushr 4]).append(hex[value and 15])
++            }
++            return "rd-engine.official-account.master.v1.$namespace.$suffix"
++        }
++    }
++
++    companion object {
++        // Matched by src/official_account/storage/android.rs, never raw errors.
++        private const val SUCCESS = 1
++        private const val ABSENT_OR_EXISTS = 0
++        private const val UNSUPPORTED = -1
++        private const val LOCKED = -2
++        private const val UNAVAILABLE = -3
++        private const val CORRUPT = -4
++        private const val DENIED = -5
++        private const val IO_FAILURE = -6
++        private const val DUPLICATE = -7
++        private const val INVALID_ARGUMENT = -8
++        private const val SECURE_LOCK_REQUIRED = -9
++        private const val INCOMPLETE_INITIALIZATION = -10
++        private const val STORE = "AndroidKeyStore"
++        private const val DOMAIN = "rd-engine:official-account:android-master:v1\u0000"
++        private const val KEY_FILE = "master-key.android"
++        private const val SLOT_FILE = "master-key.android-slot"
++        private const val AES_GCM = 1
++        private const val RSA_SIGNED = 2
++        private const val KEY_BYTES = 32
++        private const val SLOT_BYTES = 32
++        private const val IV_BYTES = 12
++        private const val TAG_BYTES = 16
++        private const val RSA_BYTES = 256 // RSA 2048, for ciphertext and signature.
++        private val MAGIC = "RDACKEY1".toByteArray(Charsets.US_ASCII)
++        private const val HEADER_BYTES = 8 + 1 + SLOT_BYTES
++        private const val AES_WRAPPED_BYTES = HEADER_BYTES + IV_BYTES + KEY_BYTES + TAG_BYTES
++        private const val RSA_WRAPPED_BYTES = HEADER_BYTES + RSA_BYTES + RSA_BYTES
++        private const val PRIVATE_MODE = 384 // 0600; Kotlin has no octal literals.
++        private const val GROUP_OTHER_BITS = 63 // 0077.
++    }
++
++    @RequiresApi(22)
++    private object Platform {
++        fun access(context: Context, operation: () -> Int): Int {
++            return try {
++                checkUnlocked(context)
++                val status = operation()
++                checkUnlocked(context)
++                status
++            } catch (failure: Failure) {
++                failure.status
++            } catch (failure: Exception) {
++                // Providers may wrap lock/invalidation errors. Inspect only
++                // types, never error text, ciphertext, aliases or key material.
++                if (Build.VERSION.SDK_INT >= 23) {
++                    val classified = Aes23.classifyCause(failure)
++                    if (classified != 0) return classified
++                }
++                when (failure) {
++                    is AEADBadTagException, is BadPaddingException,
++                    is UnrecoverableKeyException -> CORRUPT
++                    is SecurityException -> DENIED
++                    is ErrnoException -> when (failure.errno) {
++                        OsConstants.EACCES, OsConstants.EPERM -> DENIED
++                        OsConstants.ELOOP, OsConstants.EISDIR, OsConstants.ENOTDIR -> CORRUPT
++                        OsConstants.EEXIST -> DUPLICATE
++                        OsConstants.ENOSYS, OsConstants.EOPNOTSUPP -> UNAVAILABLE
++                        else -> IO_FAILURE
++                    }
++                    is IOException -> IO_FAILURE
++                    is GeneralSecurityException, is ProviderException -> UNAVAILABLE
++                    is IllegalArgumentException -> INVALID_ARGUMENT
++                    else -> UNAVAILABLE
++                }
++            }
++        }
++
++        fun checkUnlocked(context: Context) {
++            if (Build.VERSION.SDK_INT >= 24) {
++                if (context.isDeviceProtectedStorage) throw Failure(DENIED)
++                val users = context.getSystemService(Context.USER_SERVICE) as? UserManager
++                    ?: throw Failure(UNAVAILABLE)
++                if (!users.isUserUnlocked) throw Failure(LOCKED)
++            }
++            val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
++                ?: throw Failure(UNAVAILABLE)
++            if (keyguard.isDeviceLocked) throw Failure(LOCKED)
++        }
++
++        fun checkBuffer(buffer: ByteBuffer, writing: Boolean) {
++            if (!buffer.isDirect || buffer.capacity() != KEY_BYTES ||
++                buffer.position() != 0 || buffer.remaining() != KEY_BYTES ||
++                (writing && buffer.isReadOnly)) {
++                throw Failure(INVALID_ARGUMENT)
++            }
++        }
++
++        fun privateRoot(context: Context, path: String, namespace: String): File {
++            if (namespace.length != 64 || namespace.any { it !in '0'..'9' && it !in 'a'..'f' } ||
++                path.isEmpty() || path.length > 4096 || path.indexOf('\u0000') >= 0) {
++                throw Failure(INVALID_ARGUMENT)
++            }
++            val requested = File(path)
++            if (!requested.isAbsolute || !OsConstants.S_ISDIR(Os.lstat(path).st_mode)) {
++                throw Failure(DENIED)
++            }
++            // Flutter's app_flutter is a sibling of filesDir. Accept the real
++            // credential-protected application data tree, never external or DE
++            // storage, and reject a final symlink or a canonical escape.
++            val directory = requested.canonicalFile
++            val applicationData = File(context.applicationInfo.dataDir).canonicalFile
++            if (!directory.path.startsWith(applicationData.path + File.separator)) {
++                throw Failure(DENIED)
++            }
++            val stat = Os.stat(directory.path)
++            if (!OsConstants.S_ISDIR(stat.st_mode) || stat.st_uid != Os.getuid() ||
++                (stat.st_mode and GROUP_OTHER_BITS) != 0) {
++                throw Failure(DENIED)
++            }
++            return directory
++        }
++
++        fun openKeyStore(): KeyStore = KeyStore.getInstance(STORE).apply { load(null, null) }
++
++
++        fun checkLegacyLock(context: Context) {
++            checkUnlocked(context)
++            val manager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
++                ?: throw Failure(UNAVAILABLE)
++            val secure = if (Build.VERSION.SDK_INT >= 23) manager.isDeviceSecure else manager.isKeyguardSecure
++            if (!secure) throw Failure(SECURE_LOCK_REQUIRED)
++        }
++
++        fun readSlot(directory: File): Slot? {
++            val bytes = readFile(directory, SLOT_FILE, HEADER_BYTES) ?: return null
++            if (MAGIC.indices.any { bytes[it] != MAGIC[it] } ||
++                (bytes[MAGIC.size].toInt() != AES_GCM && bytes[MAGIC.size].toInt() != RSA_SIGNED)) {
++                throw Failure(CORRUPT)
++            }
++            return Slot(bytes)
++        }
++
++        fun generateSlotKey(context: Context, store: KeyStore, namespace: String, slot: Slot) {
++            checkUnlocked(context)
++            if (slot.algorithm == RSA_SIGNED) checkLegacyLock(context)
++            val alias = slot.alias(namespace)
++            // This is an extra collision refusal, NOT proof of absence. The
++            // actual protection is a fresh random alias and the already-durable
++            // reservation; this function is called exactly once for that slot.
++            if (store.containsAlias(alias)) throw Failure(DUPLICATE)
++            when (slot.algorithm) {
++                AES_GCM -> {
++                    if (Build.VERSION.SDK_INT < 23) throw Failure(UNSUPPORTED)
++                    Aes23.generate(alias)
++                }
++                RSA_SIGNED -> {
++                    if (Build.VERSION.SDK_INT != 22) throw Failure(CORRUPT)
++                    val start = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.US)
++                    val end = (start.clone() as Calendar).apply { add(Calendar.YEAR, 25) }
++                    // Based on RSACipher18Implementation.makeAlgorithmParameterSpecLegacy.
++                    // Unlike that reference, encryption at rest is mandatory;
++                    // no app-global Locale mutation, prompting or regeneration.
++                    val parameters = KeyPairGeneratorSpec.Builder(context)
++                        .setAlias(alias)
++                        .setKeyType("RSA")
++                        .setKeySize(RSA_BYTES * 8)
++                        .setSubject(X500Principal("CN=rd-engine account master"))
++                        .setSerialNumber(BigInteger.ONE)
++                        .setStartDate(start.time)
++                        .setEndDate(end.time)
++                        .setEncryptionRequired()
++                        .build()
++                    KeyPairGenerator.getInstance("RSA", STORE).apply {
++                        initialize(parameters)
++                    }.generateKeyPair()
++                }
++                else -> throw Failure(CORRUPT)
++            }
++        }
++
++        private fun entry(store: KeyStore, alias: String): KeyStore.Entry {
++            // Null is never authority to regenerate, even if containsAlias
++            // falsely reports absence after a service/permission failure.
++            return store.getEntry(alias, null) ?: throw Failure(INCOMPLETE_INITIALIZATION)
++        }
++
++        fun checkSlotKey(context: Context, store: KeyStore, namespace: String, slot: Slot) {
++            when (slot.algorithm) {
++                AES_GCM -> {
++                    if (Build.VERSION.SDK_INT < 23) throw Failure(UNSUPPORTED)
++                    Aes23.key(entry(store, slot.alias(namespace)))
++                }
++                RSA_SIGNED -> rsaEntry(context, store, namespace, slot)
++                else -> throw Failure(CORRUPT)
++            }
++        }
++
++        private fun rsaEntry(context: Context, store: KeyStore, namespace: String, slot: Slot): KeyStore.PrivateKeyEntry {
++            checkLegacyLock(context)
++            val entry = entry(store, slot.alias(namespace)) as? KeyStore.PrivateKeyEntry
++                ?: throw Failure(CORRUPT)
++            val publicKey = entry.certificate.publicKey as? RSAPublicKey ?: throw Failure(CORRUPT)
++            if (entry.privateKey.algorithm != "RSA" || entry.privateKey.format != null ||
++                publicKey.modulus.bitLength() != RSA_BYTES * 8) {
++                throw Failure(CORRUPT)
++            }
++            return entry
++        }
++
++        private fun rsaCipher(): Cipher {
++            // Exact API-dependent providers from the attributed reference. This
++            // also reads API-22 RSA records after upgrade; no rekey-on-upgrade.
++            val provider = if (Build.VERSION.SDK_INT < 23) "AndroidOpenSSL" else "AndroidKeyStoreBCWorkaround"
++            return Cipher.getInstance("RSA/ECB/PKCS1Padding", provider)
++        }
++
++        private fun binding(context: Context, namespace: String): ByteArray =
++            (DOMAIN + context.packageName + "\u0000" + namespace + "\u0000").toByteArray(Charsets.UTF_8)
++
++        fun wrap(context: Context, store: KeyStore, namespace: String, slot: Slot, candidate: ByteArray): ByteArray {
++            return when (slot.algorithm) {
++                AES_GCM -> {
++                    if (Build.VERSION.SDK_INT < 23) throw Failure(UNSUPPORTED)
++                    val key = Aes23.key(entry(store, slot.alias(namespace)))
++                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
++                    // No supplied IV: AndroidKeyStore generates a fresh nonce.
++                    cipher.init(Cipher.ENCRYPT_MODE, key)
++                    cipher.updateAAD(slot.header)
++                    cipher.updateAAD(binding(context, namespace))
++                    val ciphertext = cipher.doFinal(candidate)
++                    val iv = cipher.iv
++                    if (iv.size != IV_BYTES || ciphertext.size != KEY_BYTES + TAG_BYTES) throw Failure(UNAVAILABLE)
++                    ByteArray(AES_WRAPPED_BYTES).also {
++                        slot.header.copyInto(it)
++                        iv.copyInto(it, HEADER_BYTES)
++                        ciphertext.copyInto(it, HEADER_BYTES + IV_BYTES)
++                    }
++                }
++                RSA_SIGNED -> {
++                    val entry = rsaEntry(context, store, namespace, slot)
++                    val cipher = rsaCipher().apply { init(Cipher.WRAP_MODE, entry.certificate.publicKey) }
++                    // Only the common random master is temporarily exportable;
++                    // the OS private key is never encoded, copied or persisted.
++                    val ciphertext = cipher.wrap(SecretKeySpec(candidate, "AES"))
++                    if (ciphertext.size != RSA_BYTES) throw Failure(UNAVAILABLE)
++                    val signer = Signature.getInstance("SHA256withRSA")
++                    signer.initSign(entry.privateKey)
++                    signer.update(slot.header)
++                    signer.update(binding(context, namespace))
++                    signer.update(ciphertext)
++                    val signature = signer.sign()
++                    if (signature.size != RSA_BYTES) throw Failure(UNAVAILABLE)
++                    ByteArray(RSA_WRAPPED_BYTES).also {
++                        slot.header.copyInto(it)
++                        ciphertext.copyInto(it, HEADER_BYTES)
++                        signature.copyInto(it, HEADER_BYTES + RSA_BYTES)
++                    }
++                }
++                else -> throw Failure(CORRUPT)
++            }
++        }
++
++        fun unwrap(context: Context, store: KeyStore, namespace: String, slot: Slot, wrapped: ByteArray): ByteArray {
++            if (wrapped.size < HEADER_BYTES || slot.header.indices.any { wrapped[it] != slot.header[it] }) {
++                throw Failure(CORRUPT)
++            }
++            val key = when (slot.algorithm) {
++                AES_GCM -> {
++                    if (wrapped.size != AES_WRAPPED_BYTES) throw Failure(CORRUPT)
++                    if (Build.VERSION.SDK_INT < 23) throw Failure(UNSUPPORTED)
++                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
++                    cipher.init(Cipher.DECRYPT_MODE, Aes23.key(entry(store, slot.alias(namespace))),
++                        GCMParameterSpec(TAG_BYTES * 8, wrapped, HEADER_BYTES, IV_BYTES))
++                    cipher.updateAAD(slot.header)
++                    cipher.updateAAD(binding(context, namespace))
++                    cipher.doFinal(wrapped, HEADER_BYTES + IV_BYTES, KEY_BYTES + TAG_BYTES)
++                }
++                RSA_SIGNED -> {
++                    if (wrapped.size != RSA_WRAPPED_BYTES) throw Failure(CORRUPT)
++                    val entry = rsaEntry(context, store, namespace, slot)
++                    // Authenticate with the trusted alias certificate, never a
++                    // file-supplied public key, BEFORE invoking PKCS1 unwrap.
++                    val verifier = Signature.getInstance("SHA256withRSA")
++                    verifier.initVerify(entry.certificate.publicKey)
++                    verifier.update(slot.header)
++                    verifier.update(binding(context, namespace))
++                    verifier.update(wrapped, HEADER_BYTES, RSA_BYTES)
++                    if (!verifier.verify(wrapped, HEADER_BYTES + RSA_BYTES, RSA_BYTES)) throw Failure(CORRUPT)
++                    val cipher = rsaCipher().apply { init(Cipher.UNWRAP_MODE, entry.privateKey) }
++                    val unwrapped = cipher.unwrap(wrapped.copyOfRange(HEADER_BYTES, HEADER_BYTES + RSA_BYTES),
++                        "AES", Cipher.SECRET_KEY)
++                    if (unwrapped.algorithm != "AES") throw Failure(CORRUPT)
++                    // This is the unwrapped COMMON key, not an OS key export.
++                    unwrapped.encoded ?: throw Failure(CORRUPT)
++                }
++                else -> throw Failure(CORRUPT)
++            }
++            if (key.size != KEY_BYTES) {
++                key.fill(0)
++                throw Failure(CORRUPT)
++            }
++            return key
++        }
++
++        fun readFile(directory: File, name: String, vararg expectedSizes: Int): ByteArray? {
++            val path = File(directory, name).path
++            val fd = try {
++                Os.open(path, OsConstants.O_RDONLY or OsConstants.O_CLOEXEC or
++                    OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK, 0)
++            } catch (error: ErrnoException) {
++                // Only ENOENT for this exact private artifact is absence.
++                if (error.errno == OsConstants.ENOENT) return null
++                throw error
++            }
++            return withFd(fd) {
++                val stat = Os.fstat(fd)
++                if (!OsConstants.S_ISREG(stat.st_mode) || expectedSizes.none { stat.st_size == it.toLong() }) {
++                    throw Failure(CORRUPT)
++                }
++                if (stat.st_uid != Os.getuid() || (stat.st_mode and GROUP_OTHER_BITS) != 0) {
++                    throw Failure(DENIED)
++                }
++                val wrapped = ByteArray(stat.st_size.toInt())
++                var offset = 0
++                while (offset < wrapped.size) {
++                    val count = Os.read(fd, wrapped, offset, wrapped.size - offset)
++                    if (count <= 0) throw Failure(CORRUPT)
++                    offset += count
++                }
++                if (Os.read(fd, ByteArray(1), 0, 1) != 0) throw Failure(CORRUPT)
++                wrapped
++            }
++        }
++
++        fun publish(directory: File, name: String, wrapped: ByteArray): Boolean {
++            if (wrapped.size !in 1..RSA_WRAPPED_BYTES) throw Failure(CORRUPT)
++            val staging = File(directory, ".master-key-${UUID.randomUUID()}.tmp")
++            val destination = File(directory, name)
++            val fd = Os.open(staging.path, OsConstants.O_WRONLY or OsConstants.O_CREAT or
++                OsConstants.O_EXCL or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, PRIVATE_MODE)
++            var failure: Throwable? = null
++            try {
++                withFd(fd) {
++                    var offset = 0
++                    while (offset < wrapped.size) {
++                        val count = Os.write(fd, wrapped, offset, wrapped.size - offset)
++                        if (count <= 0) throw Failure(IO_FAILURE)
++                        offset += count
++                    }
++                    Os.fsync(fd)
++                }
++                return try {
++                    // link(2) is atomic and add-only. A losing creator never
++                    // truncates or replaces either the slot or the wrapped key.
++                    Os.link(staging.path, destination.path)
++                    true
++                } catch (error: ErrnoException) {
++                    if (error.errno != OsConstants.EEXIST) throw error
++                    false
++                }
++            } catch (error: Throwable) {
++                failure = error
++                throw error
++            } finally {
++                try {
++                    removeAndSync(staging, directory)
++                } catch (cleanup: Exception) {
++                    if (failure == null) throw cleanup
++                    failure.addSuppressed(cleanup)
++                }
++            }
++        }
++
++        private fun removeAndSync(staging: File, directory: File) {
++            var failure: Exception? = null
++            try {
++                Os.remove(staging.path)
++            } catch (error: Exception) {
++                failure = error
++            }
++            try {
++                val fd = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or
++                    OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
++                withFd(fd) { Os.fsync(fd) }
++            } catch (error: Exception) {
++                if (failure == null) throw error
++                failure.addSuppressed(error)
++            }
++            failure?.let { throw it }
++        }
++
++        private inline fun <T> withFd(fd: FileDescriptor, operation: () -> T): T {
++            var failure: Throwable? = null
++            try {
++                return operation()
++            } catch (error: Throwable) {
++                failure = error
++                throw error
++            } finally {
++                try {
++                    Os.close(fd)
++                } catch (close: Exception) {
++                    if (failure == null) throw close
++                    failure.addSuppressed(close)
++                }
++            }
++        }
++    }
++
++    // All API-23-only classes stay behind the actual minimum-level guard.
++    @RequiresApi(23)
++    private object Aes23 {
++        fun classifyCause(failure: Exception): Int {
++            var cause: Throwable? = failure
++            repeat(8) {
++                if (cause is UserNotAuthenticatedException) return LOCKED
++                if (cause is KeyPermanentlyInvalidatedException) return CORRUPT
++                cause = cause?.cause
++            }
++            return 0
++        }
++
++        fun generate(alias: String) {
++            val parameters = KeyGenParameterSpec.Builder(
++                alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
++            ).setKeySize(256)
++                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
++                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
++                .setRandomizedEncryptionRequired(true)
++                .setUserAuthenticationRequired(false)
++            // Android documents key loss / no-lock-screen defects through API
++            // 34. API 35+ enforces unlocked use in the OS; earlier versions use
++            // explicit lock gates. No enrollment or authentication prompt.
++            if (Build.VERSION.SDK_INT >= 35) parameters.setUnlockedDeviceRequired(true)
++            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, STORE).apply {
++                init(parameters.build())
++            }.generateKey()
++        }
++
++        fun key(entry: KeyStore.Entry): SecretKey {
++            val key = (entry as? KeyStore.SecretKeyEntry)?.secretKey ?: throw Failure(CORRUPT)
++            if (key.algorithm != KeyProperties.KEY_ALGORITHM_AES || key.format != null) throw Failure(CORRUPT)
++            val info = SecretKeyFactory.getInstance(key.algorithm, STORE)
++                .getKeySpec(key, KeyInfo::class.java) as KeyInfo
++            if (info.keySize != 256 || info.isUserAuthenticationRequired ||
++                info.origin != KeyProperties.ORIGIN_GENERATED ||
++                info.purposes != (KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT) ||
++                !info.blockModes.contentEquals(arrayOf(KeyProperties.BLOCK_MODE_GCM)) ||
++                !info.encryptionPaddings.contentEquals(arrayOf(KeyProperties.ENCRYPTION_PADDING_NONE))) {
++                throw Failure(CORRUPT)
++            }
++            return key
++        }
++    }
++}

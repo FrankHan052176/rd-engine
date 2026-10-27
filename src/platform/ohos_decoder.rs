@@ -1,5 +1,13 @@
 //! New, metadata/bitstream-only OHOS Surface decoder, not the legacy runtime.
 //!
+//! This file is also the seam's shared vocabulary: `decoder.rs` includes it,
+//! re-exports `VideoCodec`, `DecoderConfig`, `AccessUnit`, `AccessUnitKind`,
+//! `DecoderError`, `DecoderStats`, `RejectedSubmission` and `SurfaceLease`
+//! unchanged, and reaches this backend through `SurfaceDecoder::Ohos`. The
+//! failure verdicts and the observable projection the seam hands out are defined
+//! there and produced here, because only this backend knows what its own
+//! failures and counters mean.
+//!
 //! Integration: std plus existing Tokio Notify/cancellation support. Link libraries:
 //! native_media_codecbase, native_media_core, native_media_vdec, native_window.
 //! Installed headers: API26 (26.0.0.32); all bound APIs introduced <=12, target
@@ -13,23 +21,60 @@
 //! Close explicitly cancels queued access units; normal playback never flushes
 //! or drops accepted P frames. For a new stream, close the old decoder first.
 
+use super::{CleanupVerdict, DecoderProjection, OpenFailure, RenderTarget, RenderTiming};
 use std::sync::Arc;
 
-/// Implemented only by the trusted HAR Surface owner.
+/// Implemented only by a trusted presentation owner, including the HAR Surface owner.
 ///
 /// # Safety
-/// The surface ID must remain stable and identify a live Surface. Retaining this lease must keep
-/// that Surface alive (including across ArkUI teardown requests) until the last
-/// lease is dropped. Drop must be safe on the decoder worker. On Destroy failure
-/// the lease is retained in bounded quarantine; HAR must not invalidate it.
+/// A nonzero surface ID must remain stable and identify a live Surface. Retaining
+/// this lease must keep that Surface alive (including across ArkUI teardown
+/// requests) until the last lease is dropped. A Windows owner and its render
+/// target must name the same permanently bound, nonzero session epoch and must
+/// not be replaced while leased. Its native resources and callbacks must obey the
+/// presenter's retirement contract. Drop must be safe on the decoder worker.
+/// On unconfirmed destruction the lease is retained in bounded quarantine; its
+/// owner must not invalidate resources still reachable by the decoder.
 pub unsafe trait SurfaceLease: Send + Sync + 'static {
     fn surface_id(&self) -> u64;
+    /// Whether this lease can be presented into right now.
+    ///
+    /// The default is the id itself: a lease whose Surface exists has a non-zero
+    /// id, and one that has not been bound yet answers `false`. It is a default
+    /// method so no existing implementor changed.
+    fn is_ready(&self) -> bool {
+        self.surface_id() != 0
+    }
+    /// Where this lease's pictures are presented, when that is not its own
+    /// Surface. The default is `None`: a lease that presents through
+    /// `surface_id`/`frame_observer` has no separate destination.
+    fn render_target(&self) -> Option<RenderTarget> {
+        None
+    }
+    /// The typed owner of a Windows destination, never a surface ID or pointer.
+    /// Returning an owner does not prove readiness, codec support or presentation;
+    /// the decoder must check its live binding against `render_target`.
+    fn windows_presentation(&self) -> Option<Arc<crate::windows_presentation::WindowsPresentation>> {
+        None
+    }
+    /// A frame observer for the sinks that publish through a caller instead of a
+    /// display - the memory sink the Flutter clients use. The default is no
+    /// observer, so a display-backed lease is unaffected.
+    fn frame_observer(&self) -> Option<std::sync::Arc<dyn crate::surface::FrameObserver>> {
+        None
+    }
 }
 
+/// The compressed formats this seam can name. H264/H265 are the two hardware
+/// categories the OHOS decoder queries by MIME; VP8/VP9 are declared here so the
+/// protocol and the software VPx backend share one type, and every decoder that
+/// cannot serve them refuses them by name instead of mapping a fallback MIME.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoCodec {
     H264,
     H265,
+    Vp8,
+    Vp9,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,8 +106,13 @@ pub struct AccessUnit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecoderError {
     UnsupportedPlatform,
+    /// This module has no decoder for the requested codec. It names only the
+    /// H264/H265 hardware categories, so VP8/VP9 stop before any native codec,
+    /// worker thread or Surface is created.
+    UnsupportedCodec,
     InvalidConfig,
     InvalidAccessUnit,
+    TimestampOverflow,
     Backpressure,
     AccessUnitExceedsQueueLimit { size: usize, limit: usize },
     Closed,
@@ -72,6 +122,8 @@ pub enum DecoderError {
     InvalidNativeBuffer,
     InputTooLarge { size: usize, capacity: i32 },
     Native { api: &'static str, code: i32 },
+    /// The Windows failure retains its status, native stage and HRESULT intact.
+    WindowsNative(crate::windows_presentation::PresentationError),
     CallbackOverflow,
     DuplicateBufferIndex,
     OwnerLimit,
@@ -95,14 +147,47 @@ pub struct DecoderStats {
     pub pushed_units: u64,
     /// Successful RenderOutputBuffer submissions, NOT physical presentation.
     pub render_submissions: u64,
+    /// Render submissions with an actual elapsed-time observation.
+    pub render_samples: u64,
+    /// Measured time from pushing a unit into the decoder to submitting its
+    /// picture for rendering, summed over `render_samples`. Excludes network
+    /// and scanout, which is the latency the client's row shows.
+    pub render_ns: u64,
+    /// The worst single observation behind `render_ns` since this decoder opened.
+    pub render_peak_ns: u64,
     pub non_frame_outputs: u64,
     pub format_change_notifications: u64,
     pub cancelled_units: u64,
+    /// Units admitted but not yet pushed into the decoder at this snapshot.
+    pub queued_units: u64,
     pub end_of_stream_output: bool,
     /// Failed/unproven native destruction retained userdata AND the HAR lease.
     pub quarantined: bool,
     pub closed: bool,
     pub failure: Option<DecoderError>,
+}
+
+impl DecoderStats {
+    /// The seam's view of this backend's counters.
+    ///
+    /// The counters only this backend keeps (accepted/cancelled units, non-frame
+    /// outputs, stream-change notices, end-of-stream output) stay here: the seam
+    /// publishes what every backend can answer, and nothing else.
+    pub fn projection(&self) -> DecoderProjection {
+        DecoderProjection {
+            pushed_units: self.pushed_units,
+            render_submissions: self.render_submissions,
+            render_timing: (self.render_samples != 0).then_some(RenderTiming {
+                samples: self.render_samples,
+                total_ns: self.render_ns,
+                peak_ns: self.render_peak_ns,
+            }),
+            queued_units: self.queued_units,
+            closed: self.closed,
+            quarantined: self.quarantined,
+            failure: self.failure.clone(),
+        }
+    }
 }
 
 pub struct SurfaceDecoder {
@@ -143,10 +228,10 @@ impl DecoderObserver {
             Err(DecoderError::UnsupportedPlatform)
         }
     }
-    pub fn stats(&self) -> Result<DecoderStats, DecoderError> {
+    pub fn stats(&self) -> Result<DecoderProjection, DecoderError> {
         #[cfg(target_env = "ohos")]
         {
-            Ok(self.shared.stats())
+            Ok(self.shared.stats().projection())
         }
         #[cfg(not(target_env = "ohos"))]
         {
@@ -207,16 +292,23 @@ impl SurfaceDecoder {
     }
     /// Creates by the NAME returned by a hardware-category query, never by a
     /// software-fallback MIME constructor. Does not certify Main10/HDR display.
-    pub fn open(config: DecoderConfig, lease: Arc<dyn SurfaceLease>) -> Result<Self, DecoderError> {
-        #[cfg(target_env = "ohos")]
-        {
-            native::open(config, lease)
-        }
-        #[cfg(not(target_env = "ohos"))]
-        {
-            let _ = (config, lease);
-            Err(DecoderError::UnsupportedPlatform)
-        }
+    ///
+    /// The failure carries this backend's own cleanup verdict, computed where the
+    /// knowledge is: no caller has to recognise these variants to decide whether
+    /// the surface lease may be released.
+    pub fn open(config: DecoderConfig, lease: Arc<dyn SurfaceLease>) -> Result<Self, OpenFailure> {
+        let opened: Result<Self, DecoderError> = {
+            #[cfg(target_env = "ohos")]
+            {
+                native::open(config, lease)
+            }
+            #[cfg(not(target_env = "ohos"))]
+            {
+                let _ = (config, lease);
+                Err(DecoderError::UnsupportedPlatform)
+            }
+        };
+        opened.map_err(open_failure)
     }
 
     pub fn try_submit(&self, unit: AccessUnit) -> Result<(), RejectedSubmission> {
@@ -244,10 +336,10 @@ impl SurfaceDecoder {
         }
     }
 
-    pub fn stats(&self) -> Result<DecoderStats, DecoderError> {
+    pub fn stats(&self) -> Result<DecoderProjection, DecoderError> {
         #[cfg(target_env = "ohos")]
         {
-            Ok(self.shared.stats())
+            Ok(self.shared.stats().projection())
         }
         #[cfg(not(target_env = "ohos"))]
         {
@@ -263,18 +355,19 @@ impl SurfaceDecoder {
 
     /// Joins the persistent worker; call off UI/callback threads. Native teardown
     /// has no unsafe timeout/force-free. A stuck SDK call can keep close blocked.
-    pub fn close(mut self) -> Result<DecoderStats, DecoderError> {
+    pub fn close(mut self) -> Result<DecoderProjection, DecoderError> {
         self.join()
     }
 
-    fn join(&mut self) -> Result<DecoderStats, DecoderError> {
+    fn join(&mut self) -> Result<DecoderProjection, DecoderError> {
         #[cfg(target_env = "ohos")]
         {
             self.shared.request_close();
-            match self.worker.take() {
+            let stats = match self.worker.take() {
                 Some(worker) => worker.join().map_err(|_| DecoderError::WorkerPanicked)?,
                 None => Ok(self.shared.stats()),
-            }
+            }?;
+            Ok(stats.projection())
         }
         #[cfg(not(target_env = "ohos"))]
         {
@@ -289,12 +382,34 @@ impl Drop for SurfaceDecoder {
     }
 }
 
+/// Normalizes one failed open into the seam's failure, verdict included.
+///
+/// Destroy failure and a worker unwind are the two failures this backend can
+/// return after it took native ownership: both keep that ownership — the codec,
+/// its userdata and the surface lease — in bounded quarantine, so the lease must
+/// not be released and the verdict is `Unconfirmed`. Every other refusal happened
+/// before an allocation existed (a codec this backend does not serve, a lease
+/// without an id, an owner budget that is gone, a worker that never started), so
+/// `Confirmed` states the same thing the engine has always decided here.
+fn open_failure(error: DecoderError) -> OpenFailure {
+    OpenFailure {
+        cleanup: match &error {
+            DecoderError::DestroyFailed { .. } | DecoderError::WorkerPanicked => {
+                CleanupVerdict::Unconfirmed
+            }
+            _ => CleanupVerdict::Confirmed,
+        },
+        error,
+    }
+}
+
 #[cfg(any(target_env = "ohos", test))]
 mod engine {
     use super::*;
     use std::{
         collections::{HashSet, VecDeque},
         sync::{Condvar, Mutex, MutexGuard},
+        time::Instant,
     };
     pub const MAX_CALLBACKS: usize = 256;
     pub const MAX_OWNERS: usize = 4;
@@ -335,6 +450,10 @@ mod engine {
         // Includes the access unit removed by the worker until Push returns.
         reserved_units: usize,
         reserved_bytes: usize,
+        /// When each successful push entered the decoder, oldest first. A codec
+        /// emits pictures in the order their units were pushed, so an output
+        /// callback belongs to the oldest time still pending.
+        push_times: VecDeque<Instant>,
         eos_accepted: bool,
         closing: bool,
         stats: DecoderStats,
@@ -366,6 +485,7 @@ mod engine {
                     output_indices: HashSet::with_capacity(MAX_CALLBACKS),
                     reserved_units: 0,
                     reserved_bytes: 0,
+                    push_times: VecDeque::with_capacity(limits.max_queued_units),
                     eos_accepted: false,
                     closing: false,
                     stats: DecoderStats::default(),
@@ -494,6 +614,10 @@ mod engine {
             s.reserved_bytes -= bytes;
             if success {
                 s.stats.pushed_units += 1;
+                // The clock starts when the codec owns the unit, and stops at the
+                // render submission for its picture: what a viewer waits for that
+                // the network did not already spend.
+                s.push_times.push_back(Instant::now());
             } else {
                 s.stats.cancelled_units += 1;
             }
@@ -501,8 +625,19 @@ mod engine {
         }
         pub fn output(&self, frame: bool, eos: bool) {
             let mut s = lock(&self.state);
+            // Every output retires one pushed unit, including the end-of-stream
+            // flush, so a later frame is never measured against a stale push.
+            let elapsed = s
+                .push_times
+                .pop_front()
+                .map(|at| u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
             if frame {
                 s.stats.render_submissions += 1;
+                if let Some(elapsed) = elapsed {
+                    s.stats.render_samples = s.stats.render_samples.saturating_add(1);
+                    s.stats.render_ns = s.stats.render_ns.saturating_add(elapsed);
+                    s.stats.render_peak_ns = s.stats.render_peak_ns.max(elapsed);
+                }
             } else {
                 s.stats.non_frame_outputs += 1;
             }
@@ -534,11 +669,17 @@ mod engine {
             state.inputs.clear();
             state.input_indices.clear();
             state.output_indices.clear();
+            state.push_times.clear();
             self.wake.notify_one();
             self.capacity.notify_waiters();
         }
         pub fn stats(&self) -> DecoderStats {
-            lock(&self.state).stats.clone()
+            let state = lock(&self.state);
+            let mut stats = state.stats.clone();
+            // Read here rather than counted: a unit leaves this set when its push
+            // returns, and no separate counter can say what is in flight now.
+            stats.queued_units = state.reserved_units as u64;
+            stats
         }
         pub fn closed(&self) {
             let mut s = lock(&self.state);
@@ -549,6 +690,7 @@ mod engine {
             s.events.clear();
             s.input_indices.clear();
             s.output_indices.clear();
+            s.push_times.clear();
             s.reserved_units = 0;
             s.reserved_bytes = 0;
             s.stats.closed = true;
@@ -579,11 +721,11 @@ mod engine {
 mod native {
     use super::{engine::*, *};
     use std::{
-        ffi::{CStr, c_char, c_void},
+        ffi::{c_char, c_void, CStr},
         ptr,
         sync::{
-            Condvar, Mutex, OnceLock,
             atomic::{AtomicUsize, Ordering},
+            Condvar, Mutex, OnceLock,
         },
         thread,
     };
@@ -875,6 +1017,14 @@ mod native {
         config: DecoderConfig,
         lease: Arc<dyn SurfaceLease>,
     ) -> Result<SurfaceDecoder, DecoderError> {
+        // Only the two hardware categories queried below are decodable here.
+        // VP8/VP9 are refused first, so the verdict is attributable to the codec
+        // alone and precedes the worker, the native codec and the Surface: this
+        // module has no software fallback.
+        match config.codec {
+            VideoCodec::H264 | VideoCodec::H265 => {}
+            VideoCodec::Vp8 | VideoCodec::Vp9 => return Err(DecoderError::UnsupportedCodec),
+        }
         if lease.surface_id() == 0 {
             return Err(DecoderError::InvalidConfig);
         }
@@ -923,6 +1073,10 @@ mod native {
         let mime = match config.codec {
             VideoCodec::H264 => c"video/avc",
             VideoCodec::H265 => c"video/hevc",
+            // No VPx MIME is ever requested: the capability query below would
+            // answer for a codec this module cannot decode, and a software
+            // fallback constructor is forbidden here.
+            VideoCodec::Vp8 | VideoCodec::Vp9 => return Err(DecoderError::UnsupportedCodec),
         };
         let cap = unsafe { OH_AVCodec_GetCapabilityByCategory(mime.as_ptr(), false, 0) };
         if cap.is_null() || !unsafe { OH_AVCapability_IsHardware(cap) } {

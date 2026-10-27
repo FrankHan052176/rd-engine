@@ -9,11 +9,11 @@ use crate::{
     handshake::{self, Established, HostIdentity, Security, ViewerIdentity},
     transport::{WireReader, WireWriter},
 };
+use base::message_proto::{
+    Auth2FA, Hash, LoginRequest, LoginResponse, Message, Misc, OptionMessage, PeerInfo,
+    PermissionInfo, message, misc, permission_info::Permission,
+};
 use hbb_common::{
-    message_proto::{
-        Auth2FA, Hash, LoginRequest, LoginResponse, Message, Misc, OptionMessage, PeerInfo,
-        PermissionInfo, message, misc, permission_info::Permission,
-    },
     protobuf::Message as _,
     sodiumoxide::{crypto::secretbox, utils},
     tcp::FramedStream,
@@ -38,8 +38,12 @@ fn close_message() -> Message {
     message.set_misc(misc);
     message
 }
-fn is_close(message: &Message) -> bool {
-    matches!(&message.union, Some(message::Union::Misc(m)) if matches!(m.union, Some(misc::Union::CloseReason(_))))
+fn close_reason(message: &Message) -> Option<&str> {
+    let Some(message::Union::Misc(m)) = &message.union else { return None; };
+    match &m.union {
+        Some(misc::Union::CloseReason(reason)) => Some(reason.as_str()),
+        _ => None,
+    }
 }
 
 /// Authentication owns the original, unsplit, small-limit wire. Only the
@@ -188,6 +192,21 @@ pub struct AuthenticatedParts {
     pub context: AuthenticatedContext,
 }
 
+/// A recognized peer close request, never the peer's arbitrary wire text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerCloseReason {
+    ManualRequest,
+}
+
+impl PeerCloseReason {
+    pub(crate) fn of(reason: &str) -> Option<Self> {
+        match reason {
+            "Closed manually by the peer" => Some(Self::ManualRequest),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewerState {
     AwaitHash,
@@ -217,6 +236,7 @@ pub struct ViewerSession {
     io: SessionIo,
     security: Security,
     state: ViewerState,
+    peer_close_reason: Option<PeerCloseReason>,
     hash: Option<Hash>,
     request: Option<LoginRequest>,
     permissions: Permissions,
@@ -237,6 +257,7 @@ impl ViewerSession {
             io: SessionIo::new(wire, prefetched),
             security,
             state: ViewerState::AwaitHash,
+            peer_close_reason: None,
             hash: None,
             request: None,
             permissions: VIEWER_REMOTE_DEFAULTS,
@@ -258,7 +279,24 @@ impl ViewerSession {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP connect timeout"))??;
         stream.set_nodelay(true)?;
         let local = stream.local_addr()?;
-        let wire = handshake::viewer(FramedStream::from(stream, local), identity, timeout).await?;
+        Self::connect_over(FramedStream::from(stream, local), identity, timeout).await
+    }
+
+    /// Completes the viewer handshake over an already-connected record stream.
+    ///
+    /// This is what makes the transport interchangeable: `FramedStream` is
+    /// built on a boxed `AsyncRead + AsyncWrite`, so
+    /// `hbb_common::tcp::FramedStream::from` accepts a QUIC bidirectional
+    /// stream ([`crate::net::quic::QuicStream`]) exactly as it accepts a
+    /// `TcpStream`, and both then reach the same handshake, the same
+    /// authentication actors and the same session state machine. Nothing above
+    /// this line knows which transport it is on.
+    pub async fn connect_over(
+        wire: FramedStream,
+        identity: ViewerIdentity,
+        timeout: Duration,
+    ) -> io::Result<Self> {
+        let wire = handshake::viewer(wire, identity, timeout).await?;
         Ok(Self::from_established(
             wire,
             timeout,
@@ -267,6 +305,10 @@ impl ViewerSession {
     }
     pub fn state(&self) -> ViewerState {
         self.state
+    }
+    /// The exact recognized close request, retained after session termination.
+    pub fn peer_close_reason(&self) -> Option<PeerCloseReason> {
+        self.peer_close_reason
     }
     pub fn security(&self) -> &Security {
         &self.security
@@ -330,6 +372,7 @@ impl ViewerSession {
 
     fn terminate(&mut self) {
         self.state = ViewerState::Closed;
+        // Keep the typed terminal observation for the owner's final snapshot.
         self.permissions = Permissions::default();
         self.hash = None;
         self.request = None;
@@ -384,6 +427,17 @@ impl ViewerSession {
             None => Default::default(),
             Some([]) => return Err(failure("Empty supplied password")),
             Some(password) => {
+                if std::env::var_os("RD_LOG_CHALLENGE").is_some() {
+                    // Both fields travel in the clear on this wire; the password
+                    // and everything derived from it are never printed.
+                    eprintln!(
+                        "peer challenge: salt_len={} salt={:?} challenge_len={} challenge={:?}",
+                        hash.salt.len(),
+                        hash.salt,
+                        hash.challenge.len(),
+                        hash.challenge
+                    );
+                }
                 let mut h1 = authentication::salted_password(password, &hash.salt);
                 let response = authentication::password_response(&h1, &hash.challenge);
                 utils::memzero(&mut h1);
@@ -460,7 +514,8 @@ impl ViewerSession {
                 ));
             }
         };
-        if is_close(&message) {
+        if let Some(reason) = close_reason(&message) {
+            self.peer_close_reason = PeerCloseReason::of(reason);
             self.state = ViewerState::Closed;
             return Ok(ViewerEvent::Closed);
         }
@@ -496,7 +551,7 @@ impl ViewerSession {
             }
             Some(message::Union::LoginResponse(response)) if self.state != ViewerState::Active => {
                 match &response.union {
-                    Some(hbb_common::message_proto::login_response::Union::Error(error)) => {
+                    Some(base::message_proto::login_response::Union::Error(error)) => {
                         // Original on_open/whitelist policy can reject before
                         // Hash or any LoginRequest. Surface the refusal, never
                         // mistake it for an application payload or an auth grant.
@@ -513,7 +568,7 @@ impl ViewerSession {
                         };
                         return Ok(ViewerEvent::LoginError(error.clone()));
                     }
-                    Some(hbb_common::message_proto::login_response::Union::PeerInfo(info)) => {
+                    Some(base::message_proto::login_response::Union::PeerInfo(info)) => {
                         if self.request.is_none() {
                             return Err(failure("Unsolicited login success"));
                         }
@@ -628,6 +683,10 @@ impl HostSession {
     pub fn permissions(&self) -> Permissions {
         self.permissions
     }
+    /// Sanitized, immutable pre-auth claims; contains no password/OS credentials.
+    pub(crate) fn login_request(&self) -> Option<&LoginRequest> {
+        self.auth.request()
+    }
 
     /// Consumes the authenticated host driver after its success/permission
     /// records are flushed. Local auth providers/credentials are dropped here;
@@ -705,6 +764,10 @@ impl HostSession {
                     (Permission::Clipboard, permissions.clipboard),
                     (Permission::Audio, permissions.audio),
                     (Permission::File, permissions.file),
+                    (Permission::Restart, false),
+                    (Permission::Recording, false),
+                    (Permission::BlockInput, false),
+                    (Permission::PrivacyMode, false),
                 ] {
                     let mut misc = Misc::new();
                     misc.set_permission_info(PermissionInfo {
@@ -813,7 +876,7 @@ impl HostSession {
                 ));
             }
         };
-        if is_close(&message) {
+        if close_reason(&message).is_some() {
             self.auth.close();
             return Ok(HostEvent::Closed);
         }

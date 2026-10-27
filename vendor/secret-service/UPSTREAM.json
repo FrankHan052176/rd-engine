@@ -1,0 +1,211 @@
+{
+  "schema": 1,
+  "package": {
+    "name": "secret-service",
+    "version": "5.2.0",
+    "rust_version": "1.87.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  "repository": {
+    "url": "https://github.com/hwchen/secret-service-rs",
+    "revision": "1fe4fbe405b152bc969deb5de417847e1e4e4c7b",
+    "identity_source": ".cargo_vcs_info.json from the published crate"
+  },
+  "registry": {
+    "url": "https://crates.io/crates/secret-service/5.2.0",
+    "archive": "https://static.crates.io/crates/secret-service/secret-service-5.2.0.crate",
+    "archive_sha256": "5107b24b91445dd2aa449a258a1807b63240942157292354dc5bfdbeb8bc6db8",
+    "checksum_source": "https://index.crates.io/se/cr/secret-service"
+  },
+  "integration": {
+    "patch": "no-prompt-create.patch",
+    "patch_sha256": "899c9ad15ae55fb7f36a9cd174477cf0b3ffa7d729b7da8299c777bc9c54f932",
+    "purpose": "Expose blocking Collection::create_item_no_prompt using the published session/format_secret/CreateItem path, rejecting either a returned prompt or missing created item without invoking Prompt. The existing create_item API keeps its published behavior.",
+    "scope": "Only src/blocking/collection.rs changes. No DBus protocol, key derivation, encryption, transport, asynchronous API, dependency, or upstream test implementation is changed.",
+    "changes": [
+      {
+        "path": "src/blocking/collection.rs",
+        "original_sha256": "6cec59f0f175fea32cb633f35b0bef44f53d6796f35ef5e82f732a1ff029ff99",
+        "patched_sha256": "07e156f75854596f290e5fe99043baa3a57e4c349c62dac3f5e820fc02b15126"
+      }
+    ],
+    "manifest_selection": {
+      "secret-service": {
+        "version": "=5.2.0",
+        "path": "vendor/secret-service",
+        "default_features": false,
+        "features": [
+          "rt-async-io-crypto-rust"
+        ]
+      },
+      "zbus": {
+        "version": "=5.13.2",
+        "default_features": false,
+        "features": [
+          "async-io",
+          "blocking-api"
+        ]
+      },
+      "target": "all(target_os = \"linux\", not(target_env = \"ohos\"))",
+      "feature_gate": "official-account"
+    },
+    "caller": "src/official_account/storage/linux.rs",
+    "manifest_owner": "Main owns all workspace manifests/locks/module declarations and integrated source-dependency verification."
+  },
+  "provenance_boundary": "Published crate files are the provenance baseline, not a claim that normalized Cargo.toml is repository-identical. The platform adapter is new rd-engine integration, not code transplanted from the selected RustDesk pin.",
+  "runtime_requirements": [
+    "Use a synchronous FRB/account worker with the existing common private-store file lock held; do not call from an asynchronous executor thread.",
+    "A reachable per-user session DBus and Secret Service implementing encrypted DH sessions and an already-unlocked persistent default collection are required; this adapter never manually starts/provisions a service, creates a collection, unlocks, or executes a prompt.",
+    "The integration owner's selected policy allows ordinary D-Bus service activation by the maintained client. No NO_AUTO_START/unique-owner transport variation is added; upstream destination behavior remains unchanged.",
+    "Secret Service does not standardize access control, persistent-collection classification, atomic compare-and-set uniqueness, or disk fsync. Deployment must provide a trustworthy persistent default collection and service security policy. Add-only creation is serialized for cooperative callers by the common file lock and conflicts are rejected by exact lookup/readback.",
+    "The adapter zeroizes returned temporary secret bytes. The unmodified client/transport may retain cryptographic/session/serialization temporaries until normal deallocation; no guarantee of whole-process memory erasure is made."
+  ],
+  "verification": {
+    "performed": [
+      "Published archive SHA-256 matches crates.io index.",
+      "All 27 published files included; 26 unchanged files compared byte-for-byte to archive.",
+      "Single changed file captured by the recorded patch and before/after SHA-256."
+    ],
+    "not_performed": [
+      "Rust compilation, formatters, linters, tests, and integrated project validation were not run by this subagent.",
+      "No live Linux Secret Service provider or target runtime was available or exercised."
+    ]
+  },
+  "files": {
+    ".cargo_vcs_info.json": {
+      "archive_path": "secret-service-5.2.0/.cargo_vcs_info.json",
+      "sha256": "132694ea9100769fbf78c57e3b817002d3b6ff58c722f868dc4eab246770b0a1",
+      "archive_mode": "0o644"
+    },
+    ".github/workflows/ci.yaml": {
+      "archive_path": "secret-service-5.2.0/.github/workflows/ci.yaml",
+      "sha256": "8711cfac62ea2dd48bb42ff6c52e084b6d6975619701d124bea95aaf677af704",
+      "archive_mode": "0o644"
+    },
+    ".gitignore": {
+      "archive_path": "secret-service-5.2.0/.gitignore",
+      "sha256": "db9d1819da2b92de288874ed2648b89e8f9a542381877ed611a9db81023e414c",
+      "archive_mode": "0o644"
+    },
+    "CHANGELOG.md": {
+      "archive_path": "secret-service-5.2.0/CHANGELOG.md",
+      "sha256": "151a8a23a5e48a51959d19cfd630c94d53be83fa34ccd01e57a3df92f70957a6",
+      "archive_mode": "0o644"
+    },
+    "Cargo.lock": {
+      "archive_path": "secret-service-5.2.0/Cargo.lock",
+      "sha256": "841c86c6ecfba47609bac86c615ae2c3bf9e8bdb385a0f2dd61b02d2a5bb1228",
+      "archive_mode": "0o644"
+    },
+    "Cargo.toml": {
+      "archive_path": "secret-service-5.2.0/Cargo.toml",
+      "sha256": "9fec80c963dda52e0856ec8bb18d4e16422ed820c3005a3df7c2406a9f6fce78",
+      "archive_mode": "0o644"
+    },
+    "Cargo.toml.orig": {
+      "archive_path": "secret-service-5.2.0/Cargo.toml.orig",
+      "sha256": "a8f928d9dc98f791ac794c342298972699d73032a4d13233a3c1573c0f3766cf",
+      "archive_mode": "0o644"
+    },
+    "LICENSE-APACHE": {
+      "archive_path": "secret-service-5.2.0/LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "archive_mode": "0o644"
+    },
+    "LICENSE-MIT": {
+      "archive_path": "secret-service-5.2.0/LICENSE-MIT",
+      "sha256": "074585dbaf488db540c26f7b20f36053a157d7580bb1c390dc9f6afdb017c83a",
+      "archive_mode": "0o644"
+    },
+    "NOTES_ON_PORT.md": {
+      "archive_path": "secret-service-5.2.0/NOTES_ON_PORT.md",
+      "sha256": "02132c378add48a1820a4774c1f8b3f40a8a78bf3bacd90fb4d95f7768749265",
+      "archive_mode": "0o644"
+    },
+    "README.md": {
+      "archive_path": "secret-service-5.2.0/README.md",
+      "sha256": "ae034e37a98d96698a8fa98f34116e1852cfa401eeccb624f6aea4ae66a5818a",
+      "archive_mode": "0o644"
+    },
+    "examples/example.rs": {
+      "archive_path": "secret-service-5.2.0/examples/example.rs",
+      "sha256": "23774ae4c05951386dfeeb3742ee9356c066ba599284b85c615318750374d95c",
+      "archive_mode": "0o644"
+    },
+    "src/blocking/collection.rs": {
+      "archive_path": "secret-service-5.2.0/src/blocking/collection.rs",
+      "sha256": "6cec59f0f175fea32cb633f35b0bef44f53d6796f35ef5e82f732a1ff029ff99",
+      "archive_mode": "0o644"
+    },
+    "src/blocking/item.rs": {
+      "archive_path": "secret-service-5.2.0/src/blocking/item.rs",
+      "sha256": "d528f8009c5839232f41c038e01cacef43233de0a5cb291bc33e390800dbca8e",
+      "archive_mode": "0o644"
+    },
+    "src/blocking/mod.rs": {
+      "archive_path": "secret-service-5.2.0/src/blocking/mod.rs",
+      "sha256": "b93303bd2879764817b9eee992d568415a4ede4e87d1a99c06e5ff30e99a7586",
+      "archive_mode": "0o644"
+    },
+    "src/collection.rs": {
+      "archive_path": "secret-service-5.2.0/src/collection.rs",
+      "sha256": "db20aae820057d896df0cdcb90d3836fb94484f118b163fbcd65102dc0668603",
+      "archive_mode": "0o644"
+    },
+    "src/error.rs": {
+      "archive_path": "secret-service-5.2.0/src/error.rs",
+      "sha256": "e43b5c24609894a90af24699dd2b786a0e348cbd9a4848e48367109a04d7ec32",
+      "archive_mode": "0o644"
+    },
+    "src/item.rs": {
+      "archive_path": "secret-service-5.2.0/src/item.rs",
+      "sha256": "59a8d67d69229880091157949f8c6c169c88bcef041ed19c8145c3a31806debb",
+      "archive_mode": "0o644"
+    },
+    "src/lib.rs": {
+      "archive_path": "secret-service-5.2.0/src/lib.rs",
+      "sha256": "d09ba116fc0d3d0a26d42f10571cf06c39088f822e52c8564a860ca2d2643e8c",
+      "archive_mode": "0o644"
+    },
+    "src/proxy/collection.rs": {
+      "archive_path": "secret-service-5.2.0/src/proxy/collection.rs",
+      "sha256": "75b90ac96601295cad733f56711e27ff4c41125a2687b391af014708ff037511",
+      "archive_mode": "0o644"
+    },
+    "src/proxy/item.rs": {
+      "archive_path": "secret-service-5.2.0/src/proxy/item.rs",
+      "sha256": "bf7eb831b3d5b64b4945ac8f531070bde0b051a787e4ee022f205af36c03aa73",
+      "archive_mode": "0o644"
+    },
+    "src/proxy/mod.rs": {
+      "archive_path": "secret-service-5.2.0/src/proxy/mod.rs",
+      "sha256": "5c89709f27a218d936ec618dbae5215fe3b3daf9e7430132bef94f3b4e35d696",
+      "archive_mode": "0o644"
+    },
+    "src/proxy/prompt.rs": {
+      "archive_path": "secret-service-5.2.0/src/proxy/prompt.rs",
+      "sha256": "f7c3745568065ba7f602c71884dcb92ec7303fa0376508d0305a9186c9722af4",
+      "archive_mode": "0o644"
+    },
+    "src/proxy/service.rs": {
+      "archive_path": "secret-service-5.2.0/src/proxy/service.rs",
+      "sha256": "d46f02cfe2aaf9652c42c9f1f761379ebd4a5257ef143080f2bf75e74912533d",
+      "archive_mode": "0o644"
+    },
+    "src/session.rs": {
+      "archive_path": "secret-service-5.2.0/src/session.rs",
+      "sha256": "bc4fd204ad3a53c67bbe8ccae1dd747afcc63768089464c1ac46c174c3a5dc6d",
+      "archive_mode": "0o644"
+    },
+    "src/ss.rs": {
+      "archive_path": "secret-service-5.2.0/src/ss.rs",
+      "sha256": "c2e6b0bbbe19657f745dc2f99d7da494519a436283166369edb23a2aa66b94c6",
+      "archive_mode": "0o644"
+    },
+    "src/util.rs": {
+      "archive_path": "secret-service-5.2.0/src/util.rs",
+      "sha256": "8cf576dd04646305c629dd70e2c1244a942ffcf7c03ff7fc2268a39f6b3723fb",
+      "archive_mode": "0o644"
+    }
+  }
+}

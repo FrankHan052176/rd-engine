@@ -1,0 +1,12 @@
+--- a/src/input/fast_path.rs
++++ b/src/input/fast_path.rs
+@@ -158,6 +158,9 @@
+             FastPathInputEvent::MouseEventEx(pdu) => {
+                 pdu.encode(dst)?;
+             }
++            FastPathInputEvent::MouseEventRel(pdu) => {
++                pdu.encode(dst)?;
++            }
+             FastPathInputEvent::QoeEvent(stamp) => {
+                 dst.write_u32(*stamp);
+             }

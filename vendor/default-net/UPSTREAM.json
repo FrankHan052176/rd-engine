@@ -1,0 +1,248 @@
+{
+  "schema": 1,
+  "package": {
+    "name": "default-net",
+    "version": "0.14.1",
+    "license": "MIT"
+  },
+  "repository": {
+    "url": "https://github.com/shellrow/default-net",
+    "revision": "1bc3d448577e5aad1f6e201483c2190f0e22f681",
+    "identity_source": ".cargo_vcs_info.json from the published crate"
+  },
+  "registry": {
+    "url": "https://crates.io/crates/default-net/0.14.1",
+    "archive": "https://static.crates.io/crates/default-net/default-net-0.14.1.crate",
+    "archive_sha256": "a4898b43aed56499fad6b294d15b3e76a51df68079bf492e5daae38ca084e003",
+    "checksum_source": "rustdesk/rustdesk@092a961b629d318fe290eeafac0cd214a1e9deeb Cargo.lock:2089-2104"
+  },
+  "modified_date": "2026-09-24",
+  "license": {
+    "spdx": "MIT",
+    "path": "LICENSE",
+    "sha256": "c4f75a45f79842bdcf3e271625bd49951fa41ebf45ab3b7da25e3edfd840fdc2"
+  },
+  "integration": {
+    "patch": "default-net.adaptation.patch",
+    "patch_sha256": "38fa5b73f567a2042bff9eaa89cfd3352c4997a73ef4e4ce1d4122df5d644b4f",
+    "purpose": "Use the exact official scanner dependency for interface enumeration without any active gateway probe, and correct the pinned Windows allocation ownership defect.",
+    "scope": "Only src/interface/unix.rs and src/interface/windows.rs differ from the published crate. No dependency upgrades, registry/cache changes, alternative enumeration algorithm, extra permissions or raw-capture path is added.",
+    "changes": [
+      {
+        "path": "src/interface/unix.rs",
+        "original_sha256": "700b353ae9d327f9a774ce34aca01c6e2072a920fa27f0e86af8735574772705",
+        "patched_sha256": "d6970833cd4cc7472ba6c1caa4f15787fe4c2d8f3036dbd7d722d2df81f51362"
+      },
+      {
+        "path": "src/interface/windows.rs",
+        "original_sha256": "08bd4de65c910b06d1c102b5ce7e47c3462a228d08b6793796da25f045b52af4",
+        "patched_sha256": "69ca8798db18549558af5410459586367f92c78e5cd5eeb8a6cb1ddb956f6675"
+      }
+    ],
+    "recorded_steps": [
+      {
+        "patch": "enumeration-only.patch",
+        "patch_sha256": "8a9f79f8ad6f0700a93165125198307ffb82c256058121f10808984a24fc77b5",
+        "purpose": "Unix interfaces() delegates directly to the published unix_interfaces/getifaddrs path, avoiding local-IP/default-gateway and ancillary enrichment. Windows removes gateway enumeration, SendARP/helper and INCLUDE_GATEWAYS while retaining GetAdaptersAddresses interface/IP/MAC extraction. BSD/macOS AF_LINK types remain untouched."
+      },
+      {
+        "patch": "windows-allocation.patch",
+        "patch_sha256": "3f0a61ed58caf8ad20dc40ce6b5411aac38baa0f06922139fb02ea182153f22a",
+        "purpose": "After enumeration-only.patch, keep pointer and actual allocated_size in a drop owner. API-mutated dwsize is only the requested next allocation size. Reallocation drops the prior owner with its original size; failure/success/unwind release each allocation exactly once."
+      }
+    ],
+    "manifest_selection": {
+      "default-net": {
+        "version": "=0.14.1",
+        "path": "vendor/default-net"
+      }
+    },
+    "caller": "src/lan/discovery.rs; scanner only calls get_interfaces()",
+    "lock_owner": "Main resolves the three active workspace Cargo.lock files. The vendored Cargo.lock is an unchanged archive member, not a hand-authored resolver update."
+  },
+  "provenance_boundary": "All 34 published files are retained, including published source/license/README/examples/manifest/lock. This import is the crates.io byte baseline, not a claim that normalized Cargo.toml equals the source repository. Original gateway APIs remain upstream source but are not reached from scanner get_interfaces().",
+  "verification": {
+    "performed": [
+      "Downloaded official crates.io archive over HTTPS and compared its SHA-256 to the fixed RustDesk official lock checksum.",
+      "Compared retained files against the archive bytes; only the two recorded interface source files differ.",
+      "Recorded separate enumeration-only and Windows allocation ownership patches plus their combined original-to-final patch.",
+      "Read memalloc 0.1.0 and Windows 0.32.0 GetAdaptersAddresses flags/default signatures; no API guessed or upgraded."
+    ],
+    "not_performed": [
+      "No compilation, linking, tests, linters, formatters, scanning, device operations or app execution.",
+      "No target support, ordinary OHOS app permissions, actual interface enumeration or Windows failure-path runtime claim."
+    ]
+  },
+  "files": {
+    ".cargo_vcs_info.json": {
+      "archive_path": "default-net-0.14.1/.cargo_vcs_info.json",
+      "sha256": "8bdbfa028ed4d3ab983a2d86392e333f07770ca939a4aab591ceb86334408609",
+      "archive_mode": "0o644"
+    },
+    ".github/workflows/ci.yml": {
+      "archive_path": "default-net-0.14.1/.github/workflows/ci.yml",
+      "sha256": "52b2e2e3fdf9f12a3de01fe70faa13ab1c408a3a6bd4b7ad90252ea59c3b2d9c",
+      "archive_mode": "0o644"
+    },
+    ".gitignore": {
+      "archive_path": "default-net-0.14.1/.gitignore",
+      "sha256": "9a71c5ec2e0649f53413f0e1319e13dda7254e6f2adec67df3d6a2f60b6c4e81",
+      "archive_mode": "0o644"
+    },
+    "Cargo.lock": {
+      "archive_path": "default-net-0.14.1/Cargo.lock",
+      "sha256": "41fe7ee0903fe886a5af9f71ee1403cfe897b3136300e529911ee4507ddbfb60",
+      "archive_mode": "0o644"
+    },
+    "Cargo.toml": {
+      "archive_path": "default-net-0.14.1/Cargo.toml",
+      "sha256": "5fc42b183554dd851f0d8d725a758b026e17369887d80559bef9592a7c5f3367",
+      "archive_mode": "0o644"
+    },
+    "Cargo.toml.orig": {
+      "archive_path": "default-net-0.14.1/Cargo.toml.orig",
+      "sha256": "e5f98a1c56b6ca3c92ef585e54741f6a781d858379d64e6309d270f1cff09aa1",
+      "archive_mode": "0o644"
+    },
+    "LICENSE": {
+      "archive_path": "default-net-0.14.1/LICENSE",
+      "sha256": "c4f75a45f79842bdcf3e271625bd49951fa41ebf45ab3b7da25e3edfd840fdc2",
+      "archive_mode": "0o644"
+    },
+    "README.md": {
+      "archive_path": "default-net-0.14.1/README.md",
+      "sha256": "4e3d59343c7789ac5442e522eae37a394d75968c81d124c539200d1ac21f9eac",
+      "archive_mode": "0o644"
+    },
+    "examples/default_gateway.rs": {
+      "archive_path": "default-net-0.14.1/examples/default_gateway.rs",
+      "sha256": "db174ece0b712a01bfac50b3a222e4d919fe028e291034de464c76a93b84bca7",
+      "archive_mode": "0o644"
+    },
+    "examples/default_interface.rs": {
+      "archive_path": "default-net-0.14.1/examples/default_interface.rs",
+      "sha256": "c608033dc7e6ec8f9739e2235f99fb9e9f342447f08557f7e9c5576f12cb916f",
+      "archive_mode": "0o644"
+    },
+    "examples/list_interfaces.rs": {
+      "archive_path": "default-net-0.14.1/examples/list_interfaces.rs",
+      "sha256": "87b426f4e49feaa8d2a059fbb294f990e91c212a676fed6d4e37066ce0968418",
+      "archive_mode": "0o644"
+    },
+    "src/bpf/binding.rs": {
+      "archive_path": "default-net-0.14.1/src/bpf/binding.rs",
+      "sha256": "590aaea3e44d85174c2cfdcb8da571fd18416939458630cbee5306af50386979",
+      "archive_mode": "0o644"
+    },
+    "src/bpf/mod.rs": {
+      "archive_path": "default-net-0.14.1/src/bpf/mod.rs",
+      "sha256": "9ba577608df5cf07e535d0cc126222737d23fd014250bd24eb0bf5e4f0b2e903",
+      "archive_mode": "0o644"
+    },
+    "src/bpf/unix.rs": {
+      "archive_path": "default-net-0.14.1/src/bpf/unix.rs",
+      "sha256": "cb6f7f362e021d4e8f93b2ecc1376f89374b2c585a776ed7c8ad03dcdb6788cb",
+      "archive_mode": "0o644"
+    },
+    "src/gateway/linux.rs": {
+      "archive_path": "default-net-0.14.1/src/gateway/linux.rs",
+      "sha256": "9bf03930b8fc2bf856e4fa7c701172758b423eb1e208a9e6f36b529505b243c1",
+      "archive_mode": "0o644"
+    },
+    "src/gateway/mod.rs": {
+      "archive_path": "default-net-0.14.1/src/gateway/mod.rs",
+      "sha256": "f7c70c8a59191bbaa66468653a1564429d0c8c7e26b486cbda7feba2e0cfb018",
+      "archive_mode": "0o644"
+    },
+    "src/gateway/unix.rs": {
+      "archive_path": "default-net-0.14.1/src/gateway/unix.rs",
+      "sha256": "7fcd034360742f2588e8b6121cf1661e753fd5c85a411a18fca91c3c22a2b89e",
+      "archive_mode": "0o644"
+    },
+    "src/gateway/windows.rs": {
+      "archive_path": "default-net-0.14.1/src/gateway/windows.rs",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_mode": "0o644"
+    },
+    "src/interface/android.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/android.rs",
+      "sha256": "f2e679968f8024202f85d8fd99c46fb49b1da0346566112a138494ca743696e4",
+      "archive_mode": "0o644"
+    },
+    "src/interface/linux.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/linux.rs",
+      "sha256": "ad8ef608774cdac0be98b44034a01878b41a046c03e8f744d0baceee93f793d0",
+      "archive_mode": "0o644"
+    },
+    "src/interface/macos.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/macos.rs",
+      "sha256": "40f64a0bcd20786af7ae368e1293d8a0a188c22564433a5dee537299ebd5cd30",
+      "archive_mode": "0o644"
+    },
+    "src/interface/mod.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/mod.rs",
+      "sha256": "d50c8893ca18acf104f82921275703f9243ed63da46872a9fb77f2f19bb1c0d8",
+      "archive_mode": "0o644"
+    },
+    "src/interface/shared.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/shared.rs",
+      "sha256": "5f7ff77234920b730f3c89eccc7d231c20f475bd9084efea57b2dc62799c80cc",
+      "archive_mode": "0o644"
+    },
+    "src/interface/types.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/types.rs",
+      "sha256": "147b90ae3de1134cc5944f4c747cae7a6c29409efa04ad873eaa0055b73a9c30",
+      "archive_mode": "0o644"
+    },
+    "src/interface/unix.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/unix.rs",
+      "sha256": "700b353ae9d327f9a774ce34aca01c6e2072a920fa27f0e86af8735574772705",
+      "archive_mode": "0o644"
+    },
+    "src/interface/windows.rs": {
+      "archive_path": "default-net-0.14.1/src/interface/windows.rs",
+      "sha256": "08bd4de65c910b06d1c102b5ce7e47c3462a228d08b6793796da25f045b52af4",
+      "archive_mode": "0o644"
+    },
+    "src/ip.rs": {
+      "archive_path": "default-net-0.14.1/src/ip.rs",
+      "sha256": "33e241459bd73acee65a33e423cea418d94b7559554f58846cd1c41d99a25f66",
+      "archive_mode": "0o644"
+    },
+    "src/lib.rs": {
+      "archive_path": "default-net-0.14.1/src/lib.rs",
+      "sha256": "57f85e670e15adc02df16a39866740871c8ce6db6db50a2841df120958573c1d",
+      "archive_mode": "0o644"
+    },
+    "src/socket/mod.rs": {
+      "archive_path": "default-net-0.14.1/src/socket/mod.rs",
+      "sha256": "6e25ea8c3ed68f23f5f2f803c2013a5462923c6fc02ba6934d7f743b44fc7b57",
+      "archive_mode": "0o644"
+    },
+    "src/socket/packet.rs": {
+      "archive_path": "default-net-0.14.1/src/socket/packet.rs",
+      "sha256": "dd308ff37fcfde31cb131198c4023ef8bd7a5c099038d474ccb373c0d2788215",
+      "archive_mode": "0o644"
+    },
+    "src/socket/unix.rs": {
+      "archive_path": "default-net-0.14.1/src/socket/unix.rs",
+      "sha256": "191d1fc03c34381d657dfa157f9ae0cbd40efbc420797b067a606538a1bccca2",
+      "archive_mode": "0o644"
+    },
+    "src/sys/mod.rs": {
+      "archive_path": "default-net-0.14.1/src/sys/mod.rs",
+      "sha256": "09b0428337f9e0e9e31b21b1a4359f597511631619d5f01bf59dc8e2d62e7ec3",
+      "archive_mode": "0o644"
+    },
+    "src/sys/unix.rs": {
+      "archive_path": "default-net-0.14.1/src/sys/unix.rs",
+      "sha256": "3512355794428100cfaab787a7e386b8e8505eb1055fc7816d253324eb31dae1",
+      "archive_mode": "0o644"
+    },
+    "src/sys/windows.rs": {
+      "archive_path": "default-net-0.14.1/src/sys/windows.rs",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_mode": "0o644"
+    }
+  }
+}

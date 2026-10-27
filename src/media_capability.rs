@@ -136,6 +136,13 @@ pub fn query_h264_hardware_decoder() -> Result<AdvertisedCodec, CapabilityError>
     ohos_capability::query_h264_decoder()
 }
 
+/// Actual HEVC hardware decoder metadata for the original-peer viewer advert.
+/// This queries only the decoder; callers that do not need encoder metadata
+/// avoid the extra platform query performed by the combined report.
+pub fn query_hevc_hardware_decoder() -> Result<AdvertisedCodec, CapabilityError> {
+    ohos_capability::query_hevc_decoder()
+}
+
 /// Actual H264 hardware encoder metadata for the Surface publisher advert.
 /// This remains metadata only; Publisher::open is the real path gate.
 pub fn query_h264_hardware_encoder() -> Result<AdvertisedCodec, CapabilityError> {

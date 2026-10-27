@@ -1,0 +1,50 @@
+Repository: https://github.com/rustdesk/rustdesk
+Commit: 092a961b629d318fe290eeafac0cd214a1e9deeb
+Official product version: 1.5.0
+Official Flutter package version: 1.5.0+68
+License: AGPL-3.0
+Generator: flutter_rust_bridge_codegen 1.80.1
+Rust runtime: flutter_rust_bridge 1.80.1
+Dart runtime: flutter_rust_bridge 1.80.1
+Default official consumer SDK: Flutter 3.24.5 (upstream flutter-build.yml)
+Keyboard dependency: https://github.com/rustdesk-org/rdev
+Keyboard dependency commit: 23e24dd6b35452a495dae0ae6d99395e9755ab0f (upstream Cargo.lock)
+Windows dependency toolchain: https://github.com/microsoft/vcpkg
+Windows dependency commit: 9e593bb18ea69cc5095e012465dcd675a822ed0d (upstream flutter-build.yml)
+
+Official client version owners at the Commit above:
+  Official product version is Cargo.toml [package].version, exposed by the
+  official client's main_get_version contract and shown by its About UI.
+  Official Flutter package version is the top-level version in
+  flutter/pubspec.yaml, including the numeric build suffix after '+'.
+  The product version must equal the Flutter package version before '+'.
+  These pins identify the official consumer, not rd-engine runtime feature parity.
+  The rd-engine and FRB crate artifact versions, Rust editions, FRB generator/
+  runtime pins and consumer SDK version remain independent.
+
+Contract references at this exact upstream revision:
+  src/flutter_ffi.rs
+  src/flutter.rs
+  src/keyboard.rs
+  src/ui_session_interface.rs
+  src/platform/windows.rs
+  flutter/lib/models/native_model.dart
+  flutter/lib/models/model.dart
+  flutter/windows/runner/main.cpp
+  flutter/windows/CMakeLists.txt
+
+The official upstream source was obtained independently, not from the withdrawn
+Core/Har repositories or the separate HarmonyOS Flutter port. This directory
+adapts the official client's ABI to rd-engine; it does not contain an application.
+Regenerate both Rust and Dart with generate-bindings.sh after changing the input.
+Name/signature compatibility alone is not feature parity or runtime acceptance.
+
+Android application startup:
+  Source: libs/scrap/src/android/ffi.rs at the Commit above, lines 444-518.
+  Adaptation: src/android.rs retains JNI_OnLoad NDK-context initialization and
+  Java_ffi_FFI_onAppStart's application reference/hosted TLS-verifier lifecycle.
+  It uses checked locks, a proper JNI local reference, sanitized failure and a
+  panic boundary instead of unwrap/raw-reference aliases or exception details.
+  This is runner integration, not screen capture, codec or MainService support.
+  Account storage is an additional callback after onAppStart, not its substitute;
+  patches/official-client-account-storage.patch records that exact runner change.

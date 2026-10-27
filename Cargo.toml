@@ -2,31 +2,120 @@
 name = "rd-engine"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "AGPL-3.0-only"
 publish = false
+autobins = false
 
 # Independent build: the replacement runtime must not link the old app runtime.
 [workspace]
 resolver = "3"
+# Published dependency source, not an engine workspace or upstream test target.
+exclude = ["vendor/secret-service", "vendor/default-net"]
 
 [features]
-# A double-click Windows candidate includes the modern producer contract without
-# requiring an environment variable or non-default Cargo feature.
+# Both kernel outputs use the modern Windows producer on Windows targets.
 default = ["windows-modern-producer"]
 windows-modern-producer = []
+# Software VP8/VP9 decoding through an installed libvpx. Off by default on
+# purpose: it links a host library, it is a CPU path, and only a build that
+# has been checked against one is allowed to advertise VPx. With the feature
+# off, platform/vpx_decoder.rs compiles to named refusals.
+software-vpx = []
+# Account business stays in official Dart; only FRB selects this native backing.
+official-account = ["dep:serde", "dep:serde_json", "dep:serde_repr", "dep:reqwest", "dep:url", "dep:security-framework", "dep:security-framework-sys", "dep:core-foundation", "dep:objc2", "dep:secret-service", "dep:zbus", "dep:jni"]
 
 [dependencies]
-# Wire definitions, framing and crypto stay authoritative in the shared crate;
-# pinned to the revision this engine was developed against.
-hbb_common = { git = "https://github.com/FrankHan052176/hbb_common", rev = "cd80a9990224bc0f307b0c7da05d67e65f3865d9" }
-tokio = { version = "=1.44.2", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
+# Protocol state machines and image codecs come from IronRDP, not a local RDP stack.
+ironrdp-core = "=0.2.0"
+ironrdp-pdu = "=0.9.0"
+ironrdp-connector = "=0.10.0"
+ironrdp-session = "=0.11.0"
+ironrdp-graphics = "=0.9.0"
+ironrdp-async = "=0.10.0"
+ironrdp-tokio = { version = "=0.10.0", default-features = false, features = ["reqwest-rustls-ring"] }
+ironrdp-cliprdr = "=0.7.0"
+ironrdp-displaycontrol = "=0.8.0"
+ironrdp-dvc = "=0.8.0"
+ironrdp-bulk = "=0.1.1"
+rustls-native-certs = "0.8"
+x509-cert = "0.2"
+zeroize = "1"
+ring = "0.17"
+bytes = "1"
+# Wakeable native VNC worker; protocol parsing remains in LibVNCClient.
+mio = { version = "1", features = ["net", "os-poll"] }
+# Official shared configuration/transport and client protocol types use one
+# source identity across this engine and both independently built bridges.
+hbb_common = { path = "vendor/rustdesk/libs/hbb_common" }
+base = { path = "vendor/rustdesk/libs/base" }
+# Pinned official LAN enumeration dependency, without active gateway enrichment.
+default-net = { path = "vendor/default-net", version = "=0.14.1" }
+# RDP transport security and the QUIC handshake share the existing ring provider.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio = { version = "=1.52.4", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "=0.7.15", features = ["codec", "rt"] }
+webpki-roots = "1"
+
+# The imported account helpers retain the existing compatible locked HTTP/URL
+# lines rather than downgrading the shared graph to the upstream app's lock.
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+serde_repr = { version = "=0.1.19", optional = true }
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "socks", "json", "native-tls", "rustls-tls", "rustls-tls-native-roots", "gzip", "zstd"], optional = true }
+url = { version = "=2.5.8", features = ["serde"], optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = { version = "=3.7.0", default-features = false, optional = true }
+security-framework-sys = { version = "=2.17.0", default-features = false, optional = true }
+core-foundation = { version = "=0.10.1", default-features = false, features = ["link"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"], optional = true }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+# This source-owned extension refuses Secret Service prompts rather than
+# implicitly unlocking a user's collection during an account cache operation.
+secret-service = { path = "vendor/secret-service", version = "=5.2.0", default-features = false, features = ["rt-async-io-crypto-rust"], optional = true }
+zbus = { version = "=5.13.2", default-features = false, features = ["async-io", "blocking-api"], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "=0.21.1", default-features = false, optional = true }
+
+[dev-dependencies]
+# Error helpers used by development probes, not a second Flutter binding surface.
+anyhow = "1"
+# Advance only the deadline clock in route-lifecycle regressions.
+tokio = { version = "=1.52.4", features = ["test-util"] }
 
 [build-dependencies]
 cc = "1"
+cmake = "0.1"
+# Discovery only, and only for the `software-vpx` feature: the binary this crate
+# shells out to is the system `pkg-config`, and nothing here downloads
+# anything. `build.rs` decides the link flags itself.
+pkg-config = "0.3"
 
-[[bin]]
-name = "rd-engine-windows-host"
-path = "src/bin/rd-engine-windows-host.rs"
+[[example]]
+name = "windows_host_probe"
+path = "examples/windows_host_probe.rs"
 required-features = ["windows-modern-producer"]
+
+[[example]]
+name = "host_probe"
+path = "examples/host_probe.rs"
+required-features = ["windows-modern-producer"]
+
+# The vendored libsodium release builds for aarch64-unknown-linux-ohos and carries
+# the build-only ExFAT archive-lock correction.
+[patch.crates-io]
+libsodium-sys = { path = "vendor/libsodium-sys" }
+# Upstream 0.9.0 omits the relative-mouse payload in FastPathInputEvent::encode.
+# The vendored crate contains only the missing upstream encoder delegation.
+ironrdp-pdu = { path = "vendor/ironrdp-pdu" }
+# Official RustDesk's shared WebRTC patches; keep identical in both bridges.
+webrtc = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }
+webrtc-util = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }
+webrtc-sctp = { git = "https://github.com/rustdesk-org/webrtc", rev = "80d5a20532cf58f5d4d237c437a98ceb85ee40dc" }

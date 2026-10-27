@@ -1,0 +1,676 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/rustdesk/rustdesk",
+  "revision": "092a961b629d318fe290eeafac0cd214a1e9deeb",
+  "license": {
+    "spdx": "AGPL-3.0-only",
+    "path": "upstream/LICENCE",
+    "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+    "bytes": 34523,
+    "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+    "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
+  },
+  "attribution": "RustDesk contributors. The original license and every pinned catalogue are retained; integration.patch records all changes to imported Rust source.",
+  "scope": "Official non-HarmonyOS Flutter consumer localization only: the full pinned language registry, catalogue source files and translation lookup. No UI, feature entrypoint, application runtime, media, account business or HarmonyOS Flutter product is imported or changed.",
+  "modified_date": "2026-09-24",
+  "fetch_method": "git ls-tree at the full immutable revision in the independently obtained /tmp/rd-official-windows-20260923 checkout, followed by git cat-file blob for every selected object. Original SHA-256 and Git blob SHA-1 were recomputed from the returned bytes. No working-tree source bytes were trusted.",
+  "language_registry": {
+    "registered_language_count": 52,
+    "declared_catalogue_count": 52,
+    "catalogue_source_file_count": 54,
+    "unregistered_catalogue_sources_retained": [
+      "src/lang/pt_PT.rs",
+      "src/lang/template.rs"
+    ],
+    "notes": "LANGS order and codes and the match table are unchanged. The pinned registry contains 52 languages, not 53. pt_PT.rs and template.rs are retained without registering extra languages. Camera, chat and voice strings remain in the unchanged catalogue bodies; catalogues do not enable product features."
+  },
+  "source_files": {
+    "LICENCE": {
+      "path": "upstream/LICENCE",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+      "bytes": 34523,
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52",
+      "integrated_bytes": 34523,
+      "integrated_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+    },
+    "src/lang.rs": {
+      "path": "upstream/lang.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang.rs",
+      "bytes": 9562,
+      "sha256": "17b46ff77a9827bb131fdf9fc2c95cd08e73222265edfcf9d989d922e5458462",
+      "git_blob_sha1": "27adcc1a5ee721f789c5dd0fac938e54d85c6455",
+      "integrated_bytes": 7904,
+      "integrated_sha256": "1b12de3c711c32709ff40c9eb9b785118f3b900d08073650f0064b020b43afde"
+    },
+    "src/lang/ar.rs": {
+      "path": "upstream/lang/ar.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ar.rs",
+      "bytes": 61418,
+      "sha256": "f59a2ecaf5d5b1e78798a213367c896f586d3a233c24ffacec9598c72a6a0eee",
+      "git_blob_sha1": "c8f23c045e295341578ff28780fd99cb732ce8f5",
+      "integrated_bytes": 61430,
+      "integrated_sha256": "c7a6c21de9b10fed919636540f636ca881692910443861e0135f9aa5e4433400"
+    },
+    "src/lang/az.rs": {
+      "path": "upstream/lang/az.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/az.rs",
+      "bytes": 55767,
+      "sha256": "318a2f1019ed9392e8bca368d0b751d65303c95837621ffb1cf98657781d6bd4",
+      "git_blob_sha1": "18cec31f9efcddf2f781f2d24938150ecfeb82ee",
+      "integrated_bytes": 55779,
+      "integrated_sha256": "a14ce2c04b620d5730bc52c95944f20a1afe022816d1c84cdf695b8bfd62d3e0"
+    },
+    "src/lang/be.rs": {
+      "path": "upstream/lang/be.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/be.rs",
+      "bytes": 75458,
+      "sha256": "02f57c757fb9d1502655800cc0d611552a523fbdd760d2a84d777f74dbcd87c1",
+      "git_blob_sha1": "c05ad6ef671df4d4e702ac75d0a5ef457c92acba",
+      "integrated_bytes": 75470,
+      "integrated_sha256": "1f38b4bebcc9dcf70a282b525b83f725e1bc9b2c9a6e75e6f948e159b0ed5048"
+    },
+    "src/lang/bg.rs": {
+      "path": "upstream/lang/bg.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/bg.rs",
+      "bytes": 78014,
+      "sha256": "bd05ca4ecaa904bc69b9883675a8b0b6da743cf8ca7df9c5471e95c7fef442ef",
+      "git_blob_sha1": "c12924099e41756735fa846648249df0935fb5ac",
+      "integrated_bytes": 78026,
+      "integrated_sha256": "ba2a8e0408d9360959fa6f297e3e671fd409b1e6a8bcb03edab8730699ecf705"
+    },
+    "src/lang/ca.rs": {
+      "path": "upstream/lang/ca.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ca.rs",
+      "bytes": 56091,
+      "sha256": "f8d8bfd26f818023ec174d2907789ec3d0abd1c2a58e1ce44d6f399fae30d0f2",
+      "git_blob_sha1": "13fc05b3ee0bebfaaa873056899087fe7051f54d",
+      "integrated_bytes": 56103,
+      "integrated_sha256": "63eac80ea9324278c0d6985f79889f70d65de969b4ff226232d119b1e6b4b1ee"
+    },
+    "src/lang/cn.rs": {
+      "path": "upstream/lang/cn.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/cn.rs",
+      "bytes": 49210,
+      "sha256": "d2096f2829093beaab763d2becbcc27b9fe6e01eeb4adbe059ac1014a4c5f969",
+      "git_blob_sha1": "3b8784f111e701087e1e54ddadb7965fa8bd21d7",
+      "integrated_bytes": 49222,
+      "integrated_sha256": "c90e4031772fe63e0d30a5018718465cbc46b0668f4359230706588c8ad7d6ae"
+    },
+    "src/lang/cs.rs": {
+      "path": "upstream/lang/cs.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/cs.rs",
+      "bytes": 56162,
+      "sha256": "e7b1641f07a7fee75e0a53a3b688cd391e5ffe5968d609b0b97221124119dba5",
+      "git_blob_sha1": "8330ec696371930c157741b05f3451bbb368868c",
+      "integrated_bytes": 56174,
+      "integrated_sha256": "4103f0f462ff0a190b13f47bcb5fd67bc56b00671344a300f737c18cd8e173b6"
+    },
+    "src/lang/da.rs": {
+      "path": "upstream/lang/da.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/da.rs",
+      "bytes": 53800,
+      "sha256": "5749aafbaaa2fb5db6580f74cdf43d76ff1427cc586d58f21b99025c65c47529",
+      "git_blob_sha1": "1841a1b9f7171ccf81cc22a1dceb71dbd1015f0d",
+      "integrated_bytes": 53812,
+      "integrated_sha256": "3fca84c1820eb0b6d3b23c94b1f0acf582d7eb3ede1e512cb8e3ce2b4191efc1"
+    },
+    "src/lang/de.rs": {
+      "path": "upstream/lang/de.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/de.rs",
+      "bytes": 57777,
+      "sha256": "063a4de0dd0c6254bcacd481ae2dd4f67e8abfeeca79e99a6f5869f3d0ca0e66",
+      "git_blob_sha1": "e9893c8ebafc41ffa5a6f1da5e8d2d193a59758e",
+      "integrated_bytes": 57789,
+      "integrated_sha256": "5160be404fa072e651f1b6c1b10f15a5c70db7bb35f4d018b3e467608eb66841"
+    },
+    "src/lang/el.rs": {
+      "path": "upstream/lang/el.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/el.rs",
+      "bytes": 83064,
+      "sha256": "3d94e7429a37c57a3fb41554c5e39b007dc55538790d047389f824c25dae23f5",
+      "git_blob_sha1": "8ace9d0c6f38831db5fc02b486446a5f282313ce",
+      "integrated_bytes": 83076,
+      "integrated_sha256": "4d89c1393051fb4dcfd60dcfdfc837284e6be18a08145cc4ed54f4cf2f5a0b31"
+    },
+    "src/lang/en.rs": {
+      "path": "upstream/lang/en.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/en.rs",
+      "bytes": 24755,
+      "sha256": "fe140fde97e459c86c301b58a79d085133e9bbb369e5673aab27a096f6a2d284",
+      "git_blob_sha1": "ca61f35a15a0180d494ce0a3d363492269c61aa1",
+      "integrated_bytes": 24767,
+      "integrated_sha256": "3b9cd1658fcc61be3d86e25ce2b2dcda08a50ad26fe9f6f796cc1c5f23ccc119"
+    },
+    "src/lang/eo.rs": {
+      "path": "upstream/lang/eo.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/eo.rs",
+      "bytes": 53174,
+      "sha256": "82ff708e59ac5db4e0ff889acfaa98329579fde0a98f555c0d781d0fa1833b36",
+      "git_blob_sha1": "5946f22c99ceee96da6abff254858a07a52b8b34",
+      "integrated_bytes": 53186,
+      "integrated_sha256": "1698d05571cc610ef6039d44a3713a7f745410449c7a6dcc89358f39ec1f7b7e"
+    },
+    "src/lang/es.rs": {
+      "path": "upstream/lang/es.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/es.rs",
+      "bytes": 55956,
+      "sha256": "db2009456654f3736e78b4a1046bb5bd659f2720d59d200212e37023bd59e1ee",
+      "git_blob_sha1": "5b3a0ab6127c4ce78b3c333a4a9675bb0264f1bf",
+      "integrated_bytes": 55968,
+      "integrated_sha256": "5dee8c33eed2ad8f9b0c4ea2433d6b32b76ddfaeca3fb6954f639c6516846b4e"
+    },
+    "src/lang/et.rs": {
+      "path": "upstream/lang/et.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/et.rs",
+      "bytes": 52477,
+      "sha256": "db2f07ee7d22b45aec72cfc64df1f534794ff49eb03f97b6ec2aa35e27ae9d6b",
+      "git_blob_sha1": "5cf614f0f9f13aa77f28d687d81a61fd0d4d8c33",
+      "integrated_bytes": 52489,
+      "integrated_sha256": "69a617eced9a5b1533ec93f587f66056ac04391f922252d1315611beb2d2bc50"
+    },
+    "src/lang/eu.rs": {
+      "path": "upstream/lang/eu.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/eu.rs",
+      "bytes": 54469,
+      "sha256": "518f5633787472431c37446d0969dab7625ed578568cb11e2ab69c74f9be4948",
+      "git_blob_sha1": "1d1900e4fe66d7745b84c6c4189135cb085799c7",
+      "integrated_bytes": 54481,
+      "integrated_sha256": "60c48d6213c005c40de299ef09b1a993249bc93cc4cdfd374f7922dd2adf9295"
+    },
+    "src/lang/fa.rs": {
+      "path": "upstream/lang/fa.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/fa.rs",
+      "bytes": 68727,
+      "sha256": "2ffe842c27c2c10e4e4d568a9b9b2d55f42b389c92d33bc55a39f86079484d36",
+      "git_blob_sha1": "d37b02750c6d46f707d8000e859e09898d4ce9b4",
+      "integrated_bytes": 68739,
+      "integrated_sha256": "1803d605365dcde510265808d5f8ebff967d5e2d2e270972008cee7f08b4dda2"
+    },
+    "src/lang/fi.rs": {
+      "path": "upstream/lang/fi.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/fi.rs",
+      "bytes": 50895,
+      "sha256": "a929c22e75179b2fb236a1deff265166d27846ff3fffbc57c9a1083cc997cfe0",
+      "git_blob_sha1": "0b7ec887372ae565fb7396970e2ff4a90d4f5c68",
+      "integrated_bytes": 50907,
+      "integrated_sha256": "58f0850787ddb01e44a1dbc19a8d338e423a0abe2b2b909ba201af9378bbd57f"
+    },
+    "src/lang/fr.rs": {
+      "path": "upstream/lang/fr.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/fr.rs",
+      "bytes": 59895,
+      "sha256": "2e168911bca81a4da83ca855789f5f8716385e3b2d95d1923bbde6714009ff19",
+      "git_blob_sha1": "9466273d08b702d9ffada1a0a5a085d0fb54a335",
+      "integrated_bytes": 59907,
+      "integrated_sha256": "a8c1963bc0545e4965700934b7781f127ff071d6729cd210175276e71ac7fff0"
+    },
+    "src/lang/ge.rs": {
+      "path": "upstream/lang/ge.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ge.rs",
+      "bytes": 98335,
+      "sha256": "c4b0d621a9c1b4262de8fbca3fe0319dcefb4624bedc265758773728a74ea798",
+      "git_blob_sha1": "a624b23bdfbe1a265b06888ff9c2a5cdf1aff303",
+      "integrated_bytes": 98347,
+      "integrated_sha256": "d3a8b44a58d356f0121dad723903c241471e63b494b657c1d0f35055a2a70165"
+    },
+    "src/lang/gl.rs": {
+      "path": "upstream/lang/gl.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/gl.rs",
+      "bytes": 56716,
+      "sha256": "06b4202959decf91697c05bb743447be4c765691b7e44f47bd2696e20943655e",
+      "git_blob_sha1": "0401ba645bceda730c7d357d826e5405b45f765b",
+      "integrated_bytes": 56728,
+      "integrated_sha256": "0328a031b8f5f9d782d0db035965e38fbad392876fca2dedc76d456682057974"
+    },
+    "src/lang/gu.rs": {
+      "path": "upstream/lang/gu.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/gu.rs",
+      "bytes": 73391,
+      "sha256": "ee0b39d717a9937328fd912e4c84981248fb2fa16aa37e41485bb46638576c3f",
+      "git_blob_sha1": "07067c3edb14ccf8a7ba919298e1df7e64109b16",
+      "integrated_bytes": 73403,
+      "integrated_sha256": "6770f7ac0dd781d9775e13005feb2987c9d394f50f5e8233f772a99456675637"
+    },
+    "src/lang/he.rs": {
+      "path": "upstream/lang/he.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/he.rs",
+      "bytes": 59477,
+      "sha256": "39aac6e8169cb81426b1d02461dd80d5569eab83314475957c76a0c548f49ee4",
+      "git_blob_sha1": "3a9ddfda2783927bcf6c6088faf16effe72953e3",
+      "integrated_bytes": 59489,
+      "integrated_sha256": "bd2a61060e597418abbaf16afe8cedfeb4d928757003f3e142a169dd2539242e"
+    },
+    "src/lang/hi.rs": {
+      "path": "upstream/lang/hi.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/hi.rs",
+      "bytes": 77034,
+      "sha256": "c7bd8c1a409e377f2584e1b3b4fde0fed312968e6ea2af3ce658e2a4a7bcf6ae",
+      "git_blob_sha1": "87a5d8b9d48864482a50f238aa126c695e9c540b",
+      "integrated_bytes": 77046,
+      "integrated_sha256": "2431ed2820959212449f94906d6b98f5f2376e9842fb99f21bbba6756265fae6"
+    },
+    "src/lang/hr.rs": {
+      "path": "upstream/lang/hr.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/hr.rs",
+      "bytes": 53846,
+      "sha256": "2bd05f541b3c3f5f6b92a3ad43a592047ba2d2ac1bca871656935a281bf703b3",
+      "git_blob_sha1": "617f0f47baa3f9513603fdbe6fb7def509385880",
+      "integrated_bytes": 53858,
+      "integrated_sha256": "d66684a8336128487794cdc8cd1bdf2e587aecdbab6294fa29010566adfe6e22"
+    },
+    "src/lang/hu.rs": {
+      "path": "upstream/lang/hu.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/hu.rs",
+      "bytes": 58532,
+      "sha256": "a45bdf0765225fbf47ed3dd408ce15f3ce18a7d190a910f4d061ffbe57a5c1b9",
+      "git_blob_sha1": "62baf1a32bcc314dd42491a5fb183f87041120aa",
+      "integrated_bytes": 58544,
+      "integrated_sha256": "a9eb023878e742190e4008c37aefcc6ca33bd610f9961704a9de58cc6d61080d"
+    },
+    "src/lang/id.rs": {
+      "path": "upstream/lang/id.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/id.rs",
+      "bytes": 53281,
+      "sha256": "ea59248952d5fc3a338020f0229d14576d8310961484b9bcdf589254f9fe767f",
+      "git_blob_sha1": "e170a8a768587dbeb1d35c5766bda68969ba929c",
+      "integrated_bytes": 53293,
+      "integrated_sha256": "5ae0e2a24b3d3d868b8133a1b83fb7c0a6b94f2cc745a9e4bdaaf66d005ed5eb"
+    },
+    "src/lang/it.rs": {
+      "path": "upstream/lang/it.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/it.rs",
+      "bytes": 55592,
+      "sha256": "c346da1528bf579e7d8d840d5e9b13002b305cb8f0d88d806f78cdde264d6969",
+      "git_blob_sha1": "4e150a050a3413d54e562311f339d2d03d112a80",
+      "integrated_bytes": 55604,
+      "integrated_sha256": "6f5fd40c461ed03b3755fa3a646aac20d78d05b7727fd04d16f30f042056ebe6"
+    },
+    "src/lang/ja.rs": {
+      "path": "upstream/lang/ja.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ja.rs",
+      "bytes": 63967,
+      "sha256": "732e526b5dcaf8ced021550388625781528a503029e95eb6edc7d62a849ddb33",
+      "git_blob_sha1": "02f0096c5d4dd997a0a2884bc08545efeba09627",
+      "integrated_bytes": 63979,
+      "integrated_sha256": "aad6910dc43dc897730532c7d4a44a3f886c02bbbb618d50b79d41810a163b78"
+    },
+    "src/lang/ko.rs": {
+      "path": "upstream/lang/ko.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ko.rs",
+      "bytes": 57546,
+      "sha256": "0ef9d7c88e73873d85de4565f545edc7056c6364b5f82bed3bac132f18fa8ec4",
+      "git_blob_sha1": "8318f77df3d18ef5bd89606dfc06808fea185770",
+      "integrated_bytes": 57558,
+      "integrated_sha256": "18c56432505bfaabfea702432088c404ca1cc3a2cfcf0c6cfd8939bb1dacf18a"
+    },
+    "src/lang/kz.rs": {
+      "path": "upstream/lang/kz.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/kz.rs",
+      "bytes": 73773,
+      "sha256": "024e01ad3666aa7fafaea8407ba83bd45e3db7781c3a665889c0924f68597e4f",
+      "git_blob_sha1": "999aa764c261f389913f55ac9e2f82828e8690a7",
+      "integrated_bytes": 73785,
+      "integrated_sha256": "e96266e93c28a40fc2239bccfaefd6f5b239a856ef8894c05bd2e8aed09ab7c2"
+    },
+    "src/lang/lt.rs": {
+      "path": "upstream/lang/lt.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/lt.rs",
+      "bytes": 55453,
+      "sha256": "63cd2a7923e5929c2051ac9686af83329e9edc4dbd69d8505268a8c31cae895f",
+      "git_blob_sha1": "dec4ce4de91a0d95736e7fc6b65bb13c02570f92",
+      "integrated_bytes": 55465,
+      "integrated_sha256": "f6ff025785e03a731b6e44006029f937dd7b95a8f18f6f766677f50862f32940"
+    },
+    "src/lang/lv.rs": {
+      "path": "upstream/lang/lv.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/lv.rs",
+      "bytes": 55906,
+      "sha256": "84320e9921f7ee2fd5269aa7849a4629ab978b14b05ed00e8b5daf937c150be5",
+      "git_blob_sha1": "63a48bf83da1e032ea907bf7c051b5bde8c81a2c",
+      "integrated_bytes": 55918,
+      "integrated_sha256": "fce0ba5d8d35694eb41e54b7b0fe628141f5986e3ee675e3a76cc5060cd4ef96"
+    },
+    "src/lang/ml.rs": {
+      "path": "upstream/lang/ml.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ml.rs",
+      "bytes": 84025,
+      "sha256": "0e66afead251ae3ef21ebe5699bcb6362f7f2470e1e3d6d0cda84d60823f7e67",
+      "git_blob_sha1": "3b03063f1363479e4afe937d31f751891b000441",
+      "integrated_bytes": 84037,
+      "integrated_sha256": "a4efccffc8d6656d0f7b20032274e319870b3fa9c61e8f1b8faecf7e02cda0bf"
+    },
+    "src/lang/nb.rs": {
+      "path": "upstream/lang/nb.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/nb.rs",
+      "bytes": 52927,
+      "sha256": "8f93c85bd21eb659720a262cc5307eeeae0e8051fd9aed61ec272a28dc93e019",
+      "git_blob_sha1": "defd24f6f92eb964b28bb153c5346902d91ce43b",
+      "integrated_bytes": 52939,
+      "integrated_sha256": "6e40ced413f70e785ed27d0be78fa33dcc32cdacf9c47aab92002c6cac7fa874"
+    },
+    "src/lang/nl.rs": {
+      "path": "upstream/lang/nl.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/nl.rs",
+      "bytes": 54679,
+      "sha256": "4abbb2b83c58ead1360bfdd67ae8b1bce91169ee28eb77f70bba176488b8e597",
+      "git_blob_sha1": "cf0153fc9572e7a1b93e7b100170447351e40be1",
+      "integrated_bytes": 54691,
+      "integrated_sha256": "6d9f065603e0143bb7f88c629101d5fdf9e7ffc75d76c676c012bb74b37c7184"
+    },
+    "src/lang/pl.rs": {
+      "path": "upstream/lang/pl.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/pl.rs",
+      "bytes": 55700,
+      "sha256": "ba11f66208b195bf838cb8ed1207258d8b2413f4e23fcc47d02cc76182534b6b",
+      "git_blob_sha1": "7e25b909e4d4564886bd7beb90523c2a9fbb45a1",
+      "integrated_bytes": 55712,
+      "integrated_sha256": "b31ef81a9bb7df3de1cc6c60640e65cb72a67f6b2081f2241bfeb2ec462e1ccf"
+    },
+    "src/lang/pt_PT.rs": {
+      "path": "upstream/lang/pt_PT.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/pt_PT.rs",
+      "bytes": 56013,
+      "sha256": "c5b3afbced988f472249afa0a7a39cf57e2cb1cb5d314e6950748e9928b449b9",
+      "git_blob_sha1": "ad9e90fc9d1e9931d4ae5ecd58484bf95f700117",
+      "integrated_bytes": 56025,
+      "integrated_sha256": "afe3867e2da315945b4df07e14a69b37340b43b5e3237744cc6f3eee05a5381c"
+    },
+    "src/lang/ptbr.rs": {
+      "path": "upstream/lang/ptbr.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ptbr.rs",
+      "bytes": 55483,
+      "sha256": "74923fd778cb115b75c81e887f1eeee5d94cbb3ea41745df1bd05bc35bcb5930",
+      "git_blob_sha1": "3750588e94ccdd9a94be513efddf2e3577413524",
+      "integrated_bytes": 55495,
+      "integrated_sha256": "0ae3ac9f8f198ca27977bb341ee5a6dfd8bf5bd1f180f710a34ac9ba5fc2b91a"
+    },
+    "src/lang/ro.rs": {
+      "path": "upstream/lang/ro.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ro.rs",
+      "bytes": 56549,
+      "sha256": "41985e06a3d55e381b2ddafd0078eb343251e8416ac4f19c39db99608c030912",
+      "git_blob_sha1": "35bfeb70309449a67df59e14ce365f6794614b9a",
+      "integrated_bytes": 56561,
+      "integrated_sha256": "746a8e927baa25fa833adb87cba32a6d6cdaf556f5fa1d3c7cbab8412766b08d"
+    },
+    "src/lang/ru.rs": {
+      "path": "upstream/lang/ru.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ru.rs",
+      "bytes": 76984,
+      "sha256": "9b80412537bffab473f31c2bc80644dc7aaf737a13a4cc34e9ab80c46ba124e9",
+      "git_blob_sha1": "958c61eb6a7e4a73eee19916f3849d03bcf65f7e",
+      "integrated_bytes": 76996,
+      "integrated_sha256": "1bf4db8a3c0ee5ce429a8e20c80911cb5ce7968bc3cacabd2966bbb39794ed95"
+    },
+    "src/lang/sc.rs": {
+      "path": "upstream/lang/sc.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sc.rs",
+      "bytes": 57923,
+      "sha256": "b0398f821d21896befea221da5ad6295f0bd1665e5e2b4c4bd83e9465cc305ad",
+      "git_blob_sha1": "66a9af3ee1e56c0ebd83d8188674d3fdb0f6a53b",
+      "integrated_bytes": 57935,
+      "integrated_sha256": "ca3f1b27f783bcf1d69b7fd575103bbde205cdda47f853f0605544566fa348b0"
+    },
+    "src/lang/sk.rs": {
+      "path": "upstream/lang/sk.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sk.rs",
+      "bytes": 56079,
+      "sha256": "6c53e9937fb5761a116f6c6eefe120aaeeec7f714fd4ad3291a9e901974fce3f",
+      "git_blob_sha1": "7a98820cb9b81edc3389af90c15ffd63b22d52e0",
+      "integrated_bytes": 56091,
+      "integrated_sha256": "6ab18b73198dd2a9d0ffb7888dd8a62fe802e9bffb36679d3ca9a10252fcbcd3"
+    },
+    "src/lang/sl.rs": {
+      "path": "upstream/lang/sl.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sl.rs",
+      "bytes": 53007,
+      "sha256": "4bf273e1d7829023ce37cd895385b754ce2d6a78faa58f68e635d25efe5f3c9a",
+      "git_blob_sha1": "d158c0ec6e29b610d17c90b31100b22c3aa2f542",
+      "integrated_bytes": 53019,
+      "integrated_sha256": "f4093e60427b768018ceeeae6f508399e7eb69e339602e375b9b5f30f9e0f663"
+    },
+    "src/lang/sq.rs": {
+      "path": "upstream/lang/sq.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sq.rs",
+      "bytes": 56812,
+      "sha256": "0d23814bb63a7a045e68af9933d150a7c4213d3e7e6fa3e79f9eb2686bf0db92",
+      "git_blob_sha1": "d5df35fa1e65b6a38b381f3e5a27b0ff97406829",
+      "integrated_bytes": 56824,
+      "integrated_sha256": "66f4e6b71ad27ea8b8d6aa382a65beb6a8cc607bf238d83c6fd8a00b060b8b85"
+    },
+    "src/lang/sr.rs": {
+      "path": "upstream/lang/sr.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sr.rs",
+      "bytes": 54189,
+      "sha256": "c3eba0f00ff813da6cc46700f475d92390409949330ffe4bbd88808c4d51a8a4",
+      "git_blob_sha1": "4f14c092d5bd51da0695f93d9f4d05d419e5bf04",
+      "integrated_bytes": 54201,
+      "integrated_sha256": "49dcc6a8033a9f7df7658d80a531cfefc8b7f403c9759508a1fa7914ea9de75e"
+    },
+    "src/lang/sv.rs": {
+      "path": "upstream/lang/sv.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/sv.rs",
+      "bytes": 52581,
+      "sha256": "72a01007348a8a822ab11bc9a3bf630287e7ed0ca27be7121557447aab80410c",
+      "git_blob_sha1": "8ee8390158f3e11ec0d184c3e26b15afe0c2f76a",
+      "integrated_bytes": 52593,
+      "integrated_sha256": "4b84e00049d7a2475ed2ff4636bdec6e6224205bccf7b3ba155172a686bb3311"
+    },
+    "src/lang/ta.rs": {
+      "path": "upstream/lang/ta.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ta.rs",
+      "bytes": 78970,
+      "sha256": "035076a3c4e6417cc2d6b20eb31ae22d3241e377f3b0f7c70b58496e09ae1557",
+      "git_blob_sha1": "76b49d6591d9a88ab0e6defc0914b8e3d2dead88",
+      "integrated_bytes": 78982,
+      "integrated_sha256": "9f6ffc67db3089cf4b6ed09f788f9460daee0285c8c50973ec08e363dd49e203"
+    },
+    "src/lang/template.rs": {
+      "path": "upstream/lang/template.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/template.rs",
+      "bytes": 28477,
+      "sha256": "7a433f5bff3cbe11c253a4e5261c56683c6855b947de59e4c34ed74aaf0d7aa2",
+      "git_blob_sha1": "968e43b027d2c4e4c2bb22cff16b6c3b302d7d84",
+      "integrated_bytes": 28489,
+      "integrated_sha256": "956fc6b68a349f21ca9d9f356d6654ef04dfee52ad4d947099bfa473a094137f"
+    },
+    "src/lang/th.rs": {
+      "path": "upstream/lang/th.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/th.rs",
+      "bytes": 92763,
+      "sha256": "5c93d97281d9b8adbf68207accb97fabe653116a18cb0bfd88d06d8f2f66f2c1",
+      "git_blob_sha1": "a3c7ae2ec6110944928208b3c83e4d3e644d35f6",
+      "integrated_bytes": 92775,
+      "integrated_sha256": "6844382ba52639527ebedbbb7b8b8a5f0b369532968b788725f7c7459633064c"
+    },
+    "src/lang/tr.rs": {
+      "path": "upstream/lang/tr.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/tr.rs",
+      "bytes": 54663,
+      "sha256": "c1673591b7560a502923a3b1db4b856bbcbc324d62bd1c095865295a3d685a56",
+      "git_blob_sha1": "3c088282e29d444b540e81a2f6026711515973f4",
+      "integrated_bytes": 54675,
+      "integrated_sha256": "857b55d5f1994ac38f9cb3a14911c972504f86e80237818cbbf4b3309bc3e546"
+    },
+    "src/lang/tw.rs": {
+      "path": "upstream/lang/tw.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/tw.rs",
+      "bytes": 50001,
+      "sha256": "10ad054e3065ee69bf8ebfcf99c1c2dfc8d32c43c3f1f58f7aba64374ec7ca01",
+      "git_blob_sha1": "cc64309b4b0d935cd74ac63e0720cddd42b7327c",
+      "integrated_bytes": 50013,
+      "integrated_sha256": "4d40267963d7aed2280c1aa63ad30b7e24c7f2b406ba98d35c4dcc67bd15758e"
+    },
+    "src/lang/uk.rs": {
+      "path": "upstream/lang/uk.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/uk.rs",
+      "bytes": 76805,
+      "sha256": "a6e600d1d85e933507bc70b2225c3b468a06a74c6eae996fac18ed601e161d5e",
+      "git_blob_sha1": "b004d20998af7bff9b0de434fda3a26bf05d4e6f",
+      "integrated_bytes": 76817,
+      "integrated_sha256": "57b3a417ddc134e360f5a91001bc152fc5176f45392dbc519c97483c6dc092e1"
+    },
+    "src/lang/ur.rs": {
+      "path": "upstream/lang/ur.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/ur.rs",
+      "bytes": 66303,
+      "sha256": "e17ffb67cb5bace448a7ba135bb4f4c36d8513915272662de62e59fba8f906ee",
+      "git_blob_sha1": "7e6ca7fc7e71f491ec8bebe1a97d69d891cb1238",
+      "integrated_bytes": 66315,
+      "integrated_sha256": "127b29385121f6e82a4520fabb537f93493e96e142adc6e3f8f473308a244784"
+    },
+    "src/lang/vi.rs": {
+      "path": "upstream/lang/vi.rs",
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/lang/vi.rs",
+      "bytes": 52559,
+      "sha256": "123d637fbe87ac2f0f9ec9287682b1d2d3d4e27c7ffa677c2c86c6daa9751815",
+      "git_blob_sha1": "e078a0b2778428634b2ba0e10f933625b94b7bb5",
+      "integrated_bytes": 52571,
+      "integrated_sha256": "7a074e77bd4a346e800565e5b29f102409154164da74debdcb5dded8bb2a24c5"
+    }
+  },
+  "source_excerpts": {
+    "src/ui_interface.rs::get_langs": {
+      "source_url": "https://github.com/rustdesk/rustdesk/blob/092a961b629d318fe290eeafac0cd214a1e9deeb/src/ui_interface.rs#L902-L913",
+      "source_git_blob_sha1": "b1eeefde2e6a1fa76719766ff4ea8594b90aa61f",
+      "original_lines": [
+        902,
+        913
+      ],
+      "original_sha256": "3ba44e31fd0ca69fc7737544444cba060ef04f6876c4ce142dd8c777d9ca3052",
+      "original_source": "#[inline]\npub fn get_langs() -> String {\n    use serde_json::json;\n    let hide_cjk = crate::lang::cjk_ui_unavailable();\n    let mut x: Vec<(&str, String)> = crate::lang::LANGS\n        .iter()\n        .filter(|a| !hide_cjk || !crate::lang::is_cjk_lang(a.0))\n        .map(|a| (a.0, format!(\"{} ({})\", a.1, a.0)))\n        .collect();\n    x.sort_by(|a, b| a.0.cmp(b.0));\n    json!(x).to_string()\n}\n",
+      "integrated_path": "mod.rs",
+      "integrated_symbol": "langs",
+      "adaptation": "Preserve pinned filter, display-name format and language-code ordering. Return pairs without serialization; the existing FRB main_get_langs Result<String> uses fallible serde_json serialization. Module paths and local variable names only are adapted."
+    }
+  },
+  "local_files": {
+    "mod.rs": {
+      "bytes": 642,
+      "sha256": "40c7fca86615edfbe95a96bf0c3e47fd73ace98ec8b36f1c5dfc289ac3c4ce16",
+      "purpose": "Local module wiring and the explicitly recorded pinned get_langs excerpt adaptation; mounts upstream/lang.rs, reexports both translation entrypoints and returns the official filtered, formatted, sorted language list."
+    }
+  },
+  "integration": {
+    "patch": "integration.patch",
+    "bytes": 18365,
+    "sha256": "a34eebae75038e93429ead8d7a40ba72010143dcae5ba1de914aa750ab8dc3b0",
+    "patch_root": "native/frb/src/localization",
+    "path_mapping": "src/lang.rs -> upstream/lang.rs; src/lang/*.rs -> upstream/lang/*.rs; LICENCE -> upstream/LICENCE.",
+    "original_hashes": "source_files.bytes, source_files.sha256 and source_files.git_blob_sha1 describe the full original Git blob. integrated_bytes and integrated_sha256 describe the checked-in adapted bytes at path. Reverse-applying the patch at patch_root reproduces every original blob, including the omitted upstream test module. mod.rs is local wiring, not an upstream file.",
+    "reverse_check_from_repository_root": "git apply --check --reverse --directory=native/frb/src/localization native/frb/src/localization/integration.patch",
+    "adaptations": [
+      {
+        "id": "I18N1",
+        "files": [
+          "upstream/lang/*.rs"
+        ],
+        "change": "Qualify the existing lazy_static::lazy_static! macro through hbb_common::lazy_static::lazy_static!.",
+        "reason": "The existing hbb_common dependency reexports lazy_static. No new Cargo dependency or crate-level compatibility alias is needed. All other catalogue bytes, including BOMs and original strings, are unchanged."
+      },
+      {
+        "id": "I18N2",
+        "files": [
+          "upstream/lang.rs"
+        ],
+        "change": "Read the existing crate::client_compat::APP_NAME constant in place of crate::is_rustdesk() and crate::get_app_name(), using the borrowed static name directly.",
+        "reason": "The FRB owner already defines the product name as RustDesk. Preserve the exact official equality guard, replacement exclusions, and protection against duplicating an already-substituted brand; do not invent application APIs or allocate an owned brand name."
+      },
+      {
+        "id": "I18N3",
+        "files": [
+          "upstream/lang.rs"
+        ],
+        "change": "Make cjk_ui_unavailable depend on Linux/aarch64 without the upstream feature=\"flutter\" clause.",
+        "reason": "This crate is intrinsically the Flutter bridge and declares no optional flutter feature. Keep the pinned Flutter target restriction effective without introducing a meaningless Cargo feature. Windows and other target behavior is unchanged."
+      },
+      {
+        "id": "I18N4",
+        "files": [
+          "upstream/lang.rs"
+        ],
+        "change": "Remove the unused translate(String) entrypoint which queries sys_locale; retain translate_locale(String, &str).",
+        "reason": "The official consumer already supplies its locale to the bridge contract. No caller requires native system-locale discovery, so no sys-locale dependency is added."
+      },
+      {
+        "id": "I18N5",
+        "files": [
+          "upstream/lang.rs"
+        ],
+        "change": "Omit the upstream mod test block from the compiled import; record its exact removal in integration.patch.",
+        "reason": "Do not transplant or run the original project test suite. Reverse patch verification still recovers the complete original blob."
+      },
+      {
+        "id": "I18N6",
+        "files": [
+          "upstream/lang.rs"
+        ],
+        "change": "Extract translate_locale_with_preference(name, locale, saved_lang) around the existing resolver and translation body; translate_locale still reads LocalConfig::get_option(\"lang\") and delegates to it.",
+        "reason": "The Windows connection-manager process must translate using the authenticated main process's read-only language projection instead of its own LocalConfig. The explicit-preference entry does not access LocalConfig; both entrypoints reuse the same resolver, match table, fallback, placeholder and branding rules without a new dictionary or dependency."
+      }
+    ]
+  },
+  "interface": {
+    "mount": "mod localization;",
+    "signatures": [
+      "pub fn langs() -> Vec<(&'static str, String)>",
+      "pub fn translate_locale(name: String, locale: &str) -> String",
+      "pub fn translate_locale_with_preference(name: String, locale: &str, saved_lang: &str) -> String"
+    ],
+    "official_consumer_calls": [
+      "serde_json::to_string(&crate::localization::langs())",
+      "crate::localization::translate_locale(name, &locale)",
+      "crate::localization::translate_locale_with_preference(name, &locale, &saved_lang)"
+    ],
+    "dependencies": {
+      "hbb_common": "Existing native/frb dependency; config::LocalConfig, regex::Regex and lazy_static::lazy_static! reexports are used.",
+      "crate::client_compat::APP_NAME": "Existing pub(crate) static product-name constant; currently RustDesk."
+    },
+    "new_cargo_dependencies": []
+  },
+  "preserved_lookup_behavior": [
+    "translate_locale reads LocalConfig::get_option(\"lang\") before delegating to translate_locale_with_preference. The explicit-preference entry uses its caller-supplied saved_lang without reading LocalConfig. Both preserve saved language precedence over the supplied locale and the original resolver's lowercasing.",
+    "The original locale lowering, Chinese zh-cn/zh-tw selection, hyphen/underscore splitting, language aliases and target-specific CJK fallback are retained.",
+    "Lookup uses the chosen catalogue; missing or empty translations fall back to a nonempty English entry, then the original key. Unknown language codes use English. No translations are synthesized.",
+    "The original first-braced-value extraction and {} substitution are retained, including original-text fallback.",
+    "The official RustDesk brand replacement guard, upgrade_rustdesk_server_pro and powered_by_me exclusions, and already-substituted-name collision protection are retained."
+  ],
+  "verification": {
+    "kind": "Source provenance and static key inspection only; no compilation, tests, translation execution or client scenario.",
+    "reverse_patch_check": "Passed the recorded git apply --check --reverse command.",
+    "exact_restored_git_blobs": 56,
+    "adapted_imported_files": 55,
+    "byte_verification": "Read the written imported bytes, strictly reverse-applied every recorded unified-diff hunk in memory, compared all 56 restored files to the selected Git blob bytes, and recomputed their Git blob SHA-1 values.",
+    "preference_entry_source_review": "Static source comparison confirms the resolver, registry and complete match/placeholder/fallback/branding body are unchanged. The original entry reads LocalConfig once and delegates; the explicit-preference entry and retained translation body have no LocalConfig access. No translation execution was performed.",
+    "key_evidence": {
+      "src/lang/en.rs": {
+        "desk_tip": 4,
+        "outgoing_only_desk_tip": 205,
+        "ID": "No entry: official original-key fallback.",
+        "Password": "No entry: official original-key fallback."
+      },
+      "src/lang/cn.rs": {
+        "ID": 500,
+        "Password": 7,
+        "desk_tip": 6,
+        "outgoing_only_desk_tip": 565
+      },
+      "src/lang/tw.rs": {
+        "ID": 500,
+        "Password": 7,
+        "desk_tip": 6,
+        "outgoing_only_desk_tip": 565
+      }
+    },
+    "not_run": [
+      "formatters",
+      "linters",
+      "dependency resolution or installation",
+      "builds or link checks",
+      "tests",
+      "client application",
+      "device or network scenarios"
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+--- a/libsodium/build-aux/ltmain.sh
++++ b/libsodium/build-aux/ltmain.sh
+@@ -5090,15 +5090,15 @@
+     f_ex_an_ar_oldlib=$1
+     if test yes = "$lock_old_archive_extraction"; then
+       lockfile=$f_ex_an_ar_oldlib.lock
+-      until $opt_dry_run || ln "$progpath" "$lockfile" 2>/dev/null; do
++      until $opt_dry_run || mkdir "$lockfile" 2>/dev/null; do
+ 	func_echo "Waiting for $lockfile to be removed"
+ 	sleep 2
+       done
+     fi
+     func_show_eval "(cd \$f_ex_an_ar_dir && $AR x \"\$f_ex_an_ar_oldlib\")" \
+-		   'stat=$?; rm -f "$lockfile"; exit $stat'
++		   'stat=$?; if test yes = "$lock_old_archive_extraction"; then rmdir "$lockfile"; fi; exit $stat'
+     if test yes = "$lock_old_archive_extraction"; then
+-      $opt_dry_run || rm -f "$lockfile"
++      $opt_dry_run || rmdir "$lockfile"
+     fi
+     if ($AR t "$f_ex_an_ar_oldlib" | sort | sort -uc >/dev/null 2>&1); then
+      :
+@@ -5187,7 +5187,8 @@
+         func_extract_an_archive "$my_xdir" "$my_xabs"
+ 	;;
+       esac
+-      my_oldobjs="$my_oldobjs "`find $my_xdir -name \*.$objext -print -o -name \*.lo -print | sort | $NL2SP`
++      # AppleDouble sidecars on non-native filesystems are metadata, not objects.
++      my_oldobjs="$my_oldobjs "`find $my_xdir -name '._*' -prune -o -name \*.$objext -print -o -name \*.lo -print | sort | $NL2SP`
+     done
+ 
+     func_extract_archives_result=$my_oldobjs

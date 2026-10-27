@@ -1,8 +1,9 @@
 //! One regression boundary: a correctly signed but wrong host must not trigger
 //! the original compatibility reply and subsequently leak a password response.
+use base::message_proto::{Hash, Message, SignedId};
 use hbb_common::{
-    message_proto::{Hash, IdPk, Message, SignedId},
     protobuf::Message as _,
+    rendezvous_proto::IdPk,
     sodiumoxide::crypto::{box_, sign},
     tcp::FramedStream,
 };

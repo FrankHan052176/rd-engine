@@ -10,11 +10,12 @@ mod session;
 
 use authentication::*;
 use handshake::*;
+use base::message_proto::{
+    Hash, LoginRequest, LoginResponse, Message, PeerInfo, PublicKey, SignedId, message,
+};
 use hbb_common::{
-    message_proto::{
-        Hash, IdPk, LoginRequest, LoginResponse, Message, PeerInfo, PublicKey, SignedId, message,
-    },
     protobuf::Message as _,
+    rendezvous_proto::IdPk,
     sodiumoxide::{
         crypto::{box_, secretbox, sign},
         randombytes,
@@ -274,7 +275,7 @@ async fn new_viewer_authenticates_against_signed_hbb_tcp_fixture() {
     let mut parts = viewer.into_authenticated_parts().unwrap();
     assert_eq!(parts.context.permissions, expected);
     assert!(parts.context.permission_reports.is_empty());
-    let mut misc = hbb_common::message_proto::Misc::new();
+    let mut misc = base::message_proto::Misc::new();
     misc.set_close_reason("".into());
     let mut close = Message::new();
     close.set_misc(misc);
@@ -543,7 +544,7 @@ async fn encrypted_new_host_authenticates_hbb_viewer_fixture_with_wrong_retry() 
         recv(&mut wire).await.union,
         Some(message::Union::TestDelay(_))
     ));
-    let mut close = hbb_common::message_proto::Misc::new();
+    let mut close = base::message_proto::Misc::new();
     close.set_close_reason("".into());
     msg.set_misc(close);
     wire.send(&msg).await.unwrap();
@@ -589,7 +590,7 @@ async fn viewer_rejects_media_instead_of_treating_it_as_login_success() {
 
 #[tokio::test]
 async fn original_pre_auth_controls_and_hash_first_compat_survive_active_handoff() {
-    use hbb_common::message_proto::{
+    use base::message_proto::{
         MessageBox, Misc, PermissionInfo, TestDelay, permission_info::Permission,
     };
     hbb_common::sodiumoxide::init().unwrap();
@@ -676,7 +677,7 @@ async fn original_pre_auth_controls_and_hash_first_compat_survive_active_handoff
         wire.send(&msg).await.unwrap();
         // A post-login opaque payload exceeds the authentication limit. Only
         // Active handoff may lift that limit; this is not a video/codec fixture.
-        msg.set_clipboard(hbb_common::message_proto::Clipboard {
+        msg.set_clipboard(base::message_proto::Clipboard {
             content: vec![7; 96 * 1024].into(),
             ..Default::default()
         });

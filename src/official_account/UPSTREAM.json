@@ -1,0 +1,713 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/rustdesk/rustdesk",
+  "revision": "092a961b629d318fe290eeafac0cd214a1e9deeb",
+  "license": {
+    "spdx": "AGPL-3.0-only",
+    "path": "upstream/LICENCE",
+    "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+    "bytes": 34523,
+    "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+    "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
+  },
+  "scope": "Only source-backed native account API/device resolution, HTTP polling/transport and OIDC for rd-engine official-account/FRB. Password/verification/account/cloud business stays in the pinned official Dart consumer. No NAPI/Resk capability is added.",
+  "modified_date": "2026-09-23",
+  "fetch_method": "Independent HTTPS raw.githubusercontent.com retrieval at the full immutable rustdesk revision; full original file SHA-256 and Git blob SHA-1 computed from received bytes. No historical artifact was substituted for source.",
+  "source_files": {
+    "src/hbbs_http/account.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/hbbs_http/account.rs",
+      "bytes": 12320,
+      "sha256": "5a92bd6558ddb45fc2ed288a3b24fdccbcf4a6c87d32979cafec70f6121c3957",
+      "git_blob_sha1": "634c95383988868c25e6e5acd87a77116540c3aa"
+    },
+    "src/hbbs_http/http_client.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/hbbs_http/http_client.rs",
+      "bytes": 13890,
+      "sha256": "d42a110799ff11e32c2004ad04c9c31b41baadf007b6d7ede2e608552dc093e4",
+      "git_blob_sha1": "4e34054927bcf0831c7c5da0e919ede2e23fe4fd"
+    },
+    "src/hbbs_http.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/hbbs_http.rs",
+      "bytes": 1107,
+      "sha256": "eabf288e03be9108dc9ba032101acf988c2a8e5b26ce3bde499e3b7c2e705e58",
+      "git_blob_sha1": "e33c811d4e53a2d00aff84da879d6b4d8fb3e58b"
+    },
+    "src/common.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/common.rs",
+      "bytes": 111827,
+      "sha256": "11c1c31ed8a071a7d5ca4af88b2c3cb7778f0253057421795cf83ef7efb43717",
+      "git_blob_sha1": "9dadb1c8603a2360c8234701f0caf140afb67794"
+    },
+    "src/custom_server.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/custom_server.rs",
+      "bytes": 9312,
+      "sha256": "5e06f06c6663723b633713a8b41a1929b695229af0a6ac5867197d41e2d211ba",
+      "git_blob_sha1": "3a7d60fe9e447952406c0bcc5d3e0df731a9e8b0"
+    },
+    "src/ui_interface.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/ui_interface.rs",
+      "bytes": 55150,
+      "sha256": "2ec26030205c7cd5a73808886f2350dc40360043dfbbb44a756026197da153b3",
+      "git_blob_sha1": "b1eeefde2e6a1fa76719766ff4ea8594b90aa61f"
+    },
+    "src/platform/windows.rs": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/src/platform/windows.rs",
+      "bytes": 170934,
+      "sha256": "acea3a5c13efefe0b1b91e59a218fb880a1e7b05a15ebd06d5b3a87927391703",
+      "git_blob_sha1": "a3c3d68f0508a86ff4f0d47e414a926288bd59ab"
+    },
+    "Cargo.toml": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/Cargo.toml",
+      "bytes": 10537,
+      "sha256": "cecb436381ac98509ea610fdb9250edaacc5bc863a409fbd13e64eb4b86179d9",
+      "git_blob_sha1": "3bbbf782dc7b1baab2554c873f336dfaf1659e60"
+    },
+    "Cargo.lock": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/Cargo.lock",
+      "bytes": 269193,
+      "sha256": "4911773c148fff7abbb7fedc58423ecdf4fee2f6beebc470d0f71e90323bf11b",
+      "git_blob_sha1": "09ca9b738b998e08544c6998fd5b3594d52575cf"
+    },
+    "LICENCE": {
+      "url": "https://raw.githubusercontent.com/rustdesk/rustdesk/092a961b629d318fe290eeafac0cd214a1e9deeb/LICENCE",
+      "bytes": 34523,
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
+    }
+  },
+  "source_snapshots": [
+    {
+      "snapshot": "upstream/common-api.rs.original",
+      "original_file": "src/common.rs",
+      "selection": [
+        {
+          "start_line": 891,
+          "end_line": 897,
+          "symbol": "whoami_hostname",
+          "sha256": "dfbfac7635a5d1826656a22969c68858ae15823fd73926dc203d4488fa44eb42"
+        },
+        {
+          "start_line": 899,
+          "end_line": 914,
+          "symbol": "hostname",
+          "sha256": "2917cfc3caf701ca24eab5f6cfb5e8a9adfbd2b786d1795e57848332234e6708"
+        },
+        {
+          "start_line": 1090,
+          "end_line": 1104,
+          "symbol": "get_custom_rendezvous_server",
+          "sha256": "31d27edb0520cf0a918fa3b7c7a7f3983f522377e427dada73b3ee4b6a62049a"
+        },
+        {
+          "start_line": 1106,
+          "end_line": 1122,
+          "symbol": "get_api_server",
+          "sha256": "f7e505752f013a90f8b3fb6eef764aa0b153ddb69183d74ef5c68e6d56018bcb"
+        },
+        {
+          "start_line": 1124,
+          "end_line": 1144,
+          "symbol": "get_api_server_",
+          "sha256": "2a8fbefb6c895e4b3ba07f6e6eb33a39a2ac1f13d2964be9dd94b94c59d5da9e"
+        },
+        {
+          "start_line": 1146,
+          "end_line": 1157,
+          "symbol": "is_public",
+          "sha256": "4b2bbe64ce1ad7c4fbe582c5441c4bad6f7493490e9e43c89ab5c74c190da9db"
+        },
+        {
+          "start_line": 1940,
+          "end_line": 1960,
+          "symbol": "get_key",
+          "sha256": "4784ade60bbeebd32628b8b91ecdc85ae63606dfe9aba47c4f251610aae7ed58"
+        },
+        {
+          "start_line": 2418,
+          "end_line": 2426,
+          "symbol": "get_builtin_option",
+          "sha256": "156af56dc1e01ae95848597b769a7b6600b6d22ca4d9e53d3c114948d27f54a6"
+        }
+      ],
+      "snapshot_sha256": "535d5e1f351be97cf335f9c9ed794178de1fcc23865305c67ab40057afac0430"
+    },
+    {
+      "snapshot": "upstream/common-http.rs.original",
+      "original_file": "src/common.rs",
+      "selection": [
+        {
+          "start_line": 1210,
+          "end_line": 1218,
+          "symbol": "should_use_raw_tcp_for_api",
+          "sha256": "b762636f0f06dfc8dde9bc504ef820fe840e4bbf0e59625f469394ee91e92cf0"
+        },
+        {
+          "start_line": 1226,
+          "end_line": 1240,
+          "symbol": "should_use_tcp_proxy_for_api_url",
+          "sha256": "f44f6817efa7fd29d02829c5a0d8e0a3501de799d5e123e7752c449336b33a63"
+        },
+        {
+          "start_line": 1266,
+          "end_line": 1269,
+          "symbol": "get_tcp_proxy_addr",
+          "sha256": "f3d5bca4a9904a3f342d4cd8d49de04ca8fccf9789bc199716424a5142f68ba4"
+        },
+        {
+          "start_line": 1271,
+          "end_line": 1332,
+          "symbol": "tcp_proxy_request",
+          "sha256": "d47996524c1766aae90df18afb88c8b2d5a4dda8872d914dc0b41ca4b51fa820"
+        },
+        {
+          "start_line": 1334,
+          "end_line": 1363,
+          "symbol": "parse_simple_header",
+          "sha256": "e4b318950f12086aa76d9afb1df61e4c3b17fa51892e2c98771f792bacd0455c"
+        },
+        {
+          "start_line": 1375,
+          "end_line": 1394,
+          "symbol": "http_proxy_response_to_json",
+          "sha256": "35f9fb188ea007399f09010ae8fb24677a0b1acc2d34f0ada0575b8c3e681475"
+        },
+        {
+          "start_line": 1396,
+          "end_line": 1410,
+          "symbol": "parse_json_header_entries",
+          "sha256": "01fefdcf6fb2f9d0016b85bad863d2c31b40bca0aa9d211f139781ecfaab901f"
+        },
+        {
+          "start_line": 1412,
+          "end_line": 1431,
+          "symbol": "post_request_http",
+          "sha256": "7d0ba27675334f01b123f804e79c63803a944e0d0053bb3687d31b82d5989900"
+        },
+        {
+          "start_line": 1476,
+          "end_line": 1490,
+          "symbol": "post_request",
+          "sha256": "4084e97c25954d4e4a447bf5379dd6670b9a39f4eb9e3191b874ba64365aaf01"
+        },
+        {
+          "start_line": 1544,
+          "end_line": 1627,
+          "symbol": "post_request_",
+          "sha256": "bb7527290070f35e072518d18a2eca8f3f099583f350d648bd81235a78753258"
+        },
+        {
+          "start_line": 1629,
+          "end_line": 1632,
+          "symbol": "post_request_sync",
+          "sha256": "cebe6894d81e5c5c70ccfaac70ee9c1837b8ac271fa2863ddfd256d553b38aa1"
+        },
+        {
+          "start_line": 1634,
+          "end_line": 1736,
+          "symbol": "get_http_response_async",
+          "sha256": "fd3cbbb8f75f0c200dd42b81a6cf03bd094a99a487ff59ccb46ad3be43c68cda"
+        },
+        {
+          "start_line": 1738,
+          "end_line": 1780,
+          "symbol": "http_request_http",
+          "sha256": "3b787c70886a630cbc233c2652dd2ad1aa9387397d98253fc4c8255ceb0faf66"
+        },
+        {
+          "start_line": 1782,
+          "end_line": 1797,
+          "symbol": "http_request_sync",
+          "sha256": "88d68215ed42847fa8509cfa0a87256a23e9111d1a364e3eaedb00770b61af4b"
+        },
+        {
+          "start_line": 1799,
+          "end_line": 1812,
+          "symbol": "http_request_via_tcp_proxy",
+          "sha256": "0ecefd9e24e482afac5a542e0d938e22b9e55a434e63e1fba183c47e61ab0963"
+        },
+        {
+          "start_line": 2074,
+          "end_line": 2118,
+          "symbol": "secure_tcp_impl",
+          "sha256": "01ed7dd346451e17ecce37b234c5514a424dfd58a2b7d3e3e816e5a2b25d6b6d"
+        },
+        {
+          "start_line": 2124,
+          "end_line": 2126,
+          "symbol": "secure_tcp_silent",
+          "sha256": "5178d6446e27637de9412c4593b50d664bed2fccd680134030fbcea737e510fb"
+        },
+        {
+          "start_line": 2128,
+          "end_line": 2137,
+          "symbol": "get_pk",
+          "sha256": "444c9436584fd62688dd1b8466d331579a9f932c4c24eac24f7094bf1f0b7bf8"
+        },
+        {
+          "start_line": 2139,
+          "end_line": 2146,
+          "symbol": "get_rs_pk",
+          "sha256": "e4d09de73dcf0135f5214c2aa7226d2220cbbd179bba4a6fc0a7b08ea8c1d8b7"
+        },
+        {
+          "start_line": 1934,
+          "end_line": 1938,
+          "symbol": "decode64",
+          "sha256": "f60ccb9bf7a8e42f8c10d6e0b2a934cc6e5e1b85d4657e8a8035aa8f5b71087a"
+        },
+        {
+          "start_line": 2169,
+          "end_line": 2176,
+          "symbol": "create_symmetric_key_msg",
+          "sha256": "32981dadc5b6de05e6b4049b6c60193c663294e3c9ceae3e48506fb4c03c32e9"
+        }
+      ],
+      "snapshot_sha256": "b58b0ece3444f7d6a1080e4fa2f137747d132a319852c63a8d774f427ab04827"
+    },
+    {
+      "snapshot": "upstream/ui_interface.rs.original",
+      "original_file": "src/ui_interface.rs",
+      "selection": [
+        {
+          "start_line": 51,
+          "end_line": 56,
+          "symbol": "LoginDeviceInfo",
+          "sha256": "f2abfbf92e89abf667c80741196afe5cfc1c40ea07b6854425ab2ab6afa3f335"
+        },
+        {
+          "start_line": 857,
+          "end_line": 875,
+          "symbol": "http_request",
+          "sha256": "1b68d8bb99459237ad888877bec9da1e0f926df0a649f2a80978a3fa7474353d"
+        },
+        {
+          "start_line": 877,
+          "end_line": 883,
+          "symbol": "get_async_http_status",
+          "sha256": "60c3f0cc930657c2b4cb4e6742627b831080c3aa8b3f3c1e86fdb4952e34612e"
+        },
+        {
+          "start_line": 1049,
+          "end_line": 1055,
+          "symbol": "get_api_server",
+          "sha256": "4a0837b010ada65e151e267f5d22886af48acfd86b39b35fa6ef415303ceb941"
+        },
+        {
+          "start_line": 1327,
+          "end_line": 1335,
+          "symbol": "get_login_device_info",
+          "sha256": "d572c841067c146d1762dcd3db7fdca4bb4e757832d1be16fb7a154d02d4a228"
+        },
+        {
+          "start_line": 1337,
+          "end_line": 1340,
+          "symbol": "get_login_device_info_json",
+          "sha256": "dac3512992028b55a5db3da97993804ca4add463a86d5795fe485e800ed6eb98"
+        },
+        {
+          "symbol": "ASYNC_HTTP_STATUS",
+          "start_line": 71,
+          "end_line": 71,
+          "sha256": "3b9325a24cd1cfc30736ac475bd3df68a8aa53517b96745b68c452b75aabae6a"
+        },
+        {
+          "symbol": "INIT_ASYNC_JOB_STATUS",
+          "start_line": 89,
+          "end_line": 89,
+          "sha256": "fe69e25f91aaf07f34c999a8069736b2ae9bffca9a1d1c3619619302b8095eb3"
+        }
+      ],
+      "snapshot_sha256": "a288139dc00d69431a0d47c35313acf0ea5e3d09b3eea40dbb885d8ab1d818b2"
+    },
+    {
+      "snapshot": "upstream/windows-license.rs.original",
+      "original_file": "src/platform/windows.rs",
+      "selection": [
+        {
+          "start_line": 2103,
+          "end_line": 2110,
+          "symbol": "get_license_from_exe_name",
+          "sha256": "c4ba84cdff87a0ba7885ba5b12c6bf6573bf6d4ca713dd14a40f6f283bce6561"
+        }
+      ],
+      "snapshot_sha256": "c4ba84cdff87a0ba7885ba5b12c6bf6573bf6d4ca713dd14a40f6f283bce6561"
+    },
+    {
+      "snapshot": "upstream/hbbs_http.rs.original",
+      "original_file": "src/hbbs_http.rs",
+      "selection": [
+        {
+          "start_line": 16,
+          "end_line": 22,
+          "symbol": "HbbHttpResponse",
+          "sha256": "ae38d012e7fd83cc081e09501ab5a7f8c5c1911c52d5b288f6d4691338bcd8a9"
+        },
+        {
+          "start_line": 24,
+          "end_line": 40,
+          "symbol": "HbbHttpResponse::parse",
+          "sha256": "b49c0bed0c83a722a1e7b63375c0d051e923c10865fde0bf126980489da24387"
+        }
+      ],
+      "snapshot_sha256": "e705d1a67f4995ac3bfafb0b1d58963ee3a68ce5c6e5437aaae8aeac5e7668b7"
+    },
+    {
+      "snapshot": "upstream/account.rs.original",
+      "original_file": "src/hbbs_http/account.rs",
+      "selection": [
+        {
+          "start_line": 1,
+          "end_line": 400,
+          "symbols": [
+            "OidcAuthUrl",
+            "DeviceInfo",
+            "WhitelistItem",
+            "UserInfo",
+            "UserSettings",
+            "UserStatus",
+            "UserPayload",
+            "AuthBody",
+            "OidcSession",
+            "AuthResult",
+            "OidcSession::{auth,query,auth_task,account_auth,auth_cancel,get_result}"
+          ],
+          "sha256": "5a92bd6558ddb45fc2ed288a3b24fdccbcf4a6c87d32979cafec70f6121c3957"
+        }
+      ],
+      "snapshot_sha256": "5a92bd6558ddb45fc2ed288a3b24fdccbcf4a6c87d32979cafec70f6121c3957"
+    },
+    {
+      "snapshot": "upstream/http_client.rs.original",
+      "original_file": "src/hbbs_http/http_client.rs",
+      "selection": [
+        {
+          "start_line": 1,
+          "end_line": 391,
+          "symbols": [
+            "configure_http_client",
+            "create_http_client_async",
+            "create_http_client_async_with_url_strict",
+            "create_http_client_async_with_url_",
+            "get_url_for_tls"
+          ],
+          "sha256": "d42a110799ff11e32c2004ad04c9c31b41baadf007b6d7ede2e608552dc093e4"
+        }
+      ],
+      "snapshot_sha256": "d42a110799ff11e32c2004ad04c9c31b41baadf007b6d7ede2e608552dc093e4"
+    },
+    {
+      "snapshot": "upstream/custom_server.rs.original",
+      "original_file": "src/custom_server.rs",
+      "selection": [
+        {
+          "start_line": 1,
+          "end_line": 114,
+          "symbols": [
+            "CustomServer",
+            "get_custom_server_from_config_string",
+            "get_custom_server_from_string"
+          ],
+          "sha256": "2101d0b8d7830b2697c54905719d664371c68457869c42d4ee93a98e2838fe5b"
+        }
+      ],
+      "snapshot_sha256": "2101d0b8d7830b2697c54905719d664371c68457869c42d4ee93a98e2838fe5b"
+    }
+  ],
+  "snapshot_assembly": "For selected-symbol snapshots, each recorded inclusive original line range is retained verbatim (including selected attributes); remove only trailing LF between pieces, join pieces with two LF, append final LF. Full-file/prefix snapshots are exact original bytes. These .original files are provenance, not Rust modules.",
+  "adapted_files": [
+    {
+      "path": "api.rs",
+      "sha256": "ff330127210180c7cec707064e72f219d3f947483907b982e75e9af58c5d7aeb",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/common-api.rs.original",
+          "upstream/windows-license.rs.original",
+          "upstream/ui_interface.rs.original"
+        ]
+      },
+      "baseline_sha256": "41c68e53f4ffddfe89b27be65f20721b652e17f3d92a76b0eadad19ab91184a3",
+      "adaptation_patch": "upstream/api.adaptation.patch",
+      "patch_sha256": "811e4476a9c604b9ca5f3bf43579eb1f60cb79335fd832ea28a5b464b550ce4b"
+    },
+    {
+      "path": "http.rs",
+      "sha256": "4f23ee0c0f3b1bf98b1a4c575085b1beaba36a8952a74c8cc96bd1cc202a9029",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/http_client.rs.original",
+          "upstream/common-http.rs.original",
+          "upstream/ui_interface.rs.original"
+        ]
+      },
+      "baseline_sha256": "cf5af83857496e9c9a4fabd2b45b410d22dbed2e9e29618cbb5bee9b02ff7c7d",
+      "adaptation_patch": "upstream/http.adaptation.patch",
+      "patch_sha256": "e6baa12bf17180fc756ab15564cd944b31afa45d09f0e92377ef3bf34ee6d832"
+    },
+    {
+      "path": "oidc.rs",
+      "sha256": "bfe2daccf2541e9b3d4878e8079f659e68c8f20082629836f9a36cc92fa8ca30",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/account.rs.original",
+          "upstream/hbbs_http.rs.original"
+        ]
+      },
+      "baseline_sha256": "f2093bacc14150e73b449a26825fe127e6ff290b36cff375ed372080e89647f3",
+      "adaptation_patch": "upstream/oidc.adaptation.patch",
+      "patch_sha256": "6ed32a29c0d686cf6682ffe87ee1829edad1cf89edc25a41eeaa6408abac3b1a"
+    },
+    {
+      "path": "upstream/custom_server.rs",
+      "sha256": "913c870d607a497afbd068dc8b45d59291204f6c8d1f2d36da47e3d4b8d4f661",
+      "baseline_recipe": {
+        "join": "one LF between the exact snapshot UTF-8 texts, in this order",
+        "snapshots": [
+          "upstream/custom_server.rs.original"
+        ]
+      },
+      "baseline_sha256": "2101d0b8d7830b2697c54905719d664371c68457869c42d4ee93a98e2838fe5b",
+      "adaptation_patch": "upstream/custom_server.adaptation.patch",
+      "patch_sha256": "ac8fd4b32fcc977fd3d4bc4a0d91a1f2b4976b9cf80bfb9d05400be23b2a51a6"
+    }
+  ],
+  "adaptations": [
+    {
+      "id": "A1",
+      "files": [
+        "api.rs",
+        "upstream/custom_server.rs"
+      ],
+      "source_symbols": [
+        "get_api_server/get_api_server_",
+        "get_custom_rendezvous_server",
+        "get_builtin_option",
+        "CustomServer/get_custom_server_from_string",
+        "get_license_from_exe_name"
+      ],
+      "changes": [
+        "Replace official application crate/IPC references with the already-owned hbb_common Config and base keys. Preserve no-register-device, Windows current_exe/RUSTDESK_APPNAME filename-license api/host/key precedence, configured options, production rendezvous inference, public API default, one trailing slash removal and allow-https-21114 behavior.",
+        "Compile only the Windows filename parser closure, not installer/service/bootstrap code. Retain the exact plain/signed license parsing, signer key, URL-safe base64 and filename suffix handling. Remove unneeded secret-bearing Debug/Clone derives; use hbb_common derive re-export."
+      ]
+    },
+    {
+      "id": "A2",
+      "files": [
+        "api.rs"
+      ],
+      "source_symbols": [
+        "hostname/whoami_hostname",
+        "LoginDeviceInfo/get_login_device_info"
+      ],
+      "changes": [
+        "Return actual OS/client/name JSON. Desktop hostnames retain official ASCII lowercase and macOS .local stripping. Main-approved set_device_name routes the existing mobile main_device_name input; no new FRB method.",
+        "New integration-only account scope SHA-256 binds canonical effective API scheme/host/effective port/base path, actual rendezvous endpoint, official selected public key, explicit raw-TCP mode and websocket setting. Reject malformed endpoints, userinfo, base-URL query/fragment and ambiguous URL repair. Do not silently upgrade an official HTTP resolver result. This lifecycle identity is an rd-engine integration addition, not an upstream transplant."
+      ]
+    },
+    {
+      "id": "A3",
+      "files": [
+        "http.rs"
+      ],
+      "source_symbols": [
+        "configure_http_client",
+        "create_http_client_async_with_url_strict",
+        "get_http_response_async",
+        "http_request_http",
+        "parse_json_header_entries"
+      ],
+      "changes": [
+        "Select only strict HTTPS builders; cached TLS backend may be reused but invalid-certificate flags never are. All redirects/3xx are rejected without following; no certificate bypass, retry downgrade, environment proxy or Client::new fallback. Honor the real configured proxy or fail.",
+        "Bound client construction caller wait to 6 seconds and concurrent blocking builders to 4; a timed-out OS operation keeps its permit until it finishes. Bound each probe/request to 12 seconds and HTTP job to 24 seconds. No nested Tokio runtime/block_on; spawn on the existing engine executor.",
+        "Reject unsupported methods, malformed/non-string/invalid/duplicate-case-folded headers. Canonical get/post/put/delete (case-insensitive) remain supported. Preserve real 2xx/4xx/5xx status_code, headers and body envelope.",
+        "Bound request/response bytes to 16 MiB, headers to 64 KiB, and concurrent/unconsumed URL requests to 32. Read decompressed chunks with a limit before UTF-8 loss replacement. The authoritative pin disables reqwest default features and does not enable charset: this is its actual Response.text decoding, not a charset regression.",
+        "Return fixed safe transport/build/parse errors without retaining reqwest/proxy errors as sources. Do not log URL, headers, request/response body or errors containing them. Mark request header values sensitive and clear locally controlled payload/retained response buffers; third-party/FRB/Dart copies are outside complete-erasure guarantees."
+      ]
+    },
+    {
+      "id": "A4",
+      "files": [
+        "http.rs",
+        "api.rs"
+      ],
+      "source_symbols": [
+        "should_use_raw_tcp_for_api",
+        "should_use_tcp_proxy_for_api_url",
+        "tcp_proxy_request",
+        "get_key(true)",
+        "secure_tcp_impl/secure_tcp_silent",
+        "get_pk/get_rs_pk",
+        "create_symmetric_key_msg",
+        "http_proxy_response_to_json"
+      ],
+      "changes": [
+        "Reuse the real official protobuf HttpProxyRequest/HttpProxyResponse and signed KeyExchange/libsodium box + secretbox handshake. Raw TCP is selected only by the explicit builtin setting, with websocket off and exact configured non-public API origin/base-path match (not merely host equality). No automatic TCP fallback after failed TLS or HTTP 5xx.",
+        "Authentication requires exactly one signed server ephemeral key, verified using the resolved official public key, and encryption installation before sending any account request. Invalid signature/shape, parse failure, unexpected message and EOF are hard failures; none of the upstream permissive plaintext success branches survive.",
+        "Reuse selected hbb_common FramedStream, Proxy::from_conf/http_connect and tokio-socks primitives. For an HTTPS configured proxy use preconstructed strict rustls plus the official CONNECT primitive, never hbb_common https_connect_*_wrap_danger. Async connection/DNS and bounded frame lengths stay inside the request deadline. This strict assembly is a missing account integration, not claimed verbatim upstream code."
+      ]
+    },
+    {
+      "id": "A5",
+      "files": [
+        "http.rs"
+      ],
+      "source_symbols": [
+        "ASYNC_HTTP_STATUS",
+        "INIT_ASYNC_JOB_STATUS",
+        "http_request/get_async_http_status"
+      ],
+      "changes": [
+        "Keep public URL-keyed polling but store only URL digests. Every admitted job has a unique internal identity and captured B AccountContext; late workers cannot overwrite a replacement. Reject any same-URL pending or unconsumed terminal request. Do not retire a newer generation when a delayed older start arrives.",
+        "Pending is exactly one space; success is the official JSON envelope; transport failure is Result error; true absent is None. Consume terminal success/error once; final poll independently checks B context outside the registry lock.",
+        "Completion payload retention is 60 seconds maximum with one-second stale-context retirement checks; RAII removes payloads on async task cancellation/unwind too. No locks across network I/O. A URL-only ABI cannot identify a canceled old caller polling a newly admitted same-URL request: the separate official consumer patch must stop old pollers using captured authoritative receipt plus Dart lease before/after every native call. Internal request IDs alone do not solve caller ambiguity.",
+        "After the protected account check, poll re-locks the matching internal request id and reads its current expiry together with consumption/removal. A concurrently published terminal retention deadline is never replaced by a stale running deadline."
+      ]
+    },
+    {
+      "id": "A6",
+      "files": [
+        "oidc.rs"
+      ],
+      "source_symbols": [
+        "HbbHttpResponse::parse",
+        "OidcAuthUrl",
+        "AuthBody/UserPayload/UserInfo/UserStatus",
+        "OidcSession::{auth,query,auth_task,account_auth,auth_cancel,get_result}",
+        "AuthResult"
+      ],
+      "changes": [
+        "Preserve official request paths/fields: /api/login-options HEAD, POST /api/oidc/auth with op/id/uuid/deviceInfo/apiDomain, and GET /api/oidc/auth-query with code/id/uuid. Preserve official state strings, original response fields, numeric UserStatus, three-minute query deadline and one-second interval. The approved scoped amendment adds account_scope, not password/verification/cloud business.",
+        "Reuse four-way envelope parsing and No authed oidc is found continuation; transient query transport/format failures continue to the absolute deadline. Emit safe generic failures instead of reflecting arbitrary server errors or raw response content into diagnostics. Validate provider URL as HTTPS before returning the authorization URL to Dart.",
+        "Use B begin_auth(expected receipt)/auth_is_current/cancel_auth(actual attempt) and monotonic auth serial. A maps an opaque UUID attempt receipt to its retained actual attempt; all public poll/cancel operations must match it. Abort retired async jobs rather than waiting unboundedly under the session lock. Initial construction/probe/auth phase has a 36-second bound.",
+        "Replace all upstream LocalConfig token/user_info writes with B commit_oidc(original attempt, token, official user_info JSON, remember_me) -> committed receipt. Commit remembered/session-only accounts before publishing access_token success and return that exact receipt in account_scope. Verification/intermediate AuthBody stays Dart-owned and does not commit an account.",
+        "B advances account generation on commit but retains a committed-attempt witness; all post-commit OIDC publish/read/retirement predicates use auth_is_current(original attempt), not context_is_current(original context). B alone owns atomic current-attempt commit.",
+        "Remove raw auth-result Debug/logs and secret Clone derives. Keep URL/code and returned AuthBody lifetime bounded; serialize a borrowed view and consume terminal payload once, then retain only non-secret attempt ownership for normal dialog-close cancellation. RAII retires retained payloads on task cancellation/unwind. Cancel can only retire its matched actual attempt/result, never a later attempt or already committed account. One required token copy feeds B while the authorized body is returned to Dart; no all-copies erasure claim.",
+        "All discard/expiry/task-drop paths retire B's exact AuthAttempt witness before deleting A's receipt mapping: abort alone cannot stop an already queued spawn_blocking commit. Explicit cancellation preserves the B error; cleanup cannot cancel a later attempt or log out a commit that already won B's owner lock. Result expiry is read under the current session lock after the B check, not copied before a possible terminal publication."
+      ]
+    }
+  ],
+  "dependency_integration": {
+    "manifest_owner": "Main; no manifests/locks/module declarations/generated files edited by AccountTransport",
+    "required_direct": {
+      "reqwest": {
+        "version": "=0.12.28",
+        "default_features": false,
+        "integration_features": [
+          "blocking",
+          "socks",
+          "json",
+          "native-tls",
+          "rustls-tls",
+          "rustls-tls-native-roots",
+          "gzip",
+          "zstd"
+        ],
+        "upstream_locked_version": "0.12.24",
+        "upstream_features": [
+          "blocking",
+          "socks",
+          "json",
+          "native-tls",
+          "rustls-tls",
+          "rustls-tls-native-roots",
+          "gzip",
+          "zstd"
+        ],
+        "note": "Reuse already-selected compatible 0.12 lock line; native-tls and rustls roots remain strict. No charset/mime/encoding_rs/http additions are required."
+      },
+      "url": {
+        "version": "=2.5.8",
+        "features": [
+          "serde"
+        ],
+        "upstream_locked_version": "2.5.2"
+      },
+      "serde_repr": {
+        "version": "=0.1.19"
+      },
+      "serde": {
+        "version": "1",
+        "features": [
+          "derive"
+        ]
+      },
+      "serde_json": {
+        "version": "1"
+      }
+    },
+    "existing_direct_reused": [
+      "zeroize 1",
+      "tokio =1.52.4 (rt-multi-thread/macros/net/sync/time/io-util/signal)",
+      "rustls 0.23 (ring/std/tls12/logging)",
+      "tokio-rustls 0.26 (ring/tls12)",
+      "base path dependency",
+      "hbb_common path dependency"
+    ],
+    "existing_hbb_common_reexports": [
+      "serde_derive",
+      "serde_json",
+      "base64",
+      "sha2",
+      "sodiumoxide",
+      "protobuf",
+      "bytes",
+      "tokio-socks",
+      "whoami",
+      "config",
+      "proxy",
+      "tcp/Stream",
+      "tls/verifier",
+      "uuid (existing v4 feature)"
+    ],
+    "selected_shared_source": {
+      "repository": "https://github.com/rustdesk/hbb_common",
+      "revision": "daf84c2df33b3d5861d9a36600773638559d072c",
+      "provenance": "../../vendor/rustdesk/UPSTREAM.json (workspace-relative actual path vendor/rustdesk/UPSTREAM.json)",
+      "note": "Existing selected and integration-patched shared library is reused, not copied/replaced. Its Account wire schema/config/crypto/transport remain one source identity."
+    }
+  },
+  "integration_prerequisites": [
+    "Main integrates official-account modules/features/dependencies, paired FRB Result/scoped-method generation, explicit rejection of unsafe legacy account writes/auth/cache methods, async account snapshot, and existing mobile device-name setter wiring.",
+    "B supplies authoritative expected-receipt state/cache APIs, begin_auth(&receipt), attempt-bound cancel_auth, commit_oidc returning committed receipt, global checked monotonic auth serial and committed-attempt witness. The exact signatures/witness behavior were confirmed directly with B.",
+    "Official consumer safety patch captures authoritative native snapshot/receipt for native and pure-Dart requests, serializes scoped local writes, carries originating cache receipt and OIDC attempt receipt, and adopts only a snapshot exactly matching returned commit account_scope. It must stop stale URL pollers before/after every poll; A cannot infer their identity from URL alone.",
+    "Android requires the actual official runner/JVM TLS verifier and injected device name; iOS requires the signed app/runtime/name and platform trust. Windows filename/portable-launcher precedence needs its real target. No platform runtime support is established by this source.",
+    "Explicit raw TCP requires a real hbbs/proxy implementation of the pinned signed key exchange and HttpProxyRequest account service, with configured authentic public key. No insecure/plaintext interoperability fallback is supplied.",
+    "Actual HTTPS account/OIDC provider and target runtime/OS protected-store behavior remain unverified. The user owns incremental functional testing; Main owns binding generation and compile/link/package only. No real user credential was read or used during this source work."
+  ],
+  "verification": {
+    "performed": [
+      "Read full fixed A/B contract and account backing/storage audits",
+      "Independently retrieved authoritative pinned native source and license via HTTPS",
+      "Computed exact original SHA-256/Git blob SHA-1, selected-symbol ranges/digests, baseline recipes and adaptation/postimage digests",
+      "Inspected actual selected hbb_common Config/protobuf/Proxy/TLS primitives and upstream reqwest feature provenance",
+      "Read the full approved scoped amendment and coordinated exact begin/cancel/commit receipt signatures and committed-attempt witness with B"
+    ],
+    "not_run": [
+      "formatters",
+      "linters",
+      "builds",
+      "tests",
+      "project-wide validation",
+      "target runtime or real account/OIDC/TCP interoperability"
+    ],
+    "runtime_claim": "None. Per the user's latest instruction, Main integrates and compiles/links/packages clients; functional/regression/runtime/device/performance testing is user-owned. AccountTransport did not run those tests or create testing infrastructure.",
+    "important_limits": [
+      "A caller timeout cannot forcibly cancel OS blocking DNS/root-store APIs; admission and caller wait are bounded and stuck workers retain one of four permits.",
+      "Final native reads independently check B ownership. The scoped amendment fences cross-process OIDC/state/cache adoption; old-vs-new same-URL HTTP polling still requires the consumer authoritative receipt plus local lease guard.",
+      "Limits and successful source provenance are not runtime/platform support evidence."
+    ]
+  },
+  "contract_amendment": {
+    "source": "local://official-account-scoped-contract.json, approved by Main after demonstrated cross-process stale-login ambiguity",
+    "oidc_start": "start(receipt: String, op: String, remember_me: bool) -> ResultType<String>",
+    "oidc_cancel": "cancel(attempt_receipt: &str) -> ResultType<()>",
+    "oidc_result": "result(attempt_receipt: &str) -> ResultType<String>",
+    "state_signatures": "begin_auth(&str)->ResultType<AuthAttempt>; cancel_auth(&AuthAttempt)->ResultType<()>; commit_oidc(existing attempt/token/user_info/remember args)->ResultType<String>",
+    "attempt_receipt": "Opaque random UUID mapped only to retained native AuthAttempt; never deserialize caller-controlled destinations. Not a credential or security principal.",
+    "result_extension": "Official fields retained; account_scope carries B committed receipt only for successful access_token body, otherwise null. Original committed witness remains checked by auth_is_current.",
+    "legacy_boundary": "Main rejects the old unscoped account-mutating/auth methods explicitly; the recorded official consumer patch uses the additive scoped bridge. No unsafe compatibility success path.",
+    "snapshot_override": "Main specified its additive snapshot bridge is asynchronous Result<String>, superseding amendment text showing SyncReturn; A does not own this bridge."
+  }
+}

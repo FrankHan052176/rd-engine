@@ -520,7 +520,6 @@ extern "C" rd_dd_status RD_DD_CALL rd_dd_acquire(
     capture->last_hr = release_hr;
     if (release_hr == S_OK) {
       resource->Release();
-      capture->last_hr = S_OK;
       return RD_DD_WOULD_BLOCK;
     }
     if (is_terminal_duplication_invalidation(release_hr) ||
@@ -630,7 +629,6 @@ extern "C" rd_dd_status RD_DD_CALL rd_dd_release(rd_dd_lease* lease) {
   if (lease == nullptr || lease->owner == nullptr) return RD_DD_INVALID_ARGUMENT;
   rd_dd_capture* capture = lease->owner;
   std::lock_guard<std::mutex> lock(capture->mutex);
-  if (capture->outstanding != lease) return RD_DD_INVALID_ARGUMENT;
   HRESULT hr = lease->duplication->ReleaseFrame();
   capture->last_hr = hr;
   if (hr != S_OK && !is_terminal_duplication_invalidation(hr) &&

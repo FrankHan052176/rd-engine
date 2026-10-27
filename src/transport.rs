@@ -3,6 +3,7 @@
 //! preserves both nonce counters and already-buffered bytes. There is one writer
 //! so control/media interleaving cannot race the encryption sequence.
 
+use base::message_proto::Message;
 use hbb_common::{
     bytes::{Bytes, BytesMut},
     bytes_codec::BytesCodec,
@@ -10,7 +11,6 @@ use hbb_common::{
         SinkExt, StreamExt,
         stream::{SplitSink, SplitStream},
     },
-    message_proto::Message,
     protobuf::Message as ProtobufMessage,
     tcp::{DynTcpStream, Encrypt, FramedStream},
 };
@@ -168,7 +168,8 @@ impl Drop for WireWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hbb_common::{message_proto::Hash, sodiumoxide::crypto::secretbox};
+    use base::message_proto::Hash;
+    use hbb_common::sodiumoxide::crypto::secretbox;
 
     fn message(challenge: &str) -> Message {
         let mut message = Message::new();

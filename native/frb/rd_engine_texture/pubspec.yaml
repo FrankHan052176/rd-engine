@@ -1,0 +1,17 @@
+name: rd_engine_texture
+description: Thin Windows GPU texture bridge for rd-engine.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: RdEngineTexturePluginCApi

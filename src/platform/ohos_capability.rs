@@ -24,6 +24,20 @@ pub(super) fn query_h264_decoder() -> Result<super::AdvertisedCodec, CapabilityE
     }
 }
 
+pub(super) fn query_hevc_decoder() -> Result<super::AdvertisedCodec, CapabilityError> {
+    #[cfg(target_env = "ohos")]
+    {
+        let _guard = QUERY_LOCK
+            .lock()
+            .map_err(|_| CapabilityError::QueryLockPoisoned)?;
+        native::query_codec(super::CodecDirection::Decode, true)
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
+        Err(CapabilityError::UnsupportedPlatform)
+    }
+}
+
 pub(super) fn query_h264_encoder() -> Result<super::AdvertisedCodec, CapabilityError> {
     #[cfg(target_env = "ohos")]
     {

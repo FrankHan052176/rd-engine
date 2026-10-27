@@ -1,0 +1,125 @@
+#[inline(always)]
+#[cfg(not(target_os = "ios"))]
+pub fn whoami_hostname() -> String {
+    let mut hostname = whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_string());
+    hostname.make_ascii_lowercase();
+    hostname
+}
+
+#[inline]
+pub fn hostname() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        #[allow(unused_mut)]
+        let mut name = whoami_hostname();
+        // some time, there is .local, some time not, so remove it for osx
+        #[cfg(target_os = "macos")]
+        if name.ends_with(".local") {
+            name = name.trim_end_matches(".local").to_owned();
+        }
+        name
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return DEVICE_NAME.lock().unwrap().clone();
+}
+
+pub fn get_custom_rendezvous_server(custom: String) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.host.is_empty() {
+            return lic.host.clone();
+        }
+    }
+    if !custom.is_empty() {
+        return custom;
+    }
+    if !config::PROD_RENDEZVOUS_SERVER.read().unwrap().is_empty() {
+        return config::PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
+    }
+    "".to_owned()
+}
+
+#[inline]
+pub fn get_api_server(api: String, custom: String) -> String {
+    if Config::no_register_device() {
+        return "".to_owned();
+    }
+    let mut res = get_api_server_(api, custom);
+    if res.ends_with('/') {
+        res.pop();
+    }
+    if res.starts_with("https")
+        && res.ends_with(":21114")
+        && get_builtin_option(keys::OPTION_ALLOW_HTTPS_21114) != "Y"
+    {
+        return res.replace(":21114", "");
+    }
+    res
+}
+
+fn get_api_server_(api: String, custom: String) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.api.is_empty() {
+            return lic.api.clone();
+        }
+    }
+    if !api.is_empty() {
+        return api.to_owned();
+    }
+    let s0 = get_custom_rendezvous_server(custom);
+    if !s0.is_empty() {
+        let s = crate::increase_port(&s0, -2);
+        if s == s0 {
+            return format!("http://{}:{}", s, config::RENDEZVOUS_PORT - 2);
+        } else {
+            return format!("http://{}", s);
+        }
+    }
+    "https://admin.rustdesk.com".to_owned()
+}
+
+#[inline]
+pub fn is_public(url: &str) -> bool {
+    let parsed = url::Url::parse(url)
+        .ok()
+        .filter(|parsed| parsed.has_host())
+        .or_else(|| url::Url::parse(&format!("http://{url}")).ok());
+    let Some(host) = parsed.as_ref().and_then(url::Url::host_str) else {
+        return false;
+    };
+    let host = host.strip_suffix('.').unwrap_or(host);
+    host == "rustdesk.com" || host.ends_with(".rustdesk.com")
+}
+
+pub async fn get_key(sync: bool) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.key.is_empty() {
+            return lic.key;
+        }
+    }
+    #[cfg(target_os = "ios")]
+    let mut key = Config::get_option("key");
+    #[cfg(not(target_os = "ios"))]
+    let mut key = if sync {
+        Config::get_option("key")
+    } else {
+        let mut options = crate::ipc::get_options_async().await;
+        options.remove("key").unwrap_or_default()
+    };
+    if key.is_empty() {
+        key = config::RS_PUB_KEY.to_owned();
+    }
+    key
+}
+
+#[inline]
+pub fn get_builtin_option(key: &str) -> String {
+    config::BUILTIN_SETTINGS
+        .read()
+        .unwrap()
+        .get(key)
+        .cloned()
+        .unwrap_or_default()
+}

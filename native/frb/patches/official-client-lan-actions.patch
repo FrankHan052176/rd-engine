@@ -1,0 +1,79 @@
+diff --git a/lib/common/widgets/peers_view.dart b/lib/common/widgets/peers_view.dart
+--- a/lib/common/widgets/peers_view.dart
++++ b/lib/common/widgets/peers_view.dart
+@@ -506,8 +506,26 @@
+   Widget build(BuildContext context) {
+     final widget = super.build(context);
+     bind.mainLoadLanPeers();
+-    bind.mainDiscover();
+-    return widget;
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        Align(
++          alignment: Alignment.centerRight,
++          child: TextButton.icon(
++            icon: const Icon(Icons.refresh),
++            label: Text(translate('Refresh')),
++            onPressed: () async {
++              try {
++                await bind.mainDiscover();
++              } catch (_) {
++                showToast(translate('Failed'));
++              }
++            },
++          ),
++        ),
++        Expanded(child: widget),
++      ],
++    );
+   }
+ }
+ 
+diff --git a/lib/common/widgets/peer_card.dart b/lib/common/widgets/peer_card.dart
+--- a/lib/common/widgets/peer_card.dart
++++ b/lib/common/widgets/peer_card.dart
+@@ -815,9 +815,15 @@
+               }
+               break;
+             case PeerTabIndex.lan:
+-              await bind.mainRemoveDiscovered(id: id);
+-              bind.mainLoadLanPeers();
+-              break;
++              try {
++                await bind.mainRemoveDiscovered(id: id);
++                await bind.mainLoadLanPeers();
++              } catch (_) {
++                showToast(translate('Failed'));
++              }
++              // The official store is best-effort: cache removal is not proof
++              // of a durable save, so do not display the generic success toast.
++              return;
+             case PeerTabIndex.ab:
+               await gFFI.abModel.deletePeers([id]);
+               break;
+diff --git a/lib/common/widgets/peer_tab_page.dart b/lib/common/widgets/peer_tab_page.dart
+--- a/lib/common/widgets/peer_tab_page.dart
++++ b/lib/common/widgets/peer_tab_page.dart
+@@ -409,11 +409,17 @@
+                 bind.mainLoadFavPeers();
+                 break;
+               case 2:
+-                for (var p in peers) {
+-                  await bind.mainRemoveDiscovered(id: p.id);
++                try {
++                  for (var p in peers) {
++                    await bind.mainRemoveDiscovered(id: p.id);
++                  }
++                  await bind.mainLoadLanPeers();
++                  gFFI.peerTabModel.setMultiSelectionMode(false);
++                } catch (_) {
++                  showToast(translate('Failed'));
+                 }
+-                bind.mainLoadLanPeers();
+-                break;
++                // Cache retirement/store attempts do not prove durable removal.
++                return;
+               case 3:
+                 await gFFI.abModel.deletePeers(peers.map((p) => p.id).toList());
+                 break;
