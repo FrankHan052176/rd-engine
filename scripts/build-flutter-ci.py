@@ -21,9 +21,9 @@ ANDROID = {
 }
 
 
-def run(args, cwd=ROOT, env=None, capture=False):
+def run(args, cwd=ROOT, env=None, capture=False, check=True):
     print("+ " + " ".join(map(str, args)), flush=True)
-    return subprocess.run(list(map(str, args)), cwd=cwd, env=env, check=True,
+    return subprocess.run(list(map(str, args)), cwd=cwd, env=env, check=check,
                           text=capture, stdout=subprocess.PIPE if capture else None).stdout
 
 
@@ -156,7 +156,10 @@ def build(platform, target, triplet, client):
     elif platform == "linux":
         symbols = run(["nm", "-D", "--defined-only", library], capture=True)
     else:
-        symbols = run(["nm", "-gU", library], capture=True)
+        # Xcode's nm also reads the LLVM 22 bitcode embedded in the prebuilt Rust std
+        # objects of an iOS archive, fails on it and exits non-zero after listing
+        # the rest. The required symbols are still asserted below.
+        symbols = run(["nm", "-gU", library], capture=True, check=platform != "ios")
     for symbol in ("wire_main_init", "session_get_rgba"):
         if symbol not in symbols:
             raise ValueError(f"native library does not export {symbol}")
@@ -173,21 +176,26 @@ def build(platform, target, triplet, client):
     # Do not let a resolver silently replace the reviewed effective client lock.
     lock = client / "pubspec.lock"
     lock_hash = sha256(lock)
-    run(["flutter", "--version"])
-    run(["flutter", "pub", "get", "--enforce-lockfile"], cwd=client)
+    # On Windows the SDK entry point is flutter.bat, which CreateProcess does not
+    # find from the bare name; resolve it through PATH/PATHEXT once.
+    flutter = shutil.which("flutter")
+    if flutter is None:
+        raise ValueError("flutter is not on PATH")
+    run([flutter, "--version"])
+    run([flutter, "pub", "get", "--enforce-lockfile"], cwd=client)
     if sha256(lock) != lock_hash:
         raise ValueError("flutter pub get changed the reviewed client lock")
     client_env = os.environ.copy()
-    command = ["flutter", "build", platform, "--release", "--no-pub"]
+    command = [flutter, "build", platform, "--release", "--no-pub"]
     if platform == "windows":
         client_env["RUSTDESK_LIB_OVERRIDE"] = str(library)
     elif platform == "android":
-        command = ["flutter", "build", "apk", "--release", "--no-pub", "--target-platform", ANDROID[target][1]]
+        command = [flutter, "build", "apk", "--release", "--no-pub", "--target-platform", ANDROID[target][1]]
     elif platform == "macos":
         client_env.update({"FLUTTER_XCODE_ARCHS": "arm64" if target.startswith("aarch64") else "x86_64",
                            "FLUTTER_XCODE_ONLY_ACTIVE_ARCH": "YES", "CODE_SIGNING_ALLOWED": "NO"})
     elif platform == "ios":
-        command = ["flutter", "build", "ipa", "--release", "--no-pub", "--no-codesign"]
+        command = [flutter, "build", "ipa", "--release", "--no-pub", "--no-codesign"]
     run(command, cwd=client, env=client_env)
     if sha256(lock) != lock_hash:
         raise ValueError("client build changed the reviewed client lock")
@@ -217,7 +225,7 @@ def build(platform, target, triplet, client):
         if len(apps) != 1:
             raise ValueError("unsigned iOS archive does not contain one real app")
         binary = require(apps[0] / "Runner")
-        exports = run(["nm", "-gU", binary], capture=True)
+        exports = run(["nm", "-gU", binary], capture=True, check=False)
         if "wire_main_init" not in exports or "session_get_rgba" not in exports:
             raise ValueError("iOS application lost statically linked FRB symbols")
         packaged = None  # the archive is linked into Runner, not copied alongside it

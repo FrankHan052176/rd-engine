@@ -161,7 +161,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..506a966ef26eeafaee49078fa3f52c3abafe4fb3 100644
 --- /dev/null
 +++ b/android/app/src/main/kotlin/com/carriez/flutter_hbb/OfficialAccountStorage.kt
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,652 @@
 +/*
 + * The RSA/PKCS1 WRAP/UNWRAP and legacy KeyPairGeneratorSpec pattern is adapted
 + * from flutter_secure_storage 9.2.4, commit
@@ -735,9 +735,14 @@ index 0000000000000000000000000000000000000000..506a966ef26eeafaee49078fa3f52c3a
 +                failure = error
 +            }
 +            try {
-+                val fd = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or
-+                    OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
-+                withFd(fd) { Os.fsync(fd) }
++                // OsConstants has no O_DIRECTORY: open without following a final symlink,
++                // then prove with fstat that the descriptor is a directory before fsync.
++                val fd = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_CLOEXEC or
++                    OsConstants.O_NOFOLLOW, 0)
++                withFd(fd) {
++                    if (!OsConstants.S_ISDIR(Os.fstat(fd).st_mode)) throw Failure(IO_FAILURE)
++                    Os.fsync(fd)
++                }
 +            } catch (error: Exception) {
 +                if (failure == null) throw error
 +                failure.addSuppressed(error)
