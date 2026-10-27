@@ -137,6 +137,10 @@ def prepare(checkout, output, platform):
         replace(gradle, "signingConfig signingConfigs.release", "signingConfig signingConfigs.debug")
         replace(gradle, '    compileSdkVersion 36',
                 '    compileSdkVersion 36\n    packagingOptions { jniLibs { keepDebugSymbols += ["**/librustdesk.so"] } }')
+        # Upstream's 1 GiB Gradle heap makes the release build's JVM thrash
+        # ("Gradle build daemon has been stopped: ... garbage collector is thrashing").
+        replace(output / "android/gradle.properties", "org.gradle.jvmargs=-Xmx1024M",
+                "org.gradle.jvmargs=-Xmx5120M -XX:MaxMetaspaceSize=1024M\nkotlin.daemon.jvmargs=-Xmx3072M")
 
     metadata = {
         "official_commit": staging.field((ROOT / "native/frb/UPSTREAM.txt").read_text(), "Commit"),
