@@ -1,0 +1,150 @@
+name: HarmonyOS HAR SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'vendor/**'
+      - 'Cargo.*'
+      - 'build.rs'
+      - 'scripts/*ohos*'
+      - '.github/workflows/ohos-har.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish_private:
+        description: Publish this exact HAR version to CodeArts
+        type: boolean
+        default: false
+      dispatch_resk:
+        description: Dispatch the updated Resk build-only consumer after verified publication
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ohos-har-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.95.0
+  OHOS_COMMAND_LINE_TOOLS_VERSION: 6.1.1.280
+  CODEARTS_OHPM_REGISTRY: https://devrepo.devcloud.cn-north-4.huaweicloud.com/artgalaxy/api/ohpm/cn-north-4_c07b1b38744f424b8d87a86532d38003_ohpm_1/
+
+jobs:
+  build:
+    name: Clean-source arm64 HAR
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Source and package gates
+        shell: bash
+        run: |
+          bash scripts/verify-native-provenance.sh --verify --require-tracked
+          python3 scripts/test-ohos-har.py
+      - name: Host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build pkg-config protobuf-compiler make perl
+      - name: HarmonyOS SDK
+        uses: ErBWs/setup-ohos@4dbb63025116eb6165ceac58a4bf47cbdc5ac721
+        with:
+          version: ${{ env.OHOS_COMMAND_LINE_TOOLS_VERSION }}
+          cache: true
+      - name: Rust OHOS target
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-unknown-linux-ohos
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: native/ohos_napi
+          prefix-key: ohos-har-sdk-6.1.1.280-rust-1.95.0
+      - name: Immutable package version
+        id: version
+        shell: bash
+        run: |
+          base="$(python3 -c 'import json; print(json.load(open("native/ohos_napi/package/oh-package.json5"))["version"].split("-")[0])')"
+          echo "version=${base}-ci.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.g${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+      - name: Build HAR from the owning NAPI crate
+        shell: bash
+        env:
+          HAR_PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/rd-engine-ohos.cmake" <<'CMAKE'
+          set(OHOS_ARCH arm64-v8a CACHE STRING "")
+          set(OHOS_STL c++_shared CACHE STRING "")
+          include("$ENV{OHOS_NDK_HOME}/native/build/cmake/ohos.toolchain.cmake")
+          CMAKE
+          export CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_ohos="$RUNNER_TEMP/rd-engine-ohos.cmake"
+          bash native/ohos_napi/build-har.sh --release-claim
+          python3 scripts/verify-ohos-har.py native/ohos_napi/target/package.har \
+            --engine-sha "$GITHUB_SHA" --version "$HAR_PACKAGE_VERSION" \
+            --sidecar native/ohos_napi/target/release-provenance.json
+      - name: HAR and exact source evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustdesk-ohrs-${{ steps.version.outputs.version }}
+          path: |
+            native/ohos_napi/target/package.har
+            native/ohos_napi/target/release-provenance.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish and verify private HAR
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_private
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: rustdesk-ohrs-${{ needs.build.outputs.version }}
+          path: release
+      - uses: ErBWs/setup-ohos@4dbb63025116eb6165ceac58a4bf47cbdc5ac721
+        with:
+          version: ${{ env.OHOS_COMMAND_LINE_TOOLS_VERSION }}
+          cache: true
+      - name: Publish once and verify downloaded bytes
+        shell: bash
+        env:
+          CODEARTS_PRIVATE_OHPM: ${{ secrets.CODEARTS_PRIVATE_OHPM }}
+          HAR_PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+        run: python3 scripts/publish-ohos-har.py release/package.har release/release-provenance.json
+      - name: Registry verification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ohpm-publication-${{ needs.build.outputs.version }}
+          path: release/registry-verification.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Dispatch Resk build only
+        if: inputs.dispatch_resk
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n --arg version "$PACKAGE_VERSION" --arg sha "$GITHUB_SHA" \
+            '{event_type:"rd-engine-har-published",client_payload:{package_name:"rustdesk-ohrs",package_version:$version,engine_repository:"FrankHan052176/rd-engine",engine_sha:$sha,publish_test:false}}' \
+            > "$RUNNER_TEMP/resk-dispatch.json"
+          gh api --method POST repos/FrankHan052176/RustDesk-ArkTS/dispatches --input "$RUNNER_TEMP/resk-dispatch.json"

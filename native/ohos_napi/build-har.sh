@@ -13,7 +13,8 @@ case "${1:-}" in
       'Requires: Rust OHOS target, Python 3, Git, and the SDK/native dependencies' \
       'configured by scripts/ohos-env.sh (OHOS_NDK_HOME / OHOS_VCPKG_PREFIX).' \
       'Outputs: target/package.har and target/release-provenance.json in native/ohos_napi.' \
-      'Local builds may be dirty and say so; --release-claim requires clean sources.'
+      'Local builds may be dirty and say so; --release-claim requires clean sources.' \
+      'HAR_PACKAGE_VERSION optionally versions the staged package without modifying sources.'
     exit 0
     ;;
   *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -35,6 +36,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -82,8 +84,10 @@ if release_claim and source_dirty:
 metadata = json.loads((source_package / 'oh-package.json5').read_text(encoding='utf-8'))
 if metadata.get('name') != 'rustdesk-ohrs':
     raise SystemExit('HAR package metadata must name rustdesk-ohrs')
-if not isinstance(metadata.get('version'), str) or not metadata['version'].strip():
-    raise SystemExit('HAR package metadata must contain its actual version')
+version = os.environ.get('HAR_PACKAGE_VERSION', metadata.get('version', ''))
+if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?', version):
+    raise SystemExit('HAR package version must be an exact semantic version')
+metadata['version'] = version
 libcxx = Path(os.environ['OHOS_NDK_HOME']) / 'native/llvm/lib/aarch64-linux-ohos/libc++_shared.so'
 if not libcxx.is_file():
     raise SystemExit('SDK libc++_shared.so not found: ' + str(libcxx))
@@ -103,6 +107,7 @@ if package.exists():
     shutil.rmtree(package)
 shutil.copytree(source_package, package,
                 ignore=shutil.ignore_patterns('*.so', 'release-provenance.json'))
+write_json(package / 'oh-package.json5', metadata)
 libs = package / 'libs/arm64-v8a'
 libs.mkdir(parents=True, exist_ok=True)
 shutil.copy2(library, libs / library.name)
