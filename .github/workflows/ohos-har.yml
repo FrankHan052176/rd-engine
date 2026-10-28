@@ -154,3 +154,6 @@ jobs:
             '{event_type:"rd-engine-har-published",client_payload:{package_name:"rustdesk-ohrs",package_version:$version,engine_repository:"FrankHan052176/rd-engine",engine_sha:$sha,publish_test:false}}' \
             > "$RUNNER_TEMP/resk-dispatch.json"
           gh api --method POST repos/FrankHan052176/RustDesk-ArkTS/dispatches --input "$RUNNER_TEMP/resk-dispatch.json"
+      - name: Remove private registry credentials
+        if: always()
+        run: rm -f "$HOME/.ohpm/.ohpmrc"

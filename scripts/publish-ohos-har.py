@@ -60,8 +60,10 @@ def main():
         private_config = Path.home() / '.ohpm/.ohpmrc'
         private_config.parent.mkdir(parents=True, exist_ok=True)
         # No disabled TLS verification or unrelated config is inherited.
-        private_config.write_text(f'{auth_key}={auth}\npublish_registry={registry}\nstrict_ssl=true\n')
-        private_config.chmod(0o600)
+        descriptor = os.open(private_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, 'w') as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(f'{auth_key}={auth}\npublish_registry={registry}\nstrict_ssl=true\n')
         try:
             try:
                 completed = subprocess.run(
