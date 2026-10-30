@@ -46,6 +46,9 @@ export function lanPeerRemove(ownerGeneration: string, expectedScanId: string, c
  * IP-shaped LAN IDs on the approved RustDesk route. Existing ids are never
  * overwritten. At 256 registered/live/quarantined/unacknowledged records, new
  * registration is refused; consume and ACK confirmed receipts to free capacity.
+ * add/start/poll/close carry session:{sessionId,coreSessionId,lifecycleEpoch,
+ * kind,target,phase}. lifecycleEpoch is a nonzero native decimal string, not a
+ * UI counter; a reused sessionId receives a new epoch.
  */
 export function sessionAdd(sessionId: string, peerTarget: string, optionsJson: string): string {
   return native.sessionAdd(sessionId, peerTarget, optionsJson);
@@ -60,13 +63,32 @@ export function sessionLogin(sessionId: string, loginJson: string): string {
   return native.sessionLogin(sessionId, loginJson);
 }
 
-/** Requests close without ACKing/removing the record; keep the Surface until its terminal poll confirms reclamation. */
-export function sessionClose(sessionId: string): string {
+/**
+ * Resolves only after native teardown finishes, not when the request is accepted.
+ * JSON always carries released and settle ("settled" | "unconfirmed" |
+ * "neverstarted"); only released:true permits destroying the Surface.
+ * surfaces names actual lease bindings, retaining their Surface ids after release.
+ * Remote/auth errors and input-release counters survive even a confirmed release.
+ * Abandoning this Promise neither releases ownership nor acknowledges the record.
+ */
+export function sessionClose(sessionId: string): Promise<string> {
   return native.sessionClose(sessionId);
 }
 
-export function sessionBindSurface(sessionId: string, display: number, surfaceId: string): string {
-  return native.sessionBindSurface(sessionId, display, surfaceId);
+/** Removes only this epoch after a complete close/poll receipt and confirmed reclamation. */
+export function sessionAcknowledgeClose(sessionId: string, lifecycleEpoch: string): string {
+  return native.sessionAcknowledgeClose(sessionId, lifecycleEpoch);
+}
+
+/**
+ * Echo the native epoch. One Surface only: no running-viewer hot rebind.
+ * Empty surfaceId is a give-back request; a live/closing viewer returns
+ * held:true/released:false. Only no viewer ever started or confirmed reclamation
+ * permits released:true. Binding/give-back never counts as a terminal ACK.
+ */
+export function sessionBindSurface(sessionId: string, display: number, surfaceId: string,
+  lifecycleEpoch: string): string {
+  return native.sessionBindSurface(sessionId, display, surfaceId, lifecycleEpoch);
 }
 
 /**
@@ -74,7 +96,8 @@ export function sessionBindSurface(sessionId: string, display: number, surfaceId
  * Optional peer_close_reason: "manual_request" | null, a typed confirmed-terminal
  * fact only; never raw peer text or a new UI action. Registered/no-viewer polls use null.
  * Confirmed terminal snapshots retain error, input-release counters and telemetry
- * until sessionCancelJob(sessionId, 0) ACKs consumption. Events remain one-shot.
+ * until sessionAcknowledgeClose(sessionId, lifecycleEpoch) ACKs consumption.
+ * Events remain one-shot; released/settle/surfaces and terminal facts persist.
  */
 export function sessionPollEvents(sessionId: string, limit: number): string {
   return native.sessionPollEvents(sessionId, limit);
@@ -117,9 +140,9 @@ export function sessionSetCommon(sessionId: string, key: string, value: string):
 }
 
 /**
- * Live: whole-viewer cancellation only (record_removed:false, actId ignored).
- * Terminal: actId=0 ACKs only a confirmed, successfully polled receipt and returns
- * {ok:true, record_removed:true}. Unknown/unconfirmed/unpolled records are refused.
+ * Explicitly unsupported until a real transfer-job owner is wired here.
+ * No actId (including 0) closes a viewer, releases a Surface or ACKs a receipt.
+ * Use sessionClose/sessionAcknowledgeClose for the viewer lifecycle.
  */
 export function sessionCancelJob(sessionId: string, actId: number): string {
   return native.sessionCancelJob(sessionId, actId);

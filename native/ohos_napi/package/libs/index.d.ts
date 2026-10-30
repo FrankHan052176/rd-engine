@@ -26,6 +26,9 @@ export declare function lanPeerRemove(ownerGeneration: string, expectedScanId: s
  * optionsJson may carry approvedServerProfile and rustdeskIdOnly; true requires
  * the approved RustDesk ID route. Existing ids are never overwritten; the registry
  * refuses registration at 256 records, including quarantine and unacknowledged terminals.
+ * add/start/poll/close carry session:{sessionId,coreSessionId,lifecycleEpoch,
+ * kind,target,phase}. lifecycleEpoch is a nonzero native decimal string, renewed
+ * whenever a sessionId is registered again after ACK.
  */
 export declare function sessionAdd(sessionId: string, peerTarget: string, optionsJson: string): string
 
@@ -34,16 +37,32 @@ export declare function sessionStart(sessionId: string): string
 /** Refuses closing/terminal records; a closed viewer cannot accept a new password. */
 export declare function sessionLogin(sessionId: string, loginJson: string): string
 
-/** Requests close, not receipt removal. Poll confirmed reclamation before ACKing. */
-export declare function sessionClose(sessionId: string): string
+/**
+ * Resolves with native teardown completion, never request acceptance.
+ * JSON always carries released:boolean and settle:"settled"|"unconfirmed"|"neverstarted";
+ * only released:true permits destroying the Surface. surfaces retains real binding
+ * token/sourceIdentity/surfaceId strings and released/quarantined verdicts.
+ * Remote failures, input-release counters and telemetry persist until explicit ACK.
+ * Abandoning the Promise does not relinquish native cleanup ownership.
+ */
+export declare function sessionClose(sessionId: string): Promise<string>
 
-export declare function sessionBindSurface(sessionId: string, display: number, surfaceId: string): string
+/** Requires the exact epoch, confirmed reclamation and a complete close/poll receipt. */
+export declare function sessionAcknowledgeClose(sessionId: string, lifecycleEpoch: string): string
+
+/**
+ * Echo the native epoch; one Surface only, no running-viewer hot rebind.
+ * Empty surfaceId returns held:true/released:false while native ownership remains;
+ * released:true requires never-started or confirmed-reclaimed ownership.
+ */
+export declare function sessionBindSurface(sessionId: string, display: number, surfaceId: string, lifecycleEpoch: string): string
 
 /**
  * Persistent login_failure: null | "empty_password" | "wrong_password" | "refused".
  * Optional peer_close_reason: "manual_request" | null, only for a typed confirmed
  * terminal peer close; registered/no-viewer polls use null. Raw peer text is never exposed.
- * Final error, input-release counters and telemetry survive reclamation until ACK;
+ * Final error, input-release counters, telemetry and released/settle/surfaces survive
+ * reclamation until sessionAcknowledgeClose(sessionId,lifecycleEpoch);
  * close/authorization events remain one-shot. Return type remains JSON string.
  */
 export declare function sessionPollEvents(sessionId: string, limit: number): string
@@ -67,8 +86,8 @@ export declare function sessionSetUnverifiedInputAccepted(sessionId: string, acc
 export declare function sessionSetCommon(sessionId: string, key: string, value: string): string
 
 /**
- * Live calls request whole-viewer cancellation (record_removed:false, actId ignored).
- * actId=0 ACKs a confirmed terminal snapshot only after successful polling, returning
- * {ok:true, record_removed:true}. Unknown/unconfirmed/unpolled records are not removed.
+ * Explicitly unsupported: no transfer-job owner is wired to this bridge.
+ * No actId, including 0, closes a viewer or ACKs/removes a terminal record.
+ * Whole-viewer teardown and ACK belong to sessionClose/sessionAcknowledgeClose.
  */
 export declare function sessionCancelJob(sessionId: string, actId: number): string

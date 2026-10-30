@@ -5,6 +5,10 @@
 //! legacy client capabilities; no entry point fabricates success or telemetry.
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
+use napi_ohos::{
+    bindgen_prelude::{AsyncTask, Task},
+    Env,
+};
 use rd_engine::protocol::Target;
 use rd_engine::session::PeerCloseReason;
 use rd_engine::viewer::{
@@ -75,13 +79,23 @@ struct IdRoute {
     admission: app_context::IdAdmission,
 }
 
+/// A real binding of this record's single lease, not a decoder destination from
+/// another backend. Retain its identity after clearing the atomic Surface id so
+/// the terminal receipt can still name what was released.
+struct SurfaceBinding {
+    token: u64,
+    surface_id: u64,
+    display: u32,
+}
+
 struct SessionRecord {
+    lifecycle_epoch: u64,
     target: String,
     viewer_target: ViewerTarget,
     /// Explicit-save profile and local identity, owned at registration. Starts
     /// never read editable server settings or import trust from the target.
     id_route: Option<IdRoute>,
-    /// A confirmed terminal record remains until poll consumption is ACKed.
+    /// A confirmed terminal record remains until receipt consumption is ACKed.
     /// Registration never overwrites an existing id, even after reclamation.
     closed: bool,
     /// Close has been requested, or its terminal verdict did not permit native
@@ -97,8 +111,9 @@ struct SessionRecord {
     /// Final facts survive releasing the registry's Viewer and password copies.
     terminal_snapshot: Option<ViewerSnapshot>,
     terminal_elapsed_ms: Option<u64>,
-    /// A constructed terminal poll response, independent of one-shot events.
-    terminal_polled: bool,
+    /// A complete close/poll JSON receipt was constructed for this epoch.
+    /// This is not delivery proof or an ACK, and is independent of events.
+    terminal_receipt_constructed: bool,
     /// Last selected-display-local absolute pointer position the engine actually
     /// admitted for this session. The canonical input contract sends button
     /// transitions without coordinates, so this record supplies the position of
@@ -114,6 +129,7 @@ struct SessionRecord {
     /// is registered: the client binds the surface id after it asks for the
     /// session, and the engine reads the lease when the first frame opens it.
     lease: Arc<OhosSurfaceLease>,
+    binding: Option<SurfaceBinding>,
     /// The local input policy this session runs under: the operator's read-only
     /// switch and this connection's acceptance of a peer the handshake did not
     /// prove. It is the engine's policy, not this layer's: `sessionSetViewOnly`
@@ -197,6 +213,15 @@ impl Reported {
 }
 
 static SESSIONS: Mutex<Option<HashMap<String, SessionRecord>>> = Mutex::new(None);
+// One native allocation domain for record epochs and binding tokens. It never
+// wraps or resets on ACK, so a reused client session id cannot inherit an epoch.
+static NEXT_NATIVE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_native_id() -> Result<u64, &'static str> {
+    NEXT_NATIVE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .map_err(|_| "native lifecycle identity exhausted")
+}
 
 fn with_sessions<T>(change: impl FnOnce(&mut HashMap<String, SessionRecord>) -> T) -> T {
     let mut guard = SESSIONS.lock().unwrap_or_else(|error| error.into_inner());
@@ -232,17 +257,15 @@ fn apply_terminal_reclamation(
     }
 }
 
-/// Observes terminal ownership at every lifecycle entry, without consuming events.
-/// Unknown/failed reclamation retains the Viewer, lease and registry record.
-fn observe_terminal_reclamation(record: &mut SessionRecord) -> Option<ViewerSnapshot> {
-    if let Some(snapshot) = &record.terminal_snapshot {
-        return Some(snapshot.clone());
-    }
-    let viewer = record.viewer.as_ref()?;
-    let snapshot = viewer.snapshot();
+/// Commits the owner's terminal facts without consuming a receipt. Unknown or
+/// failed reclamation retains the Viewer, lease and registry record.
+fn record_terminal_reclamation(
+    record: &mut SessionRecord,
+    snapshot: &ViewerSnapshot,
+    verdict: Option<bool>,
+) {
     if snapshot.closed {
-        let verdict = viewer.reclamation_confirmed();
-        if verdict == Some(true) {
+        if verdict.is_some() && record.terminal_snapshot.is_none() {
             // Preserve the actual failure, input account and telemetry BEFORE
             // clearing the lease, password or registry's last Viewer reference.
             record.terminal_snapshot = Some(snapshot.clone());
@@ -261,6 +284,17 @@ fn observe_terminal_reclamation(record: &mut SessionRecord) -> Option<ViewerSnap
             scrub_terminal_record(record);
         }
     }
+}
+
+/// Cold lifecycle observation is not proof that a receipt was constructed.
+fn observe_terminal_reclamation(record: &mut SessionRecord) -> Option<ViewerSnapshot> {
+    if let Some(snapshot) = &record.terminal_snapshot {
+        return Some(snapshot.clone());
+    }
+    let viewer = record.viewer.as_ref()?;
+    let snapshot = viewer.snapshot();
+    let verdict = viewer.reclamation_confirmed();
+    record_terminal_reclamation(record, &snapshot, verdict);
     Some(snapshot)
 }
 
@@ -581,7 +615,7 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
     } else {
         "password and rate held for the next sessionStart"
     };
-    let registered = with_sessions(|sessions| -> Result<(), String> {
+    let registered = with_sessions(|sessions| -> Result<String, String> {
         let _admission = id_route
             .as_ref()
             .map(|route| app_context::hold_id_admission(&route.admission))
@@ -605,78 +639,206 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
                     .to_string(),
             );
         }
-        sessions.insert(
-            session_id.clone(),
-            SessionRecord {
-                target,
-                viewer_target,
-                id_route,
-                closed: false,
-                closing: false,
-                reclaimed: None,
-                password: password.to_owned(),
-                fps,
-                dials: 0,
-                started: Instant::now(),
-                viewer: None,
-                terminal_snapshot: None,
-                terminal_elapsed_ms: None,
-                terminal_polled: false,
-                lease: Arc::new(OhosSurfaceLease::new()),
-                input_policy,
-                cursor: None,
-                common: HashMap::new(),
-                reported: Reported::default(),
-            },
-        );
-        Ok(())
-    });
-    match registered {
-        Ok(()) => action_json(
+        let record = SessionRecord {
+            lifecycle_epoch: allocate_native_id().map_err(str::to_owned)?,
+            target,
+            viewer_target,
+            id_route,
+            closed: false,
+            closing: false,
+            reclaimed: None,
+            password: password.to_owned(),
+            fps,
+            dials: 0,
+            started: Instant::now(),
+            viewer: None,
+            terminal_snapshot: None,
+            terminal_elapsed_ms: None,
+            terminal_receipt_constructed: false,
+            lease: Arc::new(OhosSurfaceLease::new()),
+            binding: None,
+            input_policy,
+            cursor: None,
+            common: HashMap::new(),
+            reported: Reported::default(),
+        };
+        let mut response = session_response(
             true,
             "session_add",
             &session_id,
-            "registered",
-            serde_json::json!({
-                "routable": true,
-                "fps": fps,
-                "view_only": view_only,
-                "note": format!("{route_note}; {credentials_note}"),
-            }),
-        ),
-        Err(message) => error_json(&message),
-    }
+            &record,
+            None,
+        );
+        response["routable"] = serde_json::json!(true);
+        response["fps"] = serde_json::json!(fps);
+        response["view_only"] = serde_json::json!(view_only);
+        response["note"] = serde_json::json!(format!("{route_note}; {credentials_note}"));
+        let response = response.to_string();
+        sessions.insert(session_id.clone(), record);
+        Ok(response)
+    });
+    registered.unwrap_or_else(|message| error_json(&message))
 }
 
-/// The response shape the ArkTS client reads.
-///
-/// `updateSessionState` takes the session id out of `response.session` and
-/// leaves it untouched when that object is absent, so a session entry point that
-/// answers without one loses the id the rest of the UI keys on. Every session
-/// response therefore carries `ok`, `action` and that object, with the call's
-/// own fields merged in beside them.
-fn action_json(
+fn surface_receipts(record: &SessionRecord, released: bool) -> Vec<serde_json::Value> {
+    record
+        .binding
+        .iter()
+        .map(|binding| {
+            serde_json::json!({
+                "token": binding.token.to_string(),
+                // This epoch owns the Arc<OhosSurfaceLease>; the token names
+                // the actual binding allocated within it.
+                "sourceIdentity": record.lifecycle_epoch.to_string(),
+                "surfaceId": binding.surface_id.to_string(),
+                "display": binding.display,
+                "released": released,
+                "quarantined": record.closing && !released,
+            })
+        })
+        .collect()
+}
+
+/// One complete snapshot vocabulary for add/start/poll/close. A failed remote
+/// login and an unconfirmed native release are independent facts. Keep both,
+/// along with the input writer's release account and cumulative media counters.
+fn session_response(
     ok: bool,
     action: &str,
     session_id: &str,
-    phase: &str,
-    extra: serde_json::Value,
-) -> String {
+    record: &SessionRecord,
+    snapshot: Option<&ViewerSnapshot>,
+) -> serde_json::Value {
+    let phase = snapshot.map_or_else(
+        || {
+            if record.closed {
+                "closed"
+            } else if record.closing {
+                "closing"
+            } else {
+                "registered"
+            }
+        },
+        |snapshot| snapshot.phase.as_str(),
+    );
+    let kind = match &record.viewer_target {
+        ViewerTarget::RustDesk { .. } => "rustdesk",
+        ViewerTarget::Vnc(_) => "vnc",
+        ViewerTarget::Rdp(_) => "rdp",
+    };
+    let released = record.reclaimed == Some(true);
+    let settle = if !released {
+        "unconfirmed"
+    } else if record.dials == 0 {
+        "neverstarted"
+    } else {
+        "settled"
+    };
     let mut response = serde_json::json!({
         "ok": ok,
         "action": action,
         "session": {
             "sessionId": session_id,
             "coreSessionId": session_id,
+            "lifecycleEpoch": record.lifecycle_epoch.to_string(),
+            "kind": kind,
+            "target": record.target,
             "phase": phase,
         },
+        "phase": phase,
+        "protocol": kind,
+        "target": record.target,
+        "closed": snapshot.map_or(record.closed, |snapshot| snapshot.closed),
+        "closing": record.closing,
+        "reclamation_known": record.reclaimed.is_some(),
+        "reclaimed": record.reclaimed,
+        // Never derive this from an empty list of destinations.
+        "released": released,
+        "settle": settle,
+        "surfaces": surface_receipts(record, released),
+        "error": null,
+        "login_failure": null,
+        "peer_close_reason": null,
+        "authenticated": false,
+        "note": poll_note(phase, None),
     });
-    if let (Some(target), serde_json::Value::Object(extra)) = (response.as_object_mut(), extra) {
-        for (key, value) in extra {
-            target.insert(key, value);
+    if let Some(snapshot) = snapshot {
+        response["session"]["inputGeneration"] =
+            serde_json::json!(snapshot.input_generation.to_string());
+        if let Some(error) = &snapshot.error {
+            response["session"]["lastError"] = serde_json::json!(error);
+        }
+        let facts = serde_json::json!({
+            "error": snapshot.error,
+            "login_failure": login_failure_name(snapshot.login_failure),
+            "peer_close_reason": if snapshot.closed && released {
+                peer_close_reason_name(snapshot.peer_close_reason)
+            } else {
+                None
+            },
+            "route": snapshot.route,
+            "codec": snapshot.codec,
+            "width": snapshot.width,
+            "height": snapshot.height,
+            "encrypted": snapshot.encrypted,
+            "peer_verified": snapshot.peer_verified,
+            "keyboard_allowed": snapshot.keyboard_allowed,
+            "input_generation": snapshot.input_generation,
+            "releases_owed": snapshot.releases_owed,
+            "releases_retired": snapshot.releases_retired,
+            "release_pending": snapshot.releases_retired > 0,
+            "releases_unreleased": snapshot.releases_unreleased,
+            "authenticated": snapshot.authenticated,
+            "received_units": snapshot.received_units,
+            "pushed_units": snapshot.pushed_units,
+            "render_submissions": snapshot.render_submissions,
+            "queued_units": snapshot.queued_units,
+            "note": release_note(snapshot.releases_retired, snapshot.releases_unreleased)
+                .unwrap_or_else(|| poll_note(phase, snapshot.error.as_deref())),
+        });
+        if let (Some(response), serde_json::Value::Object(facts)) =
+            (response.as_object_mut(), facts)
+        {
+            response.extend(facts);
         }
     }
-    response.to_string()
+    response
+}
+
+/// No native identity/lease can be claimed for an unknown or superseded request.
+fn lifecycle_error_json(action: &str, message: &str) -> String {
+    serde_json::json!({
+        "ok": false,
+        "action": action,
+        "error": message,
+        "message": message,
+        "released": false,
+        "settle": "unconfirmed",
+        "surfaces": [],
+    })
+    .to_string()
+}
+
+fn close_receipt_json(session_id: &str, record: &mut SessionRecord) -> String {
+    let mut response = session_response(
+        record.reclaimed == Some(true),
+        "session_close",
+        session_id,
+        record,
+        record.terminal_snapshot.as_ref(),
+    );
+    if record.reclaimed != Some(true) {
+        response["message"] = serde_json::json!(
+            "native surface reclamation is unconfirmed; retain the Surface and session record"
+        );
+    }
+    let response = response.to_string();
+    // Constructed for the close consumer, not delivered or acknowledged. The
+    // same gate is set by a complete poll, never by observing a terminal event.
+    if record.closed && record.reclaimed == Some(true) {
+        record.terminal_receipt_constructed = true;
+    }
+    response
 }
 
 /// Dials the record's target, presenting into the surface the client binds.
@@ -693,50 +855,56 @@ fn action_json(
 /// restarting a tombstone nor reusing an unconfirmed Surface is allowed.
 #[napi]
 pub fn session_start(session_id: String) -> String {
-    let started = with_sessions(|sessions| -> Result<(Arc<Viewer>, bool), String> {
+    with_sessions(|sessions| {
         let Some(record) = sessions.get_mut(&session_id) else {
-            return Err("unknown session".to_string());
+            return lifecycle_error_json("session_start", "unknown session");
         };
-        mutable_snapshot(record).map_err(str::to_owned)?;
-        if let Some(viewer) = &record.viewer {
-            return Ok((viewer.clone(), false));
+        if let Err(message) = mutable_snapshot(record) {
+            let snapshot = observe_terminal_reclamation(record);
+            let mut response = session_response(
+                false,
+                "session_start",
+                &session_id,
+                record,
+                snapshot.as_ref(),
+            );
+            response["action_error"] = serde_json::json!(message);
+            response["message"] = serde_json::json!(message);
+            return response.to_string();
         }
-        let viewer = dial(record)?;
-        record.viewer = Some(viewer.clone());
-        record.reported = Reported::default();
-        // A new viewer is a new peer session: the position the previous one
-        // admitted says nothing about where this one's pointer is, so a
-        // coordinate-less button waits for a move this viewer actually admitted.
-        record.cursor = None;
-        record.dials += 1;
-        record.started = Instant::now();
-        Ok((viewer, true))
-    });
-    match started {
-        Ok((viewer, started)) => {
-            let snapshot = viewer.snapshot();
-            let surface_bound = with_sessions(|sessions| {
-                sessions
-                    .get(&session_id)
-                    .is_some_and(|record| record.lease.surface_id() != 0)
-            });
-            serde_json::json!({
-                "ok": true,
-                "started": started,
-                "phase": snapshot.phase,
-                "protocol": snapshot.protocol,
-                "route": snapshot.route,
-                "surface_bound": surface_bound,
-                "note": if started {
-                    "viewer dialled; it presents into the surface the client binds, which it may bind after this call"
-                } else {
-                    "a viewer is already running for this session: session_start did not dial again"
-                },
-            })
-            .to_string()
+        let started = record.viewer.is_none();
+        if started {
+            match dial(record) {
+                Ok(viewer) => {
+                    record.viewer = Some(viewer);
+                    record.reported = Reported::default();
+                    // A fresh dial has admitted no pointer position.
+                    record.cursor = None;
+                    record.dials += 1;
+                    record.started = Instant::now();
+                }
+                Err(message) => {
+                    let mut response =
+                        session_response(false, "session_start", &session_id, record, None);
+                    response["error"] = serde_json::json!(message);
+                    response["message"] = serde_json::json!(message);
+                    return response.to_string();
+                }
+            }
         }
-        Err(message) => error_json(&message),
-    }
+        let snapshot = observe_terminal_reclamation(record);
+        let mut response = session_response(
+            true, "session_start", &session_id, record, snapshot.as_ref(),
+        );
+        response["started"] = serde_json::json!(started);
+        response["surface_bound"] = serde_json::json!(record.lease.surface_id() != 0);
+        response["note"] = serde_json::json!(if started {
+            "viewer dialled; it presents into the surface the client binds, which it may bind after this call"
+        } else {
+            "a viewer is already running for this session: session_start did not dial again"
+        });
+        response.to_string()
+    })
 }
 
 /// Records the password the client collected for this peer.
@@ -800,143 +968,216 @@ pub fn session_login(session_id: String, payload: String) -> String {
     }
 }
 
-/// Records the OHOS surface this session presents into.
-///
-/// A session may bind a surface while it has no viewer yet. Once a viewer is
-/// running, replacing or clearing its Surface is refused: close it first and
-/// wait for the terminal poll response that confirms native reclamation.
+/// Binds this epoch's one Surface. An empty id is a give-back request, not
+/// evidence of release; a running/closing viewer retains its lease unchanged.
 #[napi]
-pub fn session_bind_surface(session_id: String, display: u32, surface_id: String) -> String {
+pub fn session_bind_surface(
+    session_id: String,
+    display: u32,
+    surface_id: String,
+    lifecycle_epoch: String,
+) -> String {
     let surface_id = surface_id.trim();
     let bound = if surface_id.is_empty() {
         0
     } else {
         match surface_id.parse::<u64>() {
             Ok(value) if value != 0 => value,
-            _ => return error_json("surface id must be the decimal u64 the XComponent reports"),
+            _ => {
+                return lifecycle_error_json(
+                    "session_bind_surface",
+                    "surface id must be the decimal u64 the XComponent reports",
+                )
+            }
         }
     };
     with_sessions(|sessions| match sessions.get_mut(&session_id) {
         Some(record) => {
-            let snapshot = match mutable_snapshot(record) {
-                Ok(snapshot) => snapshot,
-                Err(message) => return error_json(message),
-            };
-            let existing = record.lease.surface_id();
-            if snapshot.is_some() {
-                if bound == 0 {
-                    return error_json(
-                        "cannot clear a surface while a viewer is running; request close and wait for confirmed reclamation",
-                    );
-                }
-                if existing != 0 && existing != bound {
-                    return error_json(
-                        "cannot replace a running viewer's surface; request close and wait for confirmed reclamation",
-                    );
-                }
+            if lifecycle_epoch != record.lifecycle_epoch.to_string() {
+                return lifecycle_error_json("session_bind_surface", "stale lifecycle epoch");
             }
-            record.lease.bind(bound);
-            let phase = snapshot.map_or_else(|| "registered".to_owned(), |value| value.phase);
-            action_json(
-                true,
-                "session_bind_surface",
-                &session_id,
-                &phase,
-                serde_json::json!({
-                    "bound": bound != 0,
-                    "display": display,
-                    "note": if bound != 0 {
-                        format!("display {display} bound to this session's surface: the engine reads it when it opens the surface for the first frame")
-                    } else {
-                        "binding cleared before any viewer was started".to_owned()
-                    },
-                }),
-            )
+            let snapshot = observe_terminal_reclamation(record);
+            let mut response = session_response(
+                true, "session_bind_surface", &session_id, record, snapshot.as_ref(),
+            );
+            if bound == 0 {
+                let released = record.reclaimed == Some(true)
+                    || (record.dials == 0 && !record.closing);
+                response["released"] = serde_json::json!(released);
+                response["held"] = serde_json::json!(!released);
+                response["surfaces"] = serde_json::json!(surface_receipts(record, released));
+                if released {
+                    record.lease.bind(0);
+                    // A never-started give-back has no terminal receipt to
+                    // retain. A terminal binding stays recorded until ACK.
+                    if !record.closed {
+                        record.binding = None;
+                    }
+                    if record.dials == 0 {
+                        response["settle"] = serde_json::json!("neverstarted");
+                    }
+                } else {
+                    response["ok"] = serde_json::json!(false);
+                    response["message"] = serde_json::json!(
+                        "cannot clear a held Surface; close the viewer and wait for confirmed reclamation"
+                    );
+                }
+                response["bound"] = serde_json::json!(record.lease.surface_id() != 0);
+                response["display"] = serde_json::json!(display);
+                return response.to_string();
+            }
+            if record.closed || record.closing {
+                response["ok"] = serde_json::json!(false);
+                response["message"] = serde_json::json!(
+                    "cannot bind a closing or terminal session; acknowledge its confirmed receipt first"
+                );
+                return response.to_string();
+            }
+            let existing = record.lease.surface_id();
+            if record.viewer.is_some()
+                && record.binding.as_ref().is_some_and(|binding| {
+                    binding.surface_id != bound || binding.display != display
+                })
+            {
+                response["ok"] = serde_json::json!(false);
+                response["message"] = serde_json::json!(
+                    "cannot replace a running viewer's single Surface binding; close it first"
+                );
+                return response.to_string();
+            }
+            if existing != bound
+                || record.binding.as_ref().is_none_or(|binding| binding.display != display)
+            {
+                let token = match allocate_native_id() {
+                    Ok(token) => token,
+                    Err(message) => {
+                        return lifecycle_error_json("session_bind_surface", message);
+                    }
+                };
+                record.binding = Some(SurfaceBinding {
+                    token,
+                    surface_id: bound,
+                    display,
+                });
+                record.lease.bind(bound);
+            }
+            response["surfaces"] = serde_json::json!(surface_receipts(record, false));
+            response["bound"] = serde_json::json!(true);
+            response["display"] = serde_json::json!(display);
+            response["released"] = serde_json::json!(false);
+            response["note"] = serde_json::json!(
+                "single Surface lease bound; this records the destination, not a peer display switch or hot rebind"
+            );
+            response.to_string()
         }
-        None => error_json("unknown session"),
+        None => lifecycle_error_json("session_bind_surface", "unknown session"),
     })
 }
 
-/// Requests teardown, retaining ownership until the actual reclamation verdict.
-/// A confirmed close scrubs runtime ownership but never consumes or ACKs the
-/// terminal receipt. The client must still poll before sessionCancelJob(…, 0).
-#[napi]
-pub fn session_close(session_id: String) -> String {
-    with_sessions(|sessions| {
-        let Some(record) = sessions.get_mut(&session_id) else {
-            return error_json("unknown session");
-        };
-        observe_terminal_reclamation(record);
-        if record.closed {
-            return action_json(
-                true,
-                "session_close",
-                &session_id,
-                "closed",
-                serde_json::json!({
-                    "already_closed": true,
-                    "reclamation_known": record.reclaimed.is_some(),
-                    "reclaimed": record.reclaimed,
-                    "note": "session was already terminal; poll and acknowledge its recorded receipt",
-                }),
-            );
-        }
-        if record.closing {
-            let verdict = record.reclaimed;
-            return action_json(
-                true,
-                "session_close",
-                &session_id,
-                if verdict.is_some() { "failed" } else { "closing" },
-                serde_json::json!({
-                    "already_closing": true,
-                    "reclamation_known": verdict.is_some(),
-                    "reclaimed": verdict,
-                    "note": if verdict.is_some() {
-                        "the viewer is terminal but native surface reclamation was not confirmed; do not replace or clear this Surface"
-                    } else {
-                        "close was already requested; keep the Surface alive and poll for its terminal verdict"
-                    },
-                }),
-            );
-        }
-        if let Some(viewer) = &record.viewer {
+enum CloseRequest {
+    Complete(String),
+    Join {
+        session_id: String,
+        lifecycle_epoch: u64,
+        viewer: Arc<Viewer>,
+    },
+}
+
+pub struct CloseWork {
+    request: CloseRequest,
+}
+
+impl CloseWork {
+    /// Admission is synchronous: no setter/bind/start may race a queued close.
+    /// The core already owns teardown, and the registry retains its Arc even if
+    /// the JS promise is abandoned or the NAPI work never reaches resolve.
+    fn prepare(session_id: String) -> Self {
+        let request = with_sessions(|sessions| {
+            let Some(record) = sessions.get_mut(&session_id) else {
+                return CloseRequest::Complete(lifecycle_error_json(
+                    "session_close", "unknown session",
+                ));
+            };
+            observe_terminal_reclamation(record);
+            if record.closed {
+                return CloseRequest::Complete(close_receipt_json(&session_id, record));
+            }
             record.closing = true;
-            viewer.request_close();
-            return action_json(
-                true,
-                "session_close",
-                &session_id,
-                "closing",
-                serde_json::json!({
-                    "reclamation_known": false,
-                    "reclaimed": serde_json::Value::Null,
-                    "note": "close requested; keep the Surface alive and poll for confirmed reclamation before replacing or clearing it",
-                }),
+            if let Some(viewer) = &record.viewer {
+                viewer.request_close();
+                return CloseRequest::Join {
+                    session_id,
+                    lifecycle_epoch: record.lifecycle_epoch,
+                    viewer: viewer.clone(),
+                };
+            }
+            // No Viewer ever existed: no gate or input-release counters are
+            // invented, and the known absence of a native owner permits release.
+            apply_terminal_reclamation(
+                &mut record.closed,
+                &mut record.closing,
+                &mut record.reclaimed,
+                record.lease.as_ref(),
+                Some(true),
             );
+            scrub_terminal_record(record);
+            CloseRequest::Complete(close_receipt_json(&session_id, record))
+        });
+        Self { request }
+    }
+
+    fn run(&self) -> String {
+        match &self.request {
+            CloseRequest::Complete(response) => response.clone(),
+            CloseRequest::Join {
+                session_id,
+                lifecycle_epoch,
+                viewer,
+            } => {
+                // compute is a synchronous NAPI worker, not the JS thread or a
+                // Tokio task. Viewer::close only waits on its existing owner's
+                // Notify/result; it creates no runtime and needs none here.
+                // Its error remains in the terminal snapshot; the separately
+                // published verdict below is the sole release authority.
+                let _result = hbb_common::futures::executor::block_on(viewer.close());
+                let snapshot = viewer.snapshot();
+                let verdict = viewer.reclamation_confirmed();
+                with_sessions(|sessions| {
+                    let Some(record) = sessions.get_mut(session_id)
+                        .filter(|record| record.lifecycle_epoch == *lifecycle_epoch)
+                    else {
+                        // A poll may have completed/ACKed this exact epoch while
+                        // the worker ran. Never commit into a reused id.
+                        return lifecycle_error_json(
+                            "session_close", "close completed for a retired lifecycle epoch",
+                        );
+                    };
+                    record_terminal_reclamation(record, &snapshot, verdict);
+                    close_receipt_json(session_id, record)
+                })
+            }
         }
-        // No Viewer ever existed for this registered record: no runtime input
-        // generation or release counters are fabricated for its terminal poll.
-        apply_terminal_reclamation(
-            &mut record.closed,
-            &mut record.closing,
-            &mut record.reclaimed,
-            record.lease.as_ref(),
-            Some(true),
-        );
-        scrub_terminal_record(record);
-        action_json(
-            true,
-            "session_close",
-            &session_id,
-            "closed",
-            serde_json::json!({
-                "reclamation_known": true,
-                "reclaimed": true,
-                "note": "no viewer owned this session's Surface; poll before acknowledging the receipt",
-            }),
-        )
-    })
+    }
+}
+
+impl Task for CloseWork {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi_ohos::Result<String> {
+        Ok(self.run())
+    }
+
+    fn resolve(&mut self, _env: Env, output: String) -> napi_ohos::Result<String> {
+        Ok(output)
+    }
+}
+
+/// Resolves with the actual join/reclamation receipt, never request acceptance.
+/// Neither compute nor resolve ACKs/removes the epoch.
+#[napi]
+pub fn session_close(session_id: String) -> AsyncTask<CloseWork> {
+    AsyncTask::new(CloseWork::prepare(session_id))
 }
 
 /// Requests a fresh keyframe from the peer (the client's refresh action).
@@ -956,52 +1197,54 @@ pub fn session_refresh(session_id: String, _display: u32) -> String {
     }
 }
 
-/// Live calls request whole-viewer cancellation, never a transfer-job action.
-/// actId=0 also ACKs a confirmed, successfully polled terminal receipt. Only
-/// that explicit ACK removes the record; unknown/unpolled/quarantined records
-/// cannot be retired or relabelled as reclaimed by this call.
+/// ACK is separate from transfer cancellation and must name the native epoch.
 #[napi]
-pub fn session_cancel_job(session_id: String, act_id: u32) -> String {
+pub fn session_acknowledge_close(session_id: String, lifecycle_epoch: String) -> String {
     with_sessions(|sessions| {
         let Some(record) = sessions.get_mut(&session_id) else {
-            return error_json("unknown session");
+            return lifecycle_error_json("session_acknowledge_close", "unknown session");
         };
-        let snapshot = observe_terminal_reclamation(record);
-        if record.closed && record.reclaimed == Some(true) {
-            if act_id != 0 {
-                return error_json("terminal receipt acknowledgment requires actId 0");
-            }
-            if !record.terminal_polled {
-                return error_json(
-                    "terminal receipt has not been polled; call sessionPollEvents before retiring the record",
-                );
-            }
-            let response = serde_json::json!({
-                "ok": true,
-                "record_removed": true,
-                "closed": true,
-                "reclamation_known": true,
-                "reclaimed": record.reclaimed,
-            })
-            .to_string();
-            sessions.remove(&session_id);
-            return response;
+        if lifecycle_epoch != record.lifecycle_epoch.to_string() {
+            return lifecycle_error_json("session_acknowledge_close", "stale lifecycle epoch");
         }
-        if snapshot.as_ref().is_some_and(|value| value.closed) || record.reclaimed.is_some() {
-            return error_json("native surface reclamation is unconfirmed; the terminal record must be retained");
+        observe_terminal_reclamation(record);
+        if record.closing || !record.closed || record.reclaimed != Some(true) {
+            return lifecycle_error_json(
+                "session_acknowledge_close",
+                "native surface reclamation is unconfirmed; retain the terminal record",
+            );
         }
-        let Some(viewer) = &record.viewer else {
-            return error_json("session has no running viewer");
-        };
-        record.closing = true;
-        viewer.request_close();
-        serde_json::json!({
-            "ok": true,
-            "record_removed": false,
-            "note": "close requested; keep the Surface alive and poll sessionPollEvents for its reclamation verdict",
-        })
-        .to_string()
+        if !record.terminal_receipt_constructed {
+            return lifecycle_error_json(
+                "session_acknowledge_close",
+                "complete terminal receipt required; consume sessionClose or sessionPollEvents before ACK",
+            );
+        }
+        let mut response = session_response(
+            true, "session_acknowledge_close", &session_id, record,
+            record.terminal_snapshot.as_ref(),
+        );
+        response["record_removed"] = serde_json::json!(true);
+        let response = response.to_string();
+        sessions.remove(&session_id);
+        response
     })
+}
+
+/// No transfer-job owner is wired to this bridge yet. In particular actId=0 is
+/// not a terminal ACK, and no actId is permission to close an entire viewer.
+#[napi]
+pub fn session_cancel_job(_session_id: String, act_id: u32) -> String {
+    serde_json::json!({
+        "ok": false,
+        "action": "session_cancel_job",
+        "actId": act_id,
+        "unsupported": true,
+        "record_removed": false,
+        "error": "transfer-job cancellation is not implemented by this engine bridge",
+        "message": "transfer-job cancellation is not implemented; use sessionClose for a viewer and sessionAcknowledgeClose for its terminal receipt",
+    })
+    .to_string()
 }
 
 /// The client's own "the channel is up" event, carrying what this snapshot
@@ -1111,105 +1354,29 @@ fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
 pub fn session_poll_events(session_id: String, _limit: u32) -> String {
     with_sessions(|sessions| {
         let Some(record) = sessions.get_mut(&session_id) else {
-            return error_json("unknown session");
+            return lifecycle_error_json("session_poll_events", "unknown session");
         };
-        let Some(snapshot) = observe_terminal_reclamation(record) else {
-            if record.closed {
-                let events = if record.reported.finished {
-                    Vec::new()
-                } else {
-                    vec![serde_json::json!({ "name": "close" })]
-                };
-                let response = serde_json::json!({
-                    "ok": true,
-                    "events": events,
-                    "phase": "closed",
-                    "error": null,
-                    "login_failure": null,
-                    "peer_close_reason": null,
-                    "authenticated": false,
-                    "closed": true,
-                    "reclamation_known": record.reclaimed.is_some(),
-                    "reclaimed": record.reclaimed,
-                    "note": "no viewer owned this session's Surface; reclamation is confirmed",
-                })
-                .to_string();
+        let snapshot = observe_terminal_reclamation(record);
+        let events = match &snapshot {
+            Some(snapshot) => record.reported.events(snapshot),
+            None if record.closed && !record.reported.finished => {
                 record.reported.finished = true;
-                record.terminal_polled = record.reclaimed == Some(true);
-                return response;
+                vec![serde_json::json!({ "name": "close" })]
             }
-            return serde_json::json!({
-                "ok": true,
-                "events": [],
-                "phase": "registered",
-                "target": record.target,
-                "routable": true,
-                "closed": false,
-                "login_failure": null,
-                "peer_close_reason": null,
-                "reclamation_known": false,
-                "reclaimed": serde_json::Value::Null,
-                "note": poll_note("registered", None),
-            })
-            .to_string();
+            None => Vec::new(),
         };
-        let reclaimed = record.reclaimed;
-        // This is typed terminal metadata, never a replacement reclamation
-        // verdict or a channel for arbitrary CloseReason text from the peer.
-        let peer_close_reason = if snapshot.closed && reclaimed == Some(true) {
-            peer_close_reason_name(snapshot.peer_close_reason)
-        } else {
-            None
-        };
-        let events = record.reported.events(&snapshot);
-        let response = serde_json::json!({
-            "ok": true,
-            "events": events,
-            "phase": snapshot.phase,
-            "error": snapshot.error,
-            "login_failure": login_failure_name(snapshot.login_failure),
-            "peer_close_reason": peer_close_reason,
-            "route": snapshot.route,
-            "codec": snapshot.codec,
-            "width": snapshot.width,
-            "height": snapshot.height,
-            "encrypted": snapshot.encrypted,
-            "peer_verified": snapshot.peer_verified,
-            "keyboard_allowed": snapshot.keyboard_allowed,
-            // The generation the admission answer above was read under. It
-            // advances on any local policy or peer-grant change, which is how a
-            // client that keeps input state of its own learns that the engine
-            // released what it had taken — including a change that leaves
-            // `keyboard_allowed` exactly as it was.
-            "input_generation": snapshot.input_generation,
-            // The same counters a policy change answers with, sampled from the
-            // gate beside the generation, so a client can settle a release it
-            // was told about without inferring completion from the generation.
-            // `releases_owed` is every hold the writer owns, the keys and
-            // buttons being held right now included; `releases_retired` is the
-            // part a change retired, which is the release a client waits for.
-            "releases_owed": snapshot.releases_owed,
-            "releases_retired": snapshot.releases_retired,
-            "release_pending": snapshot.releases_retired > 0,
-            "releases_unreleased": snapshot.releases_unreleased,
-            "authenticated": snapshot.authenticated,
-            "closed": snapshot.closed,
-            "reclamation_known": reclaimed.is_some(),
-            "reclaimed": reclaimed,
-            "received_units": snapshot.received_units,
-            "pushed_units": snapshot.pushed_units,
-            "render_submissions": snapshot.render_submissions,
-            // A release this viewer still owes is what the client acts on, so
-            // it is said in the same words a policy change uses; the phase note
-            // is what an answer with nothing outstanding falls back to.
-            "note": release_note(snapshot.releases_retired, snapshot.releases_unreleased)
-                .unwrap_or_else(|| poll_note(&snapshot.phase, snapshot.error.as_deref())),
-        })
-        .to_string();
+        let mut response = session_response(
+            true, "session_poll_events", &session_id, record, snapshot.as_ref(),
+        );
+        response["events"] = serde_json::json!(events);
+        if snapshot.is_none() && !record.closed {
+            response["routable"] = serde_json::json!(true);
+        }
+        let response = response.to_string();
         // Construct the complete successful response before allowing ACK. A
         // one-shot close event alone is not a consumed terminal receipt.
-        if snapshot.closed && record.closed && record.reclaimed == Some(true) {
-            record.terminal_polled = true;
+        if record.closed && record.reclaimed == Some(true) {
+            record.terminal_receipt_constructed = true;
         }
         response
     })
@@ -1862,9 +2029,9 @@ implemented_entry_points!(
     ("sessionLogin", session_login),
     ("sessionBindSurface", session_bind_surface),
     ("sessionClose", session_close),
+    ("sessionAcknowledgeClose", session_acknowledge_close),
     ("sessionPollEvents", session_poll_events),
     ("sessionRefresh", session_refresh),
-    ("sessionCancelJob", session_cancel_job),
     ("sessionSetCommon", session_set_common),
     ("sessionSetCustomFps", session_set_custom_fps),
     ("sessionSetViewOnly", session_set_view_only),
@@ -1897,6 +2064,7 @@ pub fn har_surface_manifest() -> String {
         "sessionLogin",
         "sessionPollEvents",
         "sessionClose",
+        "sessionAcknowledgeClose",
         "sessionRefresh",
         "sessionCancelJob",
         "sessionSetCommon",
@@ -1940,7 +2108,12 @@ pub fn har_surface_manifest() -> String {
         "implemented": IMPLEMENTED,
         "registry_only": registry_only,
         "pending": pending,
+        "refused_entry_points": ["sessionCancelJob"],
         "not_served": {
+            "transfer_cancel": {
+                "entry_points": ["sessionCancelJob"],
+                "reason": "no transfer-job owner is wired to this bridge; cancellation is refused and never closes a viewer or ACKs its terminal receipt",
+            },
             "rgba_pull": {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
                 "reason": "the engine presents each frame into the surface sessionBindSurface recorded and has no CPU-side RGBA pull path",
@@ -1956,9 +2129,182 @@ mod tests {
     use super::{
         apply_terminal_reclamation, client_mouse_button_to_wire, error_json,
         expected_input_generation, parse_viewer_target, policy_json, refusal_json,
-        resolve_mouse_coordinates, ApprovedRoute, InputPolicyOutcome, OhosSurfaceLease, Reported, SurfaceLease,
-        ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
+        record_terminal_reclamation, resolve_mouse_coordinates, session_acknowledge_close,
+        session_add, session_bind_surface, session_cancel_job, session_poll_events, with_sessions,
+        ApprovedRoute, CloseWork, InputPolicyOutcome, LoginFailure, OhosSurfaceLease, Reported,
+        SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
     };
+
+    fn json(response: String) -> serde_json::Value {
+        serde_json::from_str(&response).expect("the bridge returns JSON")
+    }
+
+    fn register_lifecycle_test(id: &str) -> String {
+        let added = json(session_add(
+            id.to_owned(),
+            "127.0.0.1:21118".to_owned(),
+            r#"{"password":"test-only"}"#.to_owned(),
+        ));
+        assert_eq!(added["ok"], true);
+        assert_eq!(added["session"]["kind"], "rustdesk");
+        assert_eq!(added["session"]["target"], "127.0.0.1:21118");
+        let epoch = added["session"]["lifecycleEpoch"].as_str().unwrap();
+        assert!(epoch.parse::<u64>().unwrap() > 0);
+        epoch.to_owned()
+    }
+
+    #[test]
+    fn native_epoch_and_binding_survive_close_until_ack_then_id_reuse_gets_a_new_epoch() {
+        let id = "napi-test-neverstarted";
+        let epoch = register_lifecycle_test(id);
+        let bound = json(session_bind_surface(id.into(), 0, "42".into(), epoch.clone()));
+        assert_eq!(bound["ok"], true);
+        let token = bound["surfaces"][0]["token"].as_str().unwrap();
+        assert!(token.parse::<u64>().unwrap() > 0);
+        assert_eq!(bound["surfaces"][0]["sourceIdentity"], epoch);
+        let rebound = json(session_bind_surface(id.into(), 0, "42".into(), epoch.clone()));
+        assert_eq!(rebound["surfaces"][0]["token"], token);
+        for act_id in [0, 37] {
+            assert_eq!(json(session_cancel_job(id.into(), act_id))["ok"], false);
+        }
+        assert_eq!(json(session_poll_events(id.into(), 10))["closed"], false);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+
+        let close = json(CloseWork::prepare(id.into()).run());
+        assert_eq!(close["ok"], true);
+        assert_eq!(close["released"], true);
+        assert_eq!(close["settle"], "neverstarted");
+        assert_eq!(close["session"]["lifecycleEpoch"], epoch);
+        assert_eq!(close["surfaces"][0]["surfaceId"], "42");
+        assert_eq!(close["surfaces"][0]["token"], token);
+        assert_eq!(close["surfaces"][0]["released"], true);
+        assert!(close.get("input_generation").is_none());
+        assert!(close.get("releases_unreleased").is_none());
+        assert_eq!(json(CloseWork::prepare(id.into()).run()), close);
+        let cleared = json(session_bind_surface(id.into(), 0, "".into(), epoch.clone()));
+        assert_eq!(cleared["released"], true);
+        assert_eq!(cleared["held"], false);
+        assert_eq!(cleared["surfaces"][0]["surfaceId"], "42");
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["record_removed"], true);
+
+        let next_epoch = register_lifecycle_test(id);
+        assert_ne!(next_epoch, epoch);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+        assert_eq!(json(session_bind_surface(id.into(), 0, "99".into(), epoch))["ok"], false);
+        let next_close = json(CloseWork::prepare(id.into()).run());
+        assert_eq!(next_close["session"]["lifecycleEpoch"], next_epoch);
+        assert_eq!(json(session_acknowledge_close(id.into(), next_epoch))["ok"], true);
+        let unknown = json(CloseWork::prepare(id.into()).run());
+        assert_eq!(unknown["ok"], false);
+        assert_eq!(unknown["released"], false, "empty surfaces is not release proof");
+        assert_eq!(unknown["settle"], "unconfirmed");
+    }
+
+    #[test]
+    fn reclaimed_auth_failure_keeps_terminal_evidence_and_requires_a_complete_receipt() {
+        let id = "napi-test-terminal-evidence";
+        let epoch = register_lifecycle_test(id);
+        assert_eq!(
+            json(session_bind_surface(id.into(), 0, "43".into(), epoch.clone()))["ok"],
+            true,
+        );
+        // Exercise the bridge's terminal transition with owner-supplied facts;
+        // this is not a peer-authentication or native-decoder integration test.
+        with_sessions(|sessions| {
+            let record = sessions.get_mut(id).unwrap();
+            record.dials = 1;
+            let snapshot = ViewerSnapshot {
+                phase: "failed".into(),
+                error: Some("AuthenticationFailed".into()),
+                login_failure: Some(LoginFailure::WrongPassword),
+                closed: true,
+                input_generation: 9,
+                releases_unreleased: 2,
+                received_units: 17,
+                pushed_units: 16,
+                render_submissions: 15,
+                ..Default::default()
+            };
+            record_terminal_reclamation(record, &snapshot, Some(true));
+            assert!(record.password.is_empty());
+            assert_eq!(record.lease.surface_id(), 0);
+            assert!(!record.terminal_receipt_constructed);
+        });
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+        let poll = json(session_poll_events(id.into(), 10));
+        assert_eq!(poll["events"][0]["name"], "close");
+        assert_eq!(poll["released"], true);
+        assert_eq!(poll["settle"], "settled");
+        assert_eq!(poll["session"]["phase"], "failed");
+        assert_eq!(poll["session"]["inputGeneration"], "9");
+        assert_eq!(poll["login_failure"], "wrong_password");
+        assert_eq!(poll["releases_unreleased"], 2);
+        assert_eq!(poll["render_submissions"], 15);
+        let close = json(CloseWork::prepare(id.into()).run());
+        assert_eq!(close["ok"], true, "remote failure is not reclamation failure");
+        assert_eq!(close["error"], "AuthenticationFailed");
+        assert_eq!(close["login_failure"], "wrong_password");
+        assert_eq!(close["releases_unreleased"], 2);
+        assert_eq!(close["surfaces"], poll["surfaces"]);
+        let repeated = json(session_poll_events(id.into(), 10));
+        assert_eq!(repeated["events"], serde_json::json!([]));
+        assert_eq!(repeated["error"], poll["error"]);
+        assert_eq!(repeated["received_units"], 17);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], true);
+    }
+
+    #[test]
+    fn unknown_or_failed_reclamation_never_authorizes_giveback_or_ack() {
+        let id = "napi-test-quarantine";
+        let epoch = register_lifecycle_test(id);
+        assert_eq!(
+            json(session_bind_surface(id.into(), 0, "44".into(), epoch.clone()))["ok"],
+            true,
+        );
+        let snapshot = ViewerSnapshot {
+            phase: "failed".into(),
+            error: Some("ReclamationUnconfirmed".into()),
+            closed: true,
+            input_generation: 3,
+            releases_unreleased: 1,
+            ..Default::default()
+        };
+        with_sessions(|sessions| {
+            let record = sessions.get_mut(id).unwrap();
+            record.dials = 1;
+            record_terminal_reclamation(record, &snapshot, None);
+            assert!(record.terminal_snapshot.is_none(), "unknown is observed again later");
+            assert!(record.reclaimed.is_none());
+        });
+        let held = json(session_bind_surface(id.into(), 0, "".into(), epoch.clone()));
+        assert_eq!(held["ok"], false);
+        assert_eq!(held["held"], true);
+        assert_eq!(held["released"], false);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+
+        with_sessions(|sessions| {
+            record_terminal_reclamation(sessions.get_mut(id).unwrap(), &snapshot, Some(false));
+        });
+        let poll = json(session_poll_events(id.into(), 10));
+        assert_eq!(poll["reclamation_known"], true);
+        assert_eq!(poll["reclaimed"], false);
+        assert_eq!(poll["released"], false);
+        assert_eq!(poll["settle"], "unconfirmed");
+        assert_eq!(poll["surfaces"][0]["quarantined"], true);
+        assert_eq!(poll["surfaces"][0]["surfaceId"], "44");
+        assert_eq!(poll["releases_unreleased"], 1);
+        assert_eq!(json(session_cancel_job(id.into(), 37))["ok"], false);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], false);
+        with_sessions(|sessions| {
+            let record = sessions.get(id).unwrap();
+            assert_eq!(record.lease.surface_id(), 44);
+            assert!(!record.terminal_receipt_constructed);
+            assert_eq!(record.password, "test-only");
+            // Remove only this synthetic test fixture: it has no native owner.
+            // No production API is permitted to evict a quarantined record.
+            sessions.remove(id);
+        });
+    }
 
     #[test]
     fn pending_host_approval_does_not_request_new_credentials() {
