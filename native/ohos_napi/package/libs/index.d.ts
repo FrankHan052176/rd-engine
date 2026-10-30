@@ -7,6 +7,14 @@ export declare function harSurfaceManifest(): string
 
 export declare function queryDecoderCapabilities(): Promise<string>
 
+/**
+ * Same async hardware metadata query as queryDecoderCapabilities.
+ * JSON: {ok,evidence,source,error,h264_decoder,hevc_decoder,not_measured}.
+ * evidence is "advertised_metadata"; each decoder/field retains its own ok/error.
+ * No capabilities[]/software/recommended list, measured throughput or HDR result.
+ */
+export declare function runtimeGetDecoderCapabilities(): Promise<string>
+
 export declare function appSetLifecycle(privacyAccepted: boolean, foreground: boolean): Promise<string>
 
 export declare function appInit(filesDir: string): Promise<string>

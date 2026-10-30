@@ -550,6 +550,14 @@ pub fn native_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Resk's name for the same off-UI-thread hardware decoder metadata query.
+/// Preserve per-decoder/per-field failures and `not_measured`; this is not a
+/// software fallback list, a codec recommendation or a throughput measurement.
+#[napi(ts_return_type = "Promise<string>")]
+pub fn runtime_get_decoder_capabilities() -> AsyncTask<capabilities::DecoderCapabilityQuery> {
+    query_decoder_capabilities()
+}
+
 /// Registers direct targets or an explicitly approved RustDesk ID route; no dial.
 /// ID routes also require current initialized foreground consent. Direct RDP
 /// still requires an explicit account and uses the existing driver/security.
@@ -2017,6 +2025,7 @@ implemented_entry_points!(
     ("nativeVersion", native_version),
     ("harSurfaceManifest", har_surface_manifest),
     ("queryDecoderCapabilities", query_decoder_capabilities),
+    ("runtimeGetDecoderCapabilities", runtime_get_decoder_capabilities),
     ("appSetLifecycle", app_set_lifecycle),
     ("appInit", app_init),
     ("validateServerProfile", validate_server_profile),
@@ -2051,50 +2060,89 @@ implemented_entry_points!(
 /// Which of the client's expected entry points this build serves, and how.
 ///
 /// `implemented` is derived from the entry points above, `pending` is the
-/// client's own list minus those, and the RGBA pull trio is named as not served
-/// because presentation goes through the bound surface.
+/// current Resk import list minus those. Missing engine operations are not
+/// advertised as implemented merely because another bridge accepts the name.
 #[napi]
 pub fn har_surface_manifest() -> String {
-    // The client's list (docs/OHRS_SURFACE.md), kept as the baseline `pending`
-    // is computed against: a call it makes that this HAR does not serve has to
-    // show up there.
+    // RustDeskNativeApi.ets imports, plus this bridge's explicit input-policy
+    // export. A refused entry point remains pending, not implemented.
     let expected = [
-        "sessionAdd",
-        "sessionStart",
-        "sessionLogin",
-        "sessionPollEvents",
-        "sessionClose",
+        "backendSummary",
+        "buildMarker",
+        "healthcheck",
+        "inputInterceptorPollEvents",
+        "inputInterceptorStart",
+        "inputInterceptorStop",
+        "nativeVersion",
+        "runtimeGetApiServer",
+        "runtimeGetDecoderCapabilities",
+        "runtimeGetServerConfig",
+        "runtimeInit",
+        "runtimeListFavorites",
+        "runtimeListLanPeers",
+        "runtimeListLocalDir",
+        "runtimeListRecentPeers",
+        "peerQueryOnline",
+        "runtimeRemoveDiscoveredPeer",
+        "runtimeScanLanPeers",
+        "runtimeSetLifecycle",
+        "runtimeSetRecordingDirectory",
+        "runtimeSetServerConfig",
+        "runtimeTestServerConfig",
         "sessionAcknowledgeClose",
-        "sessionRefresh",
+        "sessionAdd",
+        "sessionBindSurface",
         "sessionCancelJob",
-        "sessionSetCommon",
-        "sessionSetCustomFps",
-        "sessionSetSize",
-        "sessionSetViewOnly",
-        "sessionSetUnverifiedInputAccepted",
-        "sessionSetVideoPaused",
-        "sessionSetImageQuality",
-        "sessionSetCustomImageQuality",
-        "sessionSetClipboardFileRoot",
-        "sessionSetConfirmOverrideFile",
+        "sessionChangeResolution",
+        "sessionClose",
+        "sessionEnterOrLeave",
+        "sessionGetConnToken",
+        "sessionGetEnableTrustedDevices",
+        "sessionGetFrameRateSnapshot",
+        "sessionGetImageQuality",
+        "sessionGetIsRecording",
+        "sessionGetRemoteAudioState",
+        "sessionGetRgbaSize",
+        "sessionGetToggleOption",
+        "sessionHandleFlutterKeyEvent",
+        "sessionInputKey",
         "sessionInputString",
-        "sessionSend2fa",
-        "sessionSwitchDisplay",
-        "sessionSendFiles",
+        "sessionLogin",
+        "sessionNextRgba",
+        "sessionOnWaitingForImageDialogShow",
+        "sessionPollEvents",
         "sessionReadRemoteDir",
-        "transferNextJobId",
+        "sessionRecordScreen",
+        "sessionRefresh",
+        "sessionSend2fa",
         "sessionSendClipboard",
         "sessionSendClipboardFiles",
         "sessionSendClipboardImage",
+        "sessionSendFiles",
+        "sessionSendMouse",
+        "sessionSetClipboardFileRoot",
+        "sessionSetCodecPreference",
+        "sessionSetCommon",
+        "sessionSetConfirmOverrideFile",
+        "sessionSetCustomFps",
+        "sessionSetCustomImageQuality",
+        "sessionSetImageQuality",
+        "sessionSetShowRemoteCursor",
+        "sessionSetSize",
+        "sessionSetVideoPaused",
+        "sessionSetViewOnly",
+        "sessionSetUnverifiedInputAccepted",
+        "sessionStart",
+        "sessionSurfaceDestroyed",
+        "sessionSwitchDisplay",
         "sessionTakeClipboard",
         "sessionTakeClipboardImage",
+        "sessionTakeRgbaFrame",
         "sessionToggleOption",
-        "sessionGetToggleOption",
-        "sessionGetImageQuality",
-        "sessionGetConnToken",
-        "sessionGetEnableTrustedDevices",
-        "sessionGetRemoteAudioState",
-        "sessionGetFrameRateSnapshot",
+        "transferNextJobId",
+        "xcomponentAttach",
+        "xcomponentDetach",
+        "xcomponentSetFrameRateRangeNative",
     ];
     // Kept separate on purpose: these accept the call but only touch local state.
     let registry_only: [&str; 0] = [];
@@ -2118,8 +2166,37 @@ pub fn har_surface_manifest() -> String {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
                 "reason": "the engine presents each frame into the surface sessionBindSurface recorded and has no CPU-side RGBA pull path",
             },
+            "viewer_controls": {
+                "entry_points": [
+                    "sessionSetSize", "sessionSwitchDisplay", "sessionSetVideoPaused",
+                    "sessionChangeResolution", "sessionSetShowRemoteCursor",
+                    "sessionSetCodecPreference", "sessionGetImageQuality",
+                    "sessionSetImageQuality", "sessionSetCustomImageQuality",
+                    "sessionGetToggleOption", "sessionToggleOption",
+                ],
+                "reason": "the shared Viewer has no backing operations for these contracts; received display metadata and recorded common options are not applied controls",
+            },
+            "viewer_state": {
+                "entry_points": [
+                    "sessionGetRemoteAudioState", "sessionGetConnToken",
+                    "sessionGetEnableTrustedDevices",
+                ],
+                "reason": "the shared Viewer exposes no audio renderer state, connection token or trusted-device state; false, null and default objects would not be engine results",
+            },
+            "input_adapter": {
+                "entry_points": ["sessionEnterOrLeave", "sessionHandleFlutterKeyEvent"],
+                "reason": "no focus/grab owner or Flutter key translator is wired to the shared Viewer; existing input exports require an explicit input generation",
+            },
+            "server_config": {
+                "entry_points": ["runtimeGetServerConfig", "runtimeSetServerConfig"],
+                "reason": "approved profiles belong to the Resk explicit-save store; this bridge validates and captures a route at sessionAdd, not mutable global server configuration",
+            },
+            "presence": {
+                "entry_points": ["peerQueryOnline"],
+                "reason": "query_presence exists in the engine but is not wired to an approved-profile, app-owned cancellable async query; LAN discovery is not server presence",
+            },
         },
-        "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; pending entries are not served; presentation remains the bound Surface, not RGBA pull",
+        "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; runtimeGetDecoderCapabilities shares the advertised-metadata query without measured or recommended codec claims; pending entries are not implemented; presentation remains the bound Surface, not RGBA pull",
     })
     .to_string()
 }
