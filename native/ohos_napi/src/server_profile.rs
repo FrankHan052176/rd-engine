@@ -13,11 +13,11 @@ use rd_engine::rendezvous::{endpoint, RendezvousConfig};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-const MAX_SAFE_REVISION: u64 = 9_007_199_254_740_991;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const MAX_SAFE_REVISION: u64 = 9_007_199_254_740_991;
 
 // Deliberately no Debug: preserve the original wire key without logging it.
-struct ServerProfile {
+pub(super) struct ServerProfile {
     mode: &'static str,
     id_server: String,
     relay_server: Option<String>,
@@ -33,7 +33,7 @@ fn string_field<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
 }
 
 impl ServerProfile {
-    fn parse(value: &Value) -> Result<Self, String> {
+    pub(super) fn parse(value: &Value) -> Result<Self, String> {
         let (mode, id_server, relay_server, wire_key) = match string_field(value, "mode")? {
             "official" => {
                 // Same pinned PUBLIC_SERVER branch as official client.rs. Do
@@ -90,13 +90,24 @@ impl ServerProfile {
         })
     }
 
-    fn normalized(&self) -> Value {
+    pub(super) fn normalized(&self) -> Value {
         json!({
             "mode": self.mode,
             "idServer": self.id_server,
             "relayServer": self.relay_server.as_deref().unwrap_or_default(),
             "key": self.wire_key,
         })
+    }
+
+    /// The normalized rendezvous endpoint the engine would dial. This is what
+    /// the presence query uses; it is not proof that the endpoint is reachable.
+    pub(super) fn id_server(&self) -> &str {
+        &self.id_server
+    }
+
+    /// The configured relay endpoint, if this profile has one.
+    pub(super) fn relay_server(&self) -> Option<&str> {
+        self.relay_server.as_deref()
     }
 }
 

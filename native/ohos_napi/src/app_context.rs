@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::{
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
     },
 };
@@ -48,6 +48,17 @@ struct AppContext {
     local_id: Option<String>,
     discovery: Option<Discovery>,
     retiring: Option<Retirement>,
+    // One admitted presence query at a time. Its generation is the token a
+    // cancel call must name; retiring the generation cancels it, and the slot is
+    // released by the worker itself so an abandoned promise cannot strand it.
+    presence: Option<Presence>,
+    next_presence: u64,
+}
+
+/// The presence query that owns the admission slot right now.
+struct Presence {
+    generation: u64,
+    cancel: Arc<AtomicBool>,
 }
 
 static APP: Mutex<AppContext> = Mutex::new(AppContext {
@@ -59,6 +70,8 @@ static APP: Mutex<AppContext> = Mutex::new(AppContext {
     local_id: None,
     discovery: None,
     retiring: None,
+    presence: None,
+    next_presence: 0,
 });
 
 // Separate serialization boundary: may be held over bootstrap I/O, never over
@@ -115,6 +128,14 @@ impl AppContext {
     }
 
     fn retire(&mut self) {
+        // A presence query is cancelled and released even when no discovery
+        // owner exists: the fence, not the worker, is what makes its in-flight
+        // answer unusable, and its own generation can no longer be cancelled or
+        // reported. Releasing the slot here lets the next admitted generation
+        // start; the old worker's late completion cannot clear the new slot.
+        if let Some(presence) = self.presence.take() {
+            presence.cancel.store(true, Ordering::Release);
+        }
         if let Some(discovery) = self.discovery.take() {
             let completion = discovery.owner.request_close();
             self.retiring = Some(Retirement {
@@ -498,6 +519,148 @@ pub(super) fn hold_id_admission(admission: &IdAdmission) -> Result<IdAdmissionGu
     // Held only while registering/starting an owned route, never while doing
     // Config/LanPeers I/O, waiting for cleanup or acquiring INITIALIZED.
     Ok(IdAdmissionGuard { _state: state })
+}
+
+/// App-scope admission for the bridge's own settings and directory stores.
+///
+/// It carries the same generation that fences discovery/routing and the fixed
+/// private root reserved by `appInit`. Admission is not a durable-write or
+/// reachability result: each operation reports what it actually did, and a
+/// lifecycle fence or a different reserved root revokes every admitted task
+/// before and after its worker runs.
+pub(super) struct AppScope {
+    ticket: Ticket,
+    root: PathBuf,
+}
+
+pub(super) fn app_scope() -> Result<AppScope, String> {
+    let state = app()?;
+    state.require_allowed()?;
+    let root = state
+        .root
+        .clone()
+        .ok_or_else(|| "native private root is not reserved".to_string())?;
+    Ok(AppScope {
+        ticket: state.ticket()?,
+        root,
+    })
+}
+
+impl AppScope {
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Rechecked on the worker and again at promise resolution. Cleanup of an
+    /// already-admitted write is never skipped merely because consent changed.
+    pub(super) fn check(&self) -> Result<(), String> {
+        let state = app()?;
+        state.check(self.ticket)?;
+        state.require_allowed()?;
+        if state.root.as_deref() != Some(self.root.as_path()) {
+            return Err("native private root changed".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// One admitted presence query: the app generation and local ID it runs under,
+/// its own cancellation flag, and the generation a cancel call must name.
+pub(super) struct PresenceAdmission {
+    ticket: Ticket,
+    pub(super) local_id: String,
+    pub(super) generation: u64,
+    cancel: Arc<AtomicBool>,
+}
+
+impl PresenceAdmission {
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    fn verify(&self, require_slot: bool) -> Result<(), String> {
+        let state = app()?;
+        state.check(self.ticket)?;
+        state.require_allowed()?;
+        if require_slot
+            && state
+                .presence
+                .as_ref()
+                .map(|presence| presence.generation)
+                != Some(self.generation)
+        {
+            return Err("stale presence query generation".to_string());
+        }
+        Ok(())
+    }
+
+    /// Before the query starts, the admission slot must still be this query's.
+    pub(super) fn check(&self) -> Result<(), String> {
+        self.verify(true)
+    }
+
+    /// After the worker releases the slot, only the app generation decides
+    /// whether its answer may be reported.
+    pub(super) fn fenced(&self) -> Result<(), String> {
+        self.verify(false)
+    }
+
+    /// Releases the admission slot. Success means the owned query ended, not
+    /// that the server answered or that any peer is online.
+    pub(super) fn finish(&self) {
+        let Ok(mut state) = app() else {
+            return;
+        };
+        if state
+            .presence
+            .as_ref()
+            .is_some_and(|presence| presence.generation == self.generation)
+        {
+            state.presence = None;
+        }
+    }
+}
+
+pub(super) fn admit_presence() -> Result<PresenceAdmission, String> {
+    let mut state = app()?;
+    state.require_allowed()?;
+    if state.presence.is_some() {
+        return Err("a presence query already owns the admission".to_string());
+    }
+    let local_id = state
+        .local_id
+        .clone()
+        .ok_or_else(|| "local ID is not ready".to_string())?;
+    let generation = state
+        .next_presence
+        .checked_add(1)
+        .ok_or_else(|| "presence query generation exhausted".to_string())?;
+    let ticket = state.ticket()?;
+    state.next_presence = generation;
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.presence = Some(Presence {
+        generation,
+        cancel: cancel.clone(),
+    });
+    Ok(PresenceAdmission {
+        ticket,
+        local_id,
+        generation,
+        cancel,
+    })
+}
+
+/// Cancels the exact query a caller names. A stale token changes nothing.
+pub(super) fn cancel_presence(generation: u64) -> Result<bool, String> {
+    let state = app()?;
+    let Some(presence) = state.presence.as_ref() else {
+        return Ok(false);
+    };
+    if presence.generation != generation {
+        return Ok(false);
+    }
+    presence.cancel.store(true, Ordering::Release);
+    Ok(true)
 }
 
 struct LanTicket {

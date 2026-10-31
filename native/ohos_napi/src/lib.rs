@@ -22,10 +22,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 mod app_context;
+mod app_directory;
+mod app_presence;
+mod app_profile;
+mod app_storage;
 mod server_profile;
 use app_context::{
     app_init, app_set_lifecycle, lan_peer_remove, lan_peers_query, lan_scan_start, lan_scan_stop,
 };
+use app_directory::{
+    runtime_list_favorites, runtime_list_recent_peers, runtime_record_recent_peer,
+    runtime_remove_recent_peer, runtime_set_favorite,
+};
+use app_presence::{peer_presence_cancel, peer_query_online};
+use app_profile::{runtime_get_server_config, runtime_set_server_config, runtime_test_server_config};
 use server_profile::{validate_server_profile, ApprovedRoute};
 mod capabilities;
 use capabilities::query_decoder_capabilities;

@@ -157,3 +157,59 @@ export function sessionSetCommon(sessionId: string, key: string, value: string):
 export function sessionCancelJob(sessionId: string, actId: number): string {
   return native.sessionCancelJob(sessionId, actId);
 }
+
+/**
+ * Reads the server profile this engine has itself explicitly saved. Resolves with
+ * `config: null` when none was saved; an approval is not a reachability or
+ * account claim, and a failed read is not an empty profile.
+ */
+export function runtimeGetServerConfig(): Promise<string> {
+  return native.runtimeGetServerConfig();
+}
+
+/** Saves a profile only after the same validation as validateServerProfile; saving is not reachability. */
+export function runtimeSetServerConfig(profileJson: string): Promise<string> {
+  return native.runtimeSetServerConfig(profileJson);
+}
+
+/** One bounded TCP connect per endpoint; a listen socket is not proof of a RustDesk server. */
+export function runtimeTestServerConfig(profileJson: string): Promise<string> {
+  return native.runtimeTestServerConfig(profileJson);
+}
+
+/** Engine-owned recent targets; `exists:false` means no data, never a successful empty list. */
+export function runtimeListRecentPeers(): Promise<string> {
+  return native.runtimeListRecentPeers();
+}
+
+/** Engine-owned favourite targets; the same exists/ok distinction applies. */
+export function runtimeListFavorites(): Promise<string> {
+  return native.runtimeListFavorites();
+}
+
+export function runtimeSetFavorite(peerId: string, favorite: boolean): Promise<string> {
+  return native.runtimeSetFavorite(peerId, favorite);
+}
+
+/** The client records a target only after it really observed a session. */
+export function runtimeRecordRecentPeer(peerJson: string): Promise<string> {
+  return native.runtimeRecordRecentPeer(peerJson);
+}
+
+export function runtimeRemoveRecentPeer(peerId: string): Promise<string> {
+  return native.runtimeRemoveRecentPeer(peerId);
+}
+
+/**
+ * Online state from a strict hbbs OnlineRequest/OnlineResponse pair, against an
+ * explicitly saved profile. Only a real answer decides online/offline: a LAN
+ * scan hit, a saved address or a session in progress is never "online".
+ */
+export function peerQueryOnline(idsJson: string, approvedProfileJson: string): Promise<string> {
+  return native.peerQueryOnline(idsJson, approvedProfileJson);
+}
+
+/** Cancels exactly the query generation this call names; it does not retire other work. */
+export function peerPresenceCancel(queryGeneration: string): string {
+  return native.peerPresenceCancel(queryGeneration);
+}

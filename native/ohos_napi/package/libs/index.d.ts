@@ -99,3 +99,23 @@ export declare function sessionSetCommon(sessionId: string, key: string, value: 
  * Whole-viewer teardown and ACK belong to sessionClose/sessionAcknowledgeClose.
  */
 export declare function sessionCancelJob(sessionId: string, actId: number): string
+
+export declare function runtimeGetServerConfig(): Promise<string>
+
+export declare function runtimeSetServerConfig(profileJson: string): Promise<string>
+
+export declare function runtimeTestServerConfig(profileJson: string): Promise<string>
+
+export declare function runtimeListRecentPeers(): Promise<string>
+
+export declare function runtimeListFavorites(): Promise<string>
+
+export declare function runtimeSetFavorite(peerId: string, favorite: boolean): Promise<string>
+
+export declare function runtimeRecordRecentPeer(peerJson: string): Promise<string>
+
+export declare function runtimeRemoveRecentPeer(peerId: string): Promise<string>
+
+export declare function peerQueryOnline(idsJson: string, approvedProfileJson: string): Promise<string>
+
+export declare function peerPresenceCancel(queryGeneration: string): string
