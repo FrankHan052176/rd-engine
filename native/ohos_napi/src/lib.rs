@@ -6,8 +6,8 @@
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
-    bindgen_prelude::{AsyncTask, JsUnknown, NapiRaw, Task},
-    Env,
+    bindgen_prelude::{AsyncTask, Task},
+    Env, NapiRaw, Unknown,
 };
 use rd_engine::protocol::Target;
 use rd_engine::session::PeerCloseReason;
@@ -1255,8 +1255,8 @@ pub fn session_bind_surface(
 pub fn xcomponent_attach(
     env: Env,
     node_id: String,
-    frame_node: JsUnknown,
-    on_surface_event: JsUnknown,
+    frame_node: Unknown<'_>,
+    on_surface_event: Unknown<'_>,
 ) -> String {
     // Only the raw handles are forwarded: the holder keeps its own napi
     // reference and TSFN for them, on this same environment thread.
