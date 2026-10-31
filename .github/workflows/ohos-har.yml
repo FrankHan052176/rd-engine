@@ -101,17 +101,19 @@ jobs:
         if: always()
         shell: bash
         run: |
-          set -uo pipefail
-          root=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -name 'napi-ohos-1.2.0' -print -quit 2>/dev/null || true)
+          root="${CARGO_HOME:-$HOME/.cargo}/registry/src/index.crates.io-1949cf8c6b5b557f/napi-ohos-1.2.0"
           echo "CRATE_ROOT=$root"
-          if [ -n "$root" ]; then
-            echo '--- lib.rs top ---'
-            sed -n '1,80p' "$root/src/lib.rs" | grep -n 'pub use\|pub mod' | head -40
-            echo '--- declarations ---'
-            grep -rn 'pub struct Unknown\|pub trait NapiRaw\|pub struct JsUnknown\|pub type JsUnknown\|pub struct JsObject\|pub struct JsValue' "$root/src" | head -20
-            echo '--- bindgen_prelude head ---'
-            sed -n '1,80p' "$root/src/bindgen_prelude/mod.rs" 2>/dev/null | head -80
-          fi
+          echo '--- src entries ---'
+          ls "$root/src" | head -40
+          echo '--- NapiRaw / Unknown / JsUnknown ---'
+          grep -rn "trait NapiRaw\|struct Unknown\|struct JsUnknown\|type JsUnknown\|struct JsObject" "$root/src" | head -30
+          echo '--- root re-exports ---'
+          grep -rn "^pub use \|^pub mod \|^  pub use " "$root/src/lib.rs" | head -60
+          echo '--- bindgen_prelude files ---'
+          ls "$root/src/bindgen_prelude" 2>/dev/null | head -20
+          echo '--- bindgen_prelude exports ---'
+          grep -rn "^pub use \|^  pub use " "$root/src/bindgen_prelude/mod.rs" 2>/dev/null | head -60
+          true
 
       - name: HAR and exact source evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
