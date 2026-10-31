@@ -59,11 +59,15 @@ export declare function sessionClose(sessionId: string): Promise<string>
 export declare function sessionAcknowledgeClose(sessionId: string, lifecycleEpoch: string): string
 
 /**
- * Echo the native epoch; one Surface only, no running-viewer hot rebind.
- * Empty surfaceId returns held:true/released:false while native ownership remains;
- * released:true requires never-started or confirmed-reclaimed ownership.
+ * Binds this epoch's one Surface from the `componentId` that `xcomponentAttach`
+ * returned on this UI environment. A Surface id, a node id or any other string is
+ * refused and never promoted into a lease.
+ * Empty componentId is a give-back request: held:true/released:false while a
+ * viewer or quarantined decoder still owns the loan; released:true requires
+ * never-started or confirmed-reclaimed ownership.
+ * One destination per session: another componentId cannot replace it.
  */
-export declare function sessionBindSurface(sessionId: string, display: number, surfaceId: string, lifecycleEpoch: string): string
+export declare function sessionBindSurface(sessionId: string, display: number, componentId: string, lifecycleEpoch: string): string
 
 /**
  * Persistent login_failure: null | "empty_password" | "wrong_password" | "refused".
@@ -119,3 +123,30 @@ export declare function runtimeRemoveRecentPeer(peerId: string): Promise<string>
 export declare function peerQueryOnline(idsJson: string, approvedProfileJson: string): Promise<string>
 
 export declare function peerPresenceCancel(queryGeneration: string): string
+
+/**
+ * Adopts one live ArkUI node's SurfaceHolder on the UI environment thread (call it
+ * from that thread, after the node is attached). `nodeId` is only a label.
+ * The answer carries the opaque componentId this bridge allocates (never reused,
+ * and the only value sessionBindSurface accepts), the node's unique id and the
+ * holder state. ok:false is a real refusal; when cleanup could not be confirmed
+ * the same componentId is still returned so the caller can detach it instead of
+ * losing the holder.
+ */
+export declare function xcomponentAttach(nodeId: string, frameNode: Object, onSurfaceEvent: (event: string) => void): string
+
+/**
+ * Releases this bridge's claim on one holder. held:true means a borrowed loan or
+ * an active native callback still owns resources: the holder, its callback and its
+ * window stay retained, and only a later detach may complete. No answer here
+ * claims a release that did not happen.
+ */
+export declare function xcomponentDetach(componentId: string): string
+
+/**
+ * Declares the rate the attached node should be drawn at. ok separates the
+ * frame-rate call (result) from the on-frame callback registration
+ * (registerResult); frameCallbacks counts native signal callbacks, not decoded
+ * frames or measured presentation FPS.
+ */
+export declare function xcomponentSetFrameRateRangeNative(componentId: string, expected: number, min: number, max: number): string

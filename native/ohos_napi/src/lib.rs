@@ -6,7 +6,7 @@
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
-    bindgen_prelude::{AsyncTask, Task},
+    bindgen_prelude::{AsyncTask, JsUnknown, NapiRaw, Task},
     Env,
 };
 use rd_engine::protocol::Target;
@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    ffi::c_void,
+    sync::{Arc, Mutex, MutexGuard},
 };
 mod app_context;
 mod app_directory;
@@ -27,6 +28,7 @@ mod app_presence;
 mod app_profile;
 mod app_storage;
 mod server_profile;
+mod xcomponent;
 use app_context::{
     app_init, app_set_lifecycle, lan_peer_remove, lan_peers_query, lan_scan_start, lan_scan_stop,
 };
@@ -40,33 +42,73 @@ use server_profile::{validate_server_profile, ApprovedRoute};
 mod capabilities;
 use capabilities::query_decoder_capabilities;
 
-/// The ArkTS renderer owns the Surface; the engine only needs its identity and
-/// the promise that it outlives the lease (see ohos_decoder.rs for the contract).
+/// This session's one Surface destination: a slot filled exactly once from a
+/// real native XComponent holder borrow and never redirected afterwards.
 ///
-/// The id is shared rather than copied because the client binds its surface
-/// after it asks for the session: the engine reads the lease when the first
-/// frame opens the surface, so a binding that arrives before then is what it
-/// presents into. A lease still without an id fails at that open instead of
-/// presenting into nothing.
-struct OhosSurfaceLease {
-    surface_id: AtomicU64,
+/// The client asks for the session before it creates its XComponent, so the
+/// viewer is given this slot rather than a finished lease. It reads the
+/// destination when the first frame opens the Surface; an empty slot reports
+/// `is_ready() == false`, which is what makes the engine wait in
+/// `awaiting_surface` (bounded by its own surface wait) instead of presenting
+/// into nothing. Only `xcomponent::borrow_surface` may fill it: a decimal
+/// Surface id, a node label or any other caller-supplied string is not a lease
+/// and is refused before the slot is touched.
+struct PendingSurfaceLease {
+    published: Mutex<Option<Arc<dyn SurfaceLease>>>,
 }
 
-impl OhosSurfaceLease {
+impl PendingSurfaceLease {
     fn new() -> Self {
         Self {
-            surface_id: AtomicU64::new(0),
+            published: Mutex::new(None),
         }
     }
 
-    fn bind(&self, surface_id: u64) {
-        self.surface_id.store(surface_id, Ordering::Release);
+    fn slot(&self) -> MutexGuard<'_, Option<Arc<dyn SurfaceLease>>> {
+        self.published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Publishes the real holder loan. A second fill is refused: a running
+    /// viewer already holds this slot, and changing what it points at would be
+    /// the hot rebind the engine does not perform.
+    fn publish(&self, lease: Arc<dyn SurfaceLease>) -> Result<(), &'static str> {
+        let mut slot = self.slot();
+        if slot.is_some() {
+            return Err("this session's Surface destination is already published");
+        }
+        *slot = Some(lease);
+        Ok(())
+    }
+
+    /// Empties the slot, and with it the session's last strong reference to the
+    /// holder loan. Only confirmed reclamation, or a binding the session never
+    /// used, may do this, so no viewer or decoder can still be presenting here.
+    /// No UI SDK work happens on drop; the holder's own detach does that.
+    fn release(&self) {
+        let taken = self.slot().take();
+        drop(taken);
+    }
+
+    /// The real Surface id of the published loan, or 0 while the slot is empty.
+    fn published_surface_id(&self) -> u64 {
+        self.slot().as_ref().map_or(0, |lease| lease.surface_id())
     }
 }
 
-unsafe impl SurfaceLease for OhosSurfaceLease {
+// SAFETY: this slot only ever holds the lease it was given, so retaining it
+// retains that Surface exactly as the inner lease promises; `surface_id`
+// reports the inner id and never a made-up one, and an empty slot reports 0
+// (not ready) rather than a destination. Filling it is serialized and one-shot,
+// so a live destination cannot be swapped under a decoder.
+unsafe impl SurfaceLease for PendingSurfaceLease {
     fn surface_id(&self) -> u64 {
-        self.surface_id.load(Ordering::Acquire)
+        self.published_surface_id()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.slot().as_ref().is_some_and(|lease| lease.is_ready())
     }
 }
 
@@ -90,10 +132,15 @@ struct IdRoute {
 }
 
 /// A real binding of this record's single lease, not a decoder destination from
-/// another backend. Retain its identity after clearing the atomic Surface id so
-/// the terminal receipt can still name what was released.
+/// another backend. Retain its identity after the lease is released so the
+/// terminal receipt can still name what was released.
 struct SurfaceBinding {
+    /// The native borrow token this destination came from.
     token: u64,
+    /// The holder scope whose loan this is; a different componentId may never
+    /// replace it while this session owns the destination.
+    component_id: String,
+    /// The real Surface id of the borrowed loan at bind time.
     surface_id: u64,
     display: u32,
 }
@@ -135,10 +182,18 @@ struct SessionRecord {
     /// this field and commits it only after the engine admitted the event that
     /// carried it.
     cursor: Option<(i32, i32)>,
-    /// The surface this session presents into, held from the moment the session
-    /// is registered: the client binds the surface id after it asks for the
-    /// session, and the engine reads the lease when the first frame opens it.
-    lease: Arc<OhosSurfaceLease>,
+    /// The single destination a viewer is given. It is empty until this record
+    /// borrows the native XComponent holder, so registration (which the client
+    /// does before it creates that XComponent) needs no Surface, and the
+    /// engine's own bounded surface wait covers the gap.
+    lease: Arc<PendingSurfaceLease>,
+    /// The record's own claim on one native XComponent holder: the borrow keeps
+    /// the holder, its callbacks and the loan owned until the engine confirms
+    /// reclamation, so nothing the decoder or the UI can still be using is
+    /// dropped early.
+    borrow: Option<xcomponent::SurfaceBorrow>,
+    /// Receipt facts of the destination above, kept after release so a terminal
+    /// receipt still names what was released.
     binding: Option<SurfaceBinding>,
     /// The local input policy this session runs under: the operator's read-only
     /// switch and this connection's acceptance of a peer the handshake did not
@@ -245,7 +300,7 @@ fn apply_terminal_reclamation(
     closed: &mut bool,
     closing: &mut bool,
     reclaimed: &mut Option<bool>,
-    lease: &OhosSurfaceLease,
+    lease: &PendingSurfaceLease,
     verdict: Option<bool>,
 ) {
     match verdict {
@@ -253,7 +308,11 @@ fn apply_terminal_reclamation(
             *closed = true;
             *closing = false;
             *reclaimed = Some(true);
-            lease.bind(0);
+            // The decoder proved it no longer holds this destination, so the
+            // session's published loan is emptied. Only dropping the last
+            // reference lets the XComponent holder be detached; the holder's own
+            // detach still performs every native release.
+            lease.release();
         }
         Some(false) => {
             *closed = false;
@@ -291,6 +350,11 @@ fn record_terminal_reclamation(
             verdict,
         );
         if verdict == Some(true) {
+            // Confirmed reclamation is the only point at which this record's last
+            // strong reference to the holder loan can go: a viewer that failed to
+            // register, a quarantined decoder and an unacknowledged receipt all
+            // keep it until here, so the holder is never released early.
+            record.borrow = None;
             scrub_terminal_record(record);
         }
     }
@@ -433,6 +497,12 @@ fn parse_viewer_target(
 /// Starts the existing direct or strict rendezvous connector with one immutable
 /// record. ID username/config.id are the same canonical target; the raw wire
 /// key and decoded signer stay separate in the captured route.
+///
+/// The destination handed over is this session's single slot, which may still be
+/// empty: a viewer that authenticates before the client has attached its
+/// XComponent waits in `awaiting_surface` for the holder borrow, whose bounded
+/// surface wait turns "never bound" into an explicit failure rather than a
+/// permanent one.
 fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
     let _admission = record
         .id_route
@@ -454,11 +524,10 @@ fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
         requested_fps: record.fps,
         input_policy: record.input_policy,
     };
+    let lease: Arc<dyn SurfaceLease> = record.lease.clone();
     match &record.id_route {
-        Some(route) => {
-            Viewer::start_rendezvous(options, record.lease.clone(), route.profile.configuration())
-        }
-        None => Viewer::start(options, record.lease.clone()),
+        Some(route) => Viewer::start_rendezvous(options, lease, route.profile.configuration()),
+        None => Viewer::start(options, lease),
     }
     .map_err(|error| format!("{error:?}"))
 }
@@ -673,7 +742,8 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
             terminal_snapshot: None,
             terminal_elapsed_ms: None,
             terminal_receipt_constructed: false,
-            lease: Arc::new(OhosSurfaceLease::new()),
+            lease: Arc::new(PendingSurfaceLease::new()),
+            borrow: None,
             binding: None,
             input_policy,
             cursor: None,
@@ -705,9 +775,10 @@ fn surface_receipts(record: &SessionRecord, released: bool) -> Vec<serde_json::V
         .map(|binding| {
             serde_json::json!({
                 "token": binding.token.to_string(),
-                // This epoch owns the Arc<OhosSurfaceLease>; the token names
-                // the actual binding allocated within it.
+                // This epoch owns the Arc<PendingSurfaceLease>; the token names
+                // the native loan that actually filled it.
                 "sourceIdentity": record.lifecycle_epoch.to_string(),
+                "componentId": binding.component_id,
                 "surfaceId": binding.surface_id.to_string(),
                 "display": binding.display,
                 "released": released,
@@ -891,15 +962,30 @@ pub fn session_start(session_id: String) -> String {
             return response.to_string();
         }
         let started = record.viewer.is_none();
+        let mut surface_retirement: Option<String> = None;
         if started {
             match dial(record) {
                 Ok(viewer) => {
-                    record.viewer = Some(viewer);
+                    record.viewer = Some(viewer.clone());
                     record.reported = Reported::default();
                     // A fresh dial has admitted no pointer position.
                     record.cursor = None;
                     record.dials += 1;
                     record.started = Instant::now();
+                    // Bind this loan's retirement to exactly this viewer before
+                    // this call returns. A Surface destroyed between the borrow
+                    // and here has already revoked admission and asked for that
+                    // viewer's close; the error says what happened, and neither
+                    // the Viewer nor the SurfaceBorrow is discarded - this
+                    // record's own terminal path has to prove reclamation.
+                    let watched = record
+                        .borrow
+                        .as_ref()
+                        .map_or(Ok(()), |borrow| borrow.watch_viewer(&viewer));
+                    if let Err(message) = watched {
+                        record.closing = true;
+                        surface_retirement = Some(message);
+                    }
                 }
                 Err(message) => {
                     let mut response =
@@ -915,12 +1001,21 @@ pub fn session_start(session_id: String) -> String {
             true, "session_start", &session_id, record, snapshot.as_ref(),
         );
         response["started"] = serde_json::json!(started);
-        response["surface_bound"] = serde_json::json!(record.lease.surface_id() != 0);
+        response["surface_bound"] =
+            serde_json::json!(record.lease.published_surface_id() != 0);
         response["note"] = serde_json::json!(if started {
-            "viewer dialled; it presents into the surface the client binds, which it may bind after this call"
+            "viewer dialled; it presents into the Surface the client binds, which it may bind after this call"
         } else {
             "a viewer is already running for this session: session_start did not dial again"
         });
+        if let Some(message) = surface_retirement {
+            // Not a failed dial: the viewer exists and is closing, so the client
+            // must poll for confirmed reclamation and ACK it like any terminal.
+            response["surface_retirement_error"] = serde_json::json!(message);
+            response["note"] = serde_json::json!(
+                "native Surface retirement had already asked this viewer to close, so this session is closing; poll for confirmed reclamation before acknowledging it"
+            );
+        }
         response.to_string()
     })
 }
@@ -986,29 +1081,26 @@ pub fn session_login(session_id: String, payload: String) -> String {
     }
 }
 
-/// Binds this epoch's one Surface. An empty id is a give-back request, not
-/// evidence of release; a running/closing viewer retains its lease unchanged.
-#[napi]
-pub fn session_bind_surface(
+/// Records this session's one Surface destination.
+///
+/// The third argument is the `componentId` an `xcomponentAttach` on this UI
+/// environment returned - never a Surface id, a node label or any other string:
+/// the bridge borrows the real lease from that holder and publishes it into the
+/// record's single destination slot. An empty componentId is a give-back
+/// request, not evidence of release; a running or quarantined viewer keeps the
+/// loan until the engine confirms reclamation.
+///
+/// `env` is the UI environment that holder was attached in. The `#[napi]`
+/// wrapper below passes it; a host build has none, and then no lease can be
+/// borrowed.
+fn bind_surface(
+    env: Option<&Env>,
     session_id: String,
     display: u32,
-    surface_id: String,
+    component_id: String,
     lifecycle_epoch: String,
 ) -> String {
-    let surface_id = surface_id.trim();
-    let bound = if surface_id.is_empty() {
-        0
-    } else {
-        match surface_id.parse::<u64>() {
-            Ok(value) if value != 0 => value,
-            _ => {
-                return lifecycle_error_json(
-                    "session_bind_surface",
-                    "surface id must be the decimal u64 the XComponent reports",
-                )
-            }
-        }
-    };
+    let component_id = component_id.trim();
     with_sessions(|sessions| match sessions.get_mut(&session_id) {
         Some(record) => {
             if lifecycle_epoch != record.lifecycle_epoch.to_string() {
@@ -1018,16 +1110,19 @@ pub fn session_bind_surface(
             let mut response = session_response(
                 true, "session_bind_surface", &session_id, record, snapshot.as_ref(),
             );
-            if bound == 0 {
+            if component_id.is_empty() {
                 let released = record.reclaimed == Some(true)
                     || (record.dials == 0 && !record.closing);
                 response["released"] = serde_json::json!(released);
                 response["held"] = serde_json::json!(!released);
                 response["surfaces"] = serde_json::json!(surface_receipts(record, released));
                 if released {
-                    record.lease.bind(0);
-                    // A never-started give-back has no terminal receipt to
-                    // retain. A terminal binding stays recorded until ACK.
+                    // Nothing can still be presenting here, so the record's own
+                    // claim on the holder goes too: only then can its detach
+                    // settle. A never-started give-back has no terminal receipt
+                    // to retain, while a terminal binding stays recorded for it.
+                    record.lease.release();
+                    record.borrow = None;
                     if !record.closed {
                         record.binding = None;
                     }
@@ -1040,7 +1135,8 @@ pub fn session_bind_surface(
                         "cannot clear a held Surface; close the viewer and wait for confirmed reclamation"
                     );
                 }
-                response["bound"] = serde_json::json!(record.lease.surface_id() != 0);
+                response["bound"] =
+                    serde_json::json!(record.lease.published_surface_id() != 0);
                 response["display"] = serde_json::json!(display);
                 return response.to_string();
             }
@@ -1051,45 +1147,150 @@ pub fn session_bind_surface(
                 );
                 return response.to_string();
             }
-            let existing = record.lease.surface_id();
-            if record.viewer.is_some()
-                && record.binding.as_ref().is_some_and(|binding| {
-                    binding.surface_id != bound || binding.display != display
-                })
-            {
+            let existing = record
+                .binding
+                .as_ref()
+                .map(|binding| binding.component_id == component_id);
+            match existing {
+                // The same holder again: answer with the destination this record
+                // already holds instead of borrowing a second one.
+                Some(true) => {
+                    if let Some(binding) = record.binding.as_mut() {
+                        binding.display = display;
+                    }
+                    return bound_receipt(record, &mut response, display);
+                }
+                Some(false) => {
+                    response["ok"] = serde_json::json!(false);
+                    response["message"] = serde_json::json!(
+                        "cannot replace this session's single Surface binding with another component; close it and start a new session"
+                    );
+                    return response.to_string();
+                }
+                None => {}
+            }
+            let Some(env) = env else {
+                // A host build and a detached environment have no holder to
+                // borrow from, so the refusal is the real answer: no destination
+                // is invented, and no string is promoted to a Surface lease.
                 response["ok"] = serde_json::json!(false);
                 response["message"] = serde_json::json!(
-                    "cannot replace a running viewer's single Surface binding; close it first"
+                    "a Surface binding needs the live XComponent holder on its UI environment thread; call xcomponentAttach there first"
                 );
                 return response.to_string();
+            };
+            let borrow = match xcomponent::borrow_surface(env, component_id) {
+                Ok(borrow) => borrow,
+                Err(message) => {
+                    response["ok"] = serde_json::json!(false);
+                    response["message"] = serde_json::json!(message);
+                    return response.to_string();
+                }
+            };
+            // The slot is the single-publish authority: a second fill would swap
+            // the destination under a running viewer, so it is refused there.
+            if let Err(message) = record.lease.publish(borrow.lease()) {
+                response["ok"] = serde_json::json!(false);
+                response["message"] = serde_json::json!(message);
+                return response.to_string();
             }
-            if existing != bound
-                || record.binding.as_ref().is_none_or(|binding| binding.display != display)
-            {
-                let token = match allocate_native_id() {
-                    Ok(token) => token,
-                    Err(message) => {
-                        return lifecycle_error_json("session_bind_surface", message);
-                    }
-                };
-                record.binding = Some(SurfaceBinding {
-                    token,
-                    surface_id: bound,
-                    display,
-                });
-                record.lease.bind(bound);
-            }
-            response["surfaces"] = serde_json::json!(surface_receipts(record, false));
-            response["bound"] = serde_json::json!(true);
-            response["display"] = serde_json::json!(display);
-            response["released"] = serde_json::json!(false);
-            response["note"] = serde_json::json!(
-                "single Surface lease bound; this records the destination, not a peer display switch or hot rebind"
-            );
-            response.to_string()
+            record.binding = Some(SurfaceBinding {
+                token: borrow.token,
+                component_id: component_id.to_owned(),
+                surface_id: borrow.surface_id,
+                display,
+            });
+            record.borrow = Some(borrow);
+            bound_receipt(record, &mut response, display)
         }
         None => lifecycle_error_json("session_bind_surface", "unknown session"),
     })
+}
+
+/// The answer a successful bind returns: the destination facts this record now
+/// holds. `released` is false because a binding is not a release, and `bound` is
+/// read from the published slot, never assumed.
+fn bound_receipt(
+    record: &SessionRecord,
+    response: &mut serde_json::Value,
+    display: u32,
+) -> String {
+    response["surfaces"] = serde_json::json!(surface_receipts(record, false));
+    response["bound"] = serde_json::json!(record.lease.published_surface_id() != 0);
+    response["display"] = serde_json::json!(display);
+    response["released"] = serde_json::json!(false);
+    response["note"] = serde_json::json!(
+        "single Surface lease borrowed from the native XComponent holder; this records the destination, not a peer display switch or hot rebind"
+    );
+    response.to_string()
+}
+
+/// Binds this epoch's one Surface: the `#[napi]` face of `bind_surface`.
+#[napi]
+pub fn session_bind_surface(
+    env: Env,
+    session_id: String,
+    display: u32,
+    component_id: String,
+    lifecycle_epoch: String,
+) -> String {
+    bind_surface(
+        Some(&env),
+        session_id,
+        display,
+        component_id,
+        lifecycle_epoch,
+    )
+}
+
+/// Adopts one live ArkUI node's SurfaceHolder on the UI environment thread.
+///
+/// `nodeId` is only a label for this holder. The answer carries the opaque
+/// `componentId` this bridge allocates (never reused, and the only value
+/// `sessionBindSurface` accepts), the node's unique id and the holder state.
+/// `ok:false` is a real refusal; when cleanup could not be confirmed the same
+/// componentId is still returned so the caller can detach it instead of leaking
+/// the holder.
+#[napi]
+pub fn xcomponent_attach(
+    env: Env,
+    node_id: String,
+    frame_node: JsUnknown,
+    on_surface_event: JsUnknown,
+) -> String {
+    // Only the raw handles are forwarded: the holder keeps its own napi
+    // reference and TSFN for them, on this same environment thread.
+    let frame = unsafe { frame_node.raw() } as *mut c_void;
+    let callback = unsafe { on_surface_event.raw() } as *mut c_void;
+    unsafe { xcomponent::attach(env, node_id, frame, callback) }
+}
+
+/// Releases this bridge's claim on one holder.
+///
+/// `held:true` means a borrowed loan or an active native callback still owns
+/// resources: the holder, its callback and its window stay retained, and only a
+/// later detach may complete. No answer here claims a release that did not
+/// happen.
+#[napi]
+pub fn xcomponent_detach(env: Env, component_id: String) -> String {
+    xcomponent::detach(env, component_id)
+}
+
+/// Declares the rate the attached node should be drawn at.
+///
+/// The answer separates the frame-rate call from the on-frame callback
+/// registration it needed, so a registered-callback failure is not reported as a
+/// rate refusal. Its `frameCallbacks` counter is native signal callbacks, not
+/// decoded frames or measured presentation FPS.
+#[napi]
+pub fn xcomponent_set_frame_rate_range_native(
+    env: Env,
+    component_id: String,
+    expected: i32,
+    min: i32,
+    max: i32,
+) -> String {
+    xcomponent::set_frame_rate_range(env, component_id, expected, min, max)
 }
 
 enum CloseRequest {
@@ -1138,6 +1339,9 @@ impl CloseWork {
                 record.lease.as_ref(),
                 Some(true),
             );
+            // Nothing was ever handed this destination, so the record's claim on
+            // the holder can go with the slot: the XComponent is now detachable.
+            record.borrow = None;
             scrub_terminal_record(record);
             CloseRequest::Complete(close_receipt_json(&session_id, record))
         });
@@ -2065,6 +2269,12 @@ implemented_entry_points!(
         "sessionGetFrameRateSnapshot",
         session_get_frame_rate_snapshot
     ),
+    ("xcomponentAttach", xcomponent_attach),
+    ("xcomponentDetach", xcomponent_detach),
+    (
+        "xcomponentSetFrameRateRangeNative",
+        xcomponent_set_frame_rate_range_native
+    ),
 );
 
 /// Which of the client's expected entry points this build serves, and how.
@@ -2214,13 +2424,44 @@ pub fn har_surface_manifest() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_terminal_reclamation, client_mouse_button_to_wire, error_json,
+        apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
         expected_input_generation, parse_viewer_target, policy_json, refusal_json,
         record_terminal_reclamation, resolve_mouse_coordinates, session_acknowledge_close,
-        session_add, session_bind_surface, session_cancel_job, session_poll_events, with_sessions,
-        ApprovedRoute, CloseWork, InputPolicyOutcome, LoginFailure, OhosSurfaceLease, Reported,
-        SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
+        session_add, session_cancel_job, session_poll_events, with_sessions, ApprovedRoute,
+        CloseWork, InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported,
+        SurfaceBinding, SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget,
+        MAX_SAFE_INPUT_GENERATION,
     };
+    use std::sync::Arc;
+
+    /// A destination the bridge only needs an id from. These tests exercise the
+    /// bridge's receipts and ownership rules, never a native holder or a decoder.
+    struct TestLease(u64);
+
+    unsafe impl SurfaceLease for TestLease {
+        fn surface_id(&self) -> u64 {
+            self.0
+        }
+    }
+
+    /// Injects the facts a real `xcomponentAttach` + holder borrow would produce.
+    /// This host build has no ArkUI environment, so no borrow can run here; the
+    /// receipt, single-publish and release rules are what these tests check.
+    fn inject_binding(id: &str, component_id: &str, surface_id: u64, token: u64) {
+        with_sessions(|sessions| {
+            let record = sessions.get_mut(id).expect("the record is registered");
+            record
+                .lease
+                .publish(Arc::new(TestLease(surface_id)))
+                .expect("this session has not published a destination yet");
+            record.binding = Some(SurfaceBinding {
+                token,
+                component_id: component_id.to_owned(),
+                surface_id,
+                display: 0,
+            });
+        });
+    }
 
     fn json(response: String) -> serde_json::Value {
         serde_json::from_str(&response).expect("the bridge returns JSON")
@@ -2244,13 +2485,34 @@ mod tests {
     fn native_epoch_and_binding_survive_close_until_ack_then_id_reuse_gets_a_new_epoch() {
         let id = "napi-test-neverstarted";
         let epoch = register_lifecycle_test(id);
-        let bound = json(session_bind_surface(id.into(), 0, "42".into(), epoch.clone()));
-        assert_eq!(bound["ok"], true);
-        let token = bound["surfaces"][0]["token"].as_str().unwrap();
-        assert!(token.parse::<u64>().unwrap() > 0);
-        assert_eq!(bound["surfaces"][0]["sourceIdentity"], epoch);
-        let rebound = json(session_bind_surface(id.into(), 0, "42".into(), epoch.clone()));
-        assert_eq!(rebound["surfaces"][0]["token"], token);
+        // A bare Surface id string is not a binding key any more: with no live
+        // holder there is nothing to borrow, so the answer refuses and invents no
+        // destination.
+        let refused = json(bind_surface(None, id.into(), 0, "42".into(), epoch.clone()));
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["surfaces"], serde_json::json!([]));
+        let token = 4242u64;
+        inject_binding(id, "xcomponent:test", 42, token);
+        // The same holder re-binds from what this record already holds: no second
+        // borrow and no second destination.
+        let rebound = json(bind_surface(
+            None,
+            id.into(),
+            0,
+            "xcomponent:test".into(),
+            epoch.clone(),
+        ));
+        assert_eq!(rebound["ok"], true);
+        assert_eq!(rebound["bound"], true);
+        assert_eq!(rebound["surfaces"][0]["token"], token.to_string());
+        assert_eq!(rebound["surfaces"][0]["released"], false);
+        // One destination per session: another component may not replace it.
+        let replaced = json(bind_surface(None, id.into(), 0, "99".into(), epoch.clone()));
+        assert_eq!(replaced["ok"], false);
+        assert!(replaced["message"]
+            .as_str()
+            .unwrap()
+            .contains("single Surface"));
         for act_id in [0, 37] {
             assert_eq!(json(session_cancel_job(id.into(), act_id))["ok"], false);
         }
@@ -2263,12 +2525,16 @@ mod tests {
         assert_eq!(close["settle"], "neverstarted");
         assert_eq!(close["session"]["lifecycleEpoch"], epoch);
         assert_eq!(close["surfaces"][0]["surfaceId"], "42");
-        assert_eq!(close["surfaces"][0]["token"], token);
+        assert_eq!(close["surfaces"][0]["componentId"], "xcomponent:test");
+        assert_eq!(close["surfaces"][0]["token"], token.to_string());
+        assert_eq!(close["surfaces"][0]["sourceIdentity"], epoch);
         assert_eq!(close["surfaces"][0]["released"], true);
         assert!(close.get("input_generation").is_none());
         assert!(close.get("releases_unreleased").is_none());
         assert_eq!(json(CloseWork::prepare(id.into()).run()), close);
-        let cleared = json(session_bind_surface(id.into(), 0, "".into(), epoch.clone()));
+        // The confirmed close already emptied the loan; giving it back is
+        // idempotent and still names what was released.
+        let cleared = json(bind_surface(None, id.into(), 0, "".into(), epoch.clone()));
         assert_eq!(cleared["released"], true);
         assert_eq!(cleared["held"], false);
         assert_eq!(cleared["surfaces"][0]["surfaceId"], "42");
@@ -2277,9 +2543,10 @@ mod tests {
         let next_epoch = register_lifecycle_test(id);
         assert_ne!(next_epoch, epoch);
         assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
-        assert_eq!(json(session_bind_surface(id.into(), 0, "99".into(), epoch))["ok"], false);
+        assert_eq!(json(bind_surface(None, id.into(), 0, "43".into(), epoch))["ok"], false);
         let next_close = json(CloseWork::prepare(id.into()).run());
         assert_eq!(next_close["session"]["lifecycleEpoch"], next_epoch);
+        assert_eq!(next_close["surfaces"], serde_json::json!([]));
         assert_eq!(json(session_acknowledge_close(id.into(), next_epoch))["ok"], true);
         let unknown = json(CloseWork::prepare(id.into()).run());
         assert_eq!(unknown["ok"], false);
@@ -2291,10 +2558,7 @@ mod tests {
     fn reclaimed_auth_failure_keeps_terminal_evidence_and_requires_a_complete_receipt() {
         let id = "napi-test-terminal-evidence";
         let epoch = register_lifecycle_test(id);
-        assert_eq!(
-            json(session_bind_surface(id.into(), 0, "43".into(), epoch.clone()))["ok"],
-            true,
-        );
+        inject_binding(id, "xcomponent:test", 43, 4343);
         // Exercise the bridge's terminal transition with owner-supplied facts;
         // this is not a peer-authentication or native-decoder integration test.
         with_sessions(|sessions| {
@@ -2314,7 +2578,7 @@ mod tests {
             };
             record_terminal_reclamation(record, &snapshot, Some(true));
             assert!(record.password.is_empty());
-            assert_eq!(record.lease.surface_id(), 0);
+            assert_eq!(record.lease.published_surface_id(), 0);
             assert!(!record.terminal_receipt_constructed);
         });
         assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
@@ -2344,10 +2608,7 @@ mod tests {
     fn unknown_or_failed_reclamation_never_authorizes_giveback_or_ack() {
         let id = "napi-test-quarantine";
         let epoch = register_lifecycle_test(id);
-        assert_eq!(
-            json(session_bind_surface(id.into(), 0, "44".into(), epoch.clone()))["ok"],
-            true,
-        );
+        inject_binding(id, "xcomponent:test", 44, 4444);
         let snapshot = ViewerSnapshot {
             phase: "failed".into(),
             error: Some("ReclamationUnconfirmed".into()),
@@ -2363,7 +2624,7 @@ mod tests {
             assert!(record.terminal_snapshot.is_none(), "unknown is observed again later");
             assert!(record.reclaimed.is_none());
         });
-        let held = json(session_bind_surface(id.into(), 0, "".into(), epoch.clone()));
+        let held = json(bind_surface(None, id.into(), 0, "".into(), epoch.clone()));
         assert_eq!(held["ok"], false);
         assert_eq!(held["held"], true);
         assert_eq!(held["released"], false);
@@ -2384,7 +2645,7 @@ mod tests {
         assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], false);
         with_sessions(|sessions| {
             let record = sessions.get(id).unwrap();
-            assert_eq!(record.lease.surface_id(), 44);
+            assert_eq!(record.lease.published_surface_id(), 44);
             assert!(!record.terminal_receipt_constructed);
             assert_eq!(record.password, "test-only");
             // Remove only this synthetic test fixture: it has no native owner.
@@ -2516,10 +2777,34 @@ mod tests {
         assert!(client_mouse_button_to_wire(6).is_err());
     }
 
+    /// The destination slot accepts exactly one lease: a second fill would swap
+    /// the Surface under a running viewer, so it is refused instead of applied.
+    #[test]
+    fn a_session_destination_is_published_once_and_released_only_by_reclamation() {
+        let lease = PendingSurfaceLease::new();
+        assert_eq!(lease.published_surface_id(), 0);
+        assert!(!lease.is_ready(), "an unpublished slot is not ready");
+        lease
+            .publish(Arc::new(TestLease(7)))
+            .expect("the first publish is what fills the slot");
+        assert!(lease.is_ready());
+        assert_eq!(lease.published_surface_id(), 7);
+        assert!(
+            lease.publish(Arc::new(TestLease(8))).is_err(),
+            "a second lease may not replace the running destination"
+        );
+        assert_eq!(lease.published_surface_id(), 7);
+        lease.release();
+        assert!(!lease.is_ready());
+        assert_eq!(lease.published_surface_id(), 0);
+    }
+
     #[test]
     fn unconfirmed_reclamation_keeps_the_surface_lease_bound() {
-        let lease = OhosSurfaceLease::new();
-        lease.bind(42);
+        let lease = PendingSurfaceLease::new();
+        lease
+            .publish(Arc::new(TestLease(42)))
+            .expect("one publish per session");
         let mut closed = false;
         let mut closing = false;
         let mut reclaimed = None;
@@ -2538,13 +2823,19 @@ mod tests {
         );
         assert!(closing, "the record remains terminally unsafe");
         assert_eq!(reclaimed, Some(false));
-        assert_eq!(lease.surface_id(), 42, "the Surface lease stays intact");
+        assert_eq!(
+            lease.published_surface_id(),
+            42,
+            "the borrowed destination stays published"
+        );
     }
 
     #[test]
     fn confirmed_reclamation_releases_the_surface_lease() {
-        let lease = OhosSurfaceLease::new();
-        lease.bind(42);
+        let lease = PendingSurfaceLease::new();
+        lease
+            .publish(Arc::new(TestLease(42)))
+            .expect("one publish per session");
         let mut closed = false;
         let mut closing = true;
         let mut reclaimed = None;
@@ -2560,7 +2851,11 @@ mod tests {
         assert!(closed, "only a confirmed release makes the record reusable");
         assert!(!closing);
         assert_eq!(reclaimed, Some(true));
-        assert_eq!(lease.surface_id(), 0, "the released lease is cleared");
+        assert_eq!(
+            lease.published_surface_id(),
+            0,
+            "the released loan is emptied"
+        );
     }
 
     #[test]

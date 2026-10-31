@@ -91,14 +91,16 @@ export function sessionAcknowledgeClose(sessionId: string, lifecycleEpoch: strin
 }
 
 /**
- * Echo the native epoch. One Surface only: no running-viewer hot rebind.
- * Empty surfaceId is a give-back request; a live/closing viewer returns
- * held:true/released:false. Only no viewer ever started or confirmed reclamation
- * permits released:true. Binding/give-back never counts as a terminal ACK.
+ * Binds this epoch's one Surface from the componentId `xcomponentAttach` returned
+ * on this UI environment; a Surface id or any other string is refused and never
+ * promoted into a lease. Empty componentId is a give-back request; a live/closing
+ * viewer returns held:true/released:false. Only no viewer ever started or
+ * confirmed reclamation permits released:true. Binding/give-back never counts as
+ * a terminal ACK.
  */
-export function sessionBindSurface(sessionId: string, display: number, surfaceId: string,
+export function sessionBindSurface(sessionId: string, display: number, componentId: string,
   lifecycleEpoch: string): string {
-  return native.sessionBindSurface(sessionId, display, surfaceId, lifecycleEpoch);
+  return native.sessionBindSurface(sessionId, display, componentId, lifecycleEpoch);
 }
 
 /**
@@ -212,4 +214,41 @@ export function peerQueryOnline(idsJson: string, approvedProfileJson: string): P
 /** Cancels exactly the query generation this call names; it does not retire other work. */
 export function peerPresenceCancel(queryGeneration: string): string {
   return native.peerPresenceCancel(queryGeneration);
+}
+
+/**
+ * Adopts one live ArkUI node's SurfaceHolder on the UI environment thread: call it
+ * from that thread, after the node is attached. nodeId is only a label.
+ * JSON: {ok,componentId,nodeId,nodeUniqueId,environmentGeneration,surfaceId,
+ * bindingToken,ready,held,released,destroyed,callbacksRegistered,
+ * frameCallbackRegistered,frameCallbacks,notificationResult,error,api,result}.
+ * componentId is opaque, never reused, and the only value sessionBindSurface
+ * accepts. ok:false is a real refusal: when cleanup could not be confirmed the same
+ * componentId is returned with cleanup, so the caller detaches it instead of
+ * dropping it. onSurfaceEvent receives one coalesced JSON lifecycle notice.
+ */
+export function xcomponentAttach(nodeId: string, frameNode: Object,
+  onSurfaceEvent: (event: string) => void): string {
+  return native.xcomponentAttach(nodeId, frameNode, onSurfaceEvent);
+}
+
+/**
+ * Releases this bridge's claim on one holder. held:true means a borrowed loan or an
+ * active native callback still owns resources: the holder, its callback and its
+ * window stay retained and only a later detach may complete. released:true is the
+ * only successful teardown; no answer claims a release that did not happen.
+ */
+export function xcomponentDetach(componentId: string): string {
+  return native.xcomponentDetach(componentId);
+}
+
+/**
+ * Declares the rate the attached node should be drawn at. ok separates the
+ * frame-rate call (result) from the on-frame callback registration
+ * (registerResult); frameCallbacks counts native signal callbacks, not decoded
+ * frames or measured presentation FPS.
+ */
+export function xcomponentSetFrameRateRangeNative(componentId: string, expected: number, min: number,
+  max: number): string {
+  return native.xcomponentSetFrameRateRangeNative(componentId, expected, min, max);
 }
