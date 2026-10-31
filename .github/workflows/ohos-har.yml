@@ -157,3 +157,19 @@ jobs:
       - name: Remove private registry credentials
         if: always()
         run: rm -f "$HOME/.ohpm/.ohpmrc"
+
+      - name: Probe napi-ohos API
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          root=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -name 'napi-ohos-1.2.0' -print -quit 2>/dev/null || true)
+          echo "CRATE_ROOT=$root"
+          if [ -n "$root" ]; then
+            echo '--- lib.rs top ---'
+            sed -n '1,80p' "$root/src/lib.rs" | grep -n 'pub use\|pub mod' | head -40
+            echo '--- declarations ---'
+            grep -rn 'pub struct Unknown\|pub trait NapiRaw\|pub struct JsUnknown\|pub type JsUnknown\|pub struct JsObject\|pub struct JsValue' "$root/src" | head -20
+            echo '--- bindgen_prelude head ---'
+            sed -n '1,80p' "$root/src/bindgen_prelude/mod.rs" 2>/dev/null | head -80
+          fi
