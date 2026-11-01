@@ -1201,6 +1201,27 @@ fn bind_surface(
                 display,
             });
             record.borrow = Some(borrow);
+            // The UI normally starts the Viewer before it creates this holder.
+            // Register retirement here as well as in session_start, so either
+            // arrival order closes the actual Viewer on unexpected destruction.
+            let watched = match (&record.borrow, &record.viewer) {
+                (Some(borrow), Some(viewer)) => borrow.watch_viewer(viewer),
+                _ => Ok(()),
+            };
+            if let Err(message) = watched {
+                // watch_viewer already requested close. Keep both owners until
+                // the terminal path confirms reclamation; this is not an
+                // unused binding that can be dropped after a bind refusal.
+                record.closing = true;
+                let snapshot = observe_terminal_reclamation(record);
+                response = session_response(
+                    false, "session_bind_surface", &session_id, record, snapshot.as_ref(),
+                );
+                response["surface_retirement_error"] = serde_json::json!(message);
+                response["message"] = serde_json::json!(
+                    "Surface retirement requested Viewer close; retain the binding until reclamation is confirmed"
+                );
+            }
             bound_receipt(record, &mut response, display)
         }
         None => lifecycle_error_json("session_bind_surface", "unknown session"),
