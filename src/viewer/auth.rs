@@ -1,7 +1,7 @@
 //! RustDesk authentication on the original session and its absolute deadline.
 use super::{
     AuthAnswers, Connector, LoginFailure, Password, PasswordGate, SecondFactorGate,
-    State, ViewerError, ViewerOptions, CLIENT_VERSION, discard_password, lock,
+    State, ViewerError, ViewerOptions, ViewerTarget, CLIENT_VERSION, discard_password, lock,
 };
 use crate::{
     rendezvous::RouteKind,
