@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'native/**'
       - 'vendor/**'
       - 'Cargo.*'
@@ -85,6 +86,8 @@ jobs:
           cargo test --locked --lib session::tests
           cargo test --locked --lib transfer
           cargo test --locked --lib clipboard
+          cargo test --locked --lib cliprdr
+          cargo test --locked --lib viewer::tests
           cargo test --locked --lib host::security
           cargo test --locked --lib host::service
           cargo test --locked --test rendezvous

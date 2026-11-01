@@ -30,6 +30,7 @@ mod app_presence;
 mod app_profile;
 mod app_storage;
 mod clipboard;
+mod cliprdr;
 mod host_bridge;
 mod host_security;
 mod server_profile;
@@ -55,6 +56,10 @@ use app_profile::{runtime_get_server_config, runtime_set_server_config, runtime_
 use clipboard::{
     session_send_clipboard, session_send_clipboard_image, session_take_clipboard,
     session_take_clipboard_image,
+};
+use cliprdr::{
+    session_get_clipboard_file_state, session_send_clipboard_files,
+    session_set_clipboard_file_root, session_take_clipboard_file_events,
 };
 use host_bridge::{
     controlled_incoming_poll, controlled_incoming_resolve, controlled_password_get,
@@ -375,6 +380,9 @@ impl Reported {
         // withdrawal, a `disable-clipboard` change or a close empties the mailbox.
         if !snapshot.closed && snapshot.clipboard_pending {
             events.push(serde_json::json!({ "name": "clipboard_multi" }));
+        }
+        if !snapshot.closed && snapshot.file_clipboard_pending {
+            events.push(serde_json::json!({ "name": "clipboard_files" }));
         }
         events
     }
@@ -2651,6 +2659,10 @@ implemented_entry_points!(
     ("sessionSendClipboardImage", session_send_clipboard_image),
     ("sessionTakeClipboard", session_take_clipboard),
     ("sessionTakeClipboardImage", session_take_clipboard_image),
+    ("sessionSendClipboardFiles", session_send_clipboard_files),
+    ("sessionSetClipboardFileRoot", session_set_clipboard_file_root),
+    ("sessionGetClipboardFileState", session_get_clipboard_file_state),
+    ("sessionTakeClipboardFileEvents", session_take_clipboard_file_events),
     (
         "sessionGetFrameRateSnapshot",
         session_get_frame_rate_snapshot

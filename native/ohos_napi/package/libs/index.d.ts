@@ -127,6 +127,18 @@ export declare function sessionTakeClipboard(sessionId: string): string
  */
 export declare function sessionTakeClipboardImage(sessionId: string): Uint8Array
 
+/** Queues staged local files, not a peer-applied acknowledgement. */
+export declare function sessionSendClipboardFiles(sessionId: string, pathsJson: string): string
+
+/** Queues the private incoming root; filesystem failures arrive as events. */
+export declare function sessionSetClipboardFileRoot(sessionId: string, root: string): string
+
+/** Non-consuming JSON {ok,allowed,revision,pending}. */
+export declare function sessionGetClipboardFileState(sessionId: string): string
+
+/** Takes at most 8 facts; Files carry the original revision, never a refreshed one. */
+export declare function sessionTakeClipboardFileEvents(sessionId: string): string
+
 export declare function sessionSetCustomFps(sessionId: string, fps: number): string
 
 export declare function sessionSetViewOnly(sessionId: string, enabled: boolean): string

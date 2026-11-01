@@ -339,10 +339,10 @@ impl SessionOptions {
     ///
     /// The disable flags follow the pinned client's own login habit: a flag is
     /// stated when it is on, and left `NotSet` when it is off, so "off" means the
-    /// peer's default rather than an argument with it. `enable_file_transfer` and
-    /// `disable_camera` are stated explicitly because they are this product's
-    /// boundary, not a user preference: a desktop login is not the file-transfer
-    /// role, and camera viewing is excluded.
+    /// peer's default rather than an argument with it. `enable_file_transfer`
+    /// enables the Desktop's real file clipboard owner; it does not select the
+    /// separate FileTransfer login role or grant a permission the peer withheld.
+    /// Camera viewing remains explicitly disabled.
     pub fn validate_advertisement(&self, advertised_decoding: &SupportedDecoding) -> Result<(), OptionError> {
         if advertised(advertised_decoding, self.codec_preference) {
             Ok(())
@@ -370,7 +370,7 @@ impl SessionOptions {
             // is turned off again must not wait for a grant the peer was told
             // never to send.
             disable_keyboard: BoolOption::No.into(),
-            enable_file_transfer: BoolOption::No.into(),
+            enable_file_transfer: BoolOption::Yes.into(),
             disable_camera: BoolOption::Yes.into(),
             ..Default::default()
         }
@@ -763,8 +763,8 @@ mod tests {
         );
         assert_eq!(
             option.enable_file_transfer.enum_value().unwrap(),
-            BoolOption::No,
-            "a desktop login is not the file-transfer role"
+            BoolOption::Yes,
+            "Desktop enables its file clipboard without changing the login role"
         );
         assert_eq!(
             option.disable_camera.enum_value().unwrap(),

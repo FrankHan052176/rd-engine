@@ -197,6 +197,26 @@ export function sessionTakeClipboardImage(sessionId: string): Uint8Array {
   return native.sessionTakeClipboardImage(sessionId);
 }
 
+/** Queues real staged paths; queued is not a peer-applied acknowledgement. */
+export function sessionSendClipboardFiles(sessionId: string, pathsJson: string): string {
+  return native.sessionSendClipboardFiles(sessionId, pathsJson);
+}
+
+/** Queues the session's private incoming root; filesystem errors arrive as events. */
+export function sessionSetClipboardFileRoot(sessionId: string, root: string): string {
+  return native.sessionSetClipboardFileRoot(sessionId, root);
+}
+
+/** Non-consuming JSON {ok,allowed,revision,pending}; no clipboard paths. */
+export function sessionGetClipboardFileState(sessionId: string): string {
+  return native.sessionGetClipboardFileState(sessionId);
+}
+
+/** Takes at most 8 facts. Recheck Files.revision against the live state before applying. */
+export function sessionTakeClipboardFileEvents(sessionId: string): string {
+  return native.sessionTakeClipboardFileEvents(sessionId);
+}
+
 export function sessionSetCustomFps(sessionId: string, fps: number): string {
   return native.sessionSetCustomFps(sessionId, fps);
 }
