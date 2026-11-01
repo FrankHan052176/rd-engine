@@ -1,6 +1,6 @@
 //! Actual loopback TCP tests, with hbb_common framing/crypto as peer fixtures.
 //! These are NOT tests against a released RustDesk application binary.
-pub use rd_engine::transport;
+pub use rd_engine::{conn_token, transport};
 #[path = "../src/authentication.rs"]
 mod authentication;
 #[path = "../src/handshake.rs"]
