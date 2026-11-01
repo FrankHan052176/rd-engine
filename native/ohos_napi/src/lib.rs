@@ -7,7 +7,7 @@ use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
     bindgen_prelude::{AsyncTask, Task},
-    Env, NapiRaw, Unknown,
+    Env, JsValue, Unknown,
 };
 use rd_engine::protocol::Target;
 use rd_engine::session::PeerCloseReason;
@@ -1260,8 +1260,8 @@ pub fn xcomponent_attach(
 ) -> String {
     // Only the raw handles are forwarded: the holder keeps its own napi
     // reference and TSFN for them, on this same environment thread.
-    let frame = unsafe { frame_node.raw() } as *mut c_void;
-    let callback = unsafe { on_surface_event.raw() } as *mut c_void;
+    let frame = frame_node.raw() as *mut c_void;
+    let callback = on_surface_event.raw() as *mut c_void;
     unsafe { xcomponent::attach(env, node_id, frame, callback) }
 }
 
