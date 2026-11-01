@@ -257,3 +257,47 @@ export function xcomponentSetFrameRateRangeNative(componentId: string, expected:
   max: number): string {
   return native.xcomponentSetFrameRateRangeNative(componentId, expected, min, max);
 }
+
+export function sessionSetImageQuality(sessionId: string, quality: string): string {
+  return native.sessionSetImageQuality(sessionId, quality);
+}
+
+export function sessionSetCustomImageQuality(sessionId: string, quality: number): string {
+  return native.sessionSetCustomImageQuality(sessionId, quality);
+}
+
+export function sessionSetCodecPreference(sessionId: string, codec: string): string {
+  return native.sessionSetCodecPreference(sessionId, codec);
+}
+
+export function sessionSetShowRemoteCursor(sessionId: string, enabled: boolean): string {
+  return native.sessionSetShowRemoteCursor(sessionId, enabled);
+}
+
+export function sessionSwitchDisplay(sessionId: string, displaysJson: string): string {
+  return native.sessionSwitchDisplay(sessionId, displaysJson);
+}
+
+export function sessionChangeResolution(sessionId: string, display: number, width: number, height: number): string {
+  return native.sessionChangeResolution(sessionId, display, width, height);
+}
+
+export function sessionGetImageQuality(sessionId: string): string {
+  return native.sessionGetImageQuality(sessionId);
+}
+
+export function sessionGetToggleOption(sessionId: string, option: string): boolean {
+  return native.sessionGetToggleOption(sessionId, option);
+}
+
+export function sessionToggleOption(sessionId: string, option: string): string {
+  return native.sessionToggleOption(sessionId, option);
+}
+
+export function sessionGetRemoteAudioState(sessionId: string): string {
+  return native.sessionGetRemoteAudioState(sessionId);
+}
+
+export function sessionGetEnableTrustedDevices(sessionId: string): boolean {
+  return native.sessionGetEnableTrustedDevices(sessionId);
+}

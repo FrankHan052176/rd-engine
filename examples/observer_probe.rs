@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         // operator accepted the connection, which the probe has no operator to
         // ask.
         input_policy: ViewerInputPolicy::interactive(),
+        session_options: Default::default(),
     };
     let viewer = Viewer::start(
         options,

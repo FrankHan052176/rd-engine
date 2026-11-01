@@ -153,3 +153,25 @@ export declare function xcomponentDetach(componentId: string): string
  * frames or measured presentation FPS.
  */
 export declare function xcomponentSetFrameRateRangeNative(componentId: string, expected: number, min: number, max: number): string
+
+export declare function sessionSetImageQuality(sessionId: string, quality: string): string
+
+export declare function sessionSetCustomImageQuality(sessionId: string, quality: number): string
+
+export declare function sessionSetCodecPreference(sessionId: string, codec: string): string
+
+export declare function sessionSetShowRemoteCursor(sessionId: string, enabled: boolean): string
+
+export declare function sessionSwitchDisplay(sessionId: string, displaysJson: string): string
+
+export declare function sessionChangeResolution(sessionId: string, display: number, width: number, height: number): string
+
+export declare function sessionGetImageQuality(sessionId: string): string
+
+export declare function sessionGetToggleOption(sessionId: string, option: string): boolean
+
+export declare function sessionToggleOption(sessionId: string, option: string): string
+
+export declare function sessionGetRemoteAudioState(sessionId: string): string
+
+export declare function sessionGetEnableTrustedDevices(sessionId: string): boolean

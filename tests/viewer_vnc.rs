@@ -169,6 +169,7 @@ fn options(endpoint: Endpoint) -> ViewerOptions {
         password: PASSWORD.into(),
         requested_fps: 30,
         input_policy: ViewerInputPolicy::interactive(),
+        session_options: Default::default(),
     }
 }
 

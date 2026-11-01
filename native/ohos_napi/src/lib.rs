@@ -28,6 +28,14 @@ mod app_presence;
 mod app_profile;
 mod app_storage;
 mod server_profile;
+mod session_options;
+use rd_engine::session_options::SessionOptions;
+use session_options::{
+    session_set_image_quality, session_set_custom_image_quality,
+    session_set_codec_preference, session_set_show_remote_cursor,
+    session_switch_display, session_change_resolution, session_get_image_quality,
+    session_get_toggle_option, session_toggle_option, session_get_remote_audio_state,
+};
 mod xcomponent;
 use app_context::{
     app_init, app_set_lifecycle, lan_peer_remove, lan_peers_query, lan_scan_start, lan_scan_stop,
@@ -164,6 +172,7 @@ struct SessionRecord {
     reclaimed: Option<bool>,
     password: String,
     fps: u32,
+    session_options: SessionOptions,
     viewer: Option<Arc<Viewer>>,
     /// Final facts survive releasing the registry's Viewer and password copies.
     terminal_snapshot: Option<ViewerSnapshot>,
@@ -545,6 +554,7 @@ fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
         password: record.password.clone(),
         requested_fps: record.fps,
         input_policy: record.input_policy,
+        session_options: record.session_options.clone(),
     };
     let lease: Arc<dyn SurfaceLease> = record.lease.clone();
     match &record.id_route {
@@ -758,6 +768,7 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
             reclaimed: None,
             password: password.to_owned(),
             fps,
+            session_options: SessionOptions::default(),
             dials: 0,
             started: Instant::now(),
             viewer: None,
@@ -1110,7 +1121,7 @@ pub fn session_login(session_id: String, payload: String) -> String {
 pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device: bool) -> String {
     let response = with_sessions(|sessions| {
         if trust_this_device {
-            return error_json("trusted-device enrollment is not implemented by this entry point");
+            return serde_json::json!({"ok":false,"code":"TrustedDeviceEnrollmentUnsupported","message":"trusted-device enrollment is not implemented by this entry point"}).to_string();
         }
         if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
             return error_json("2FA code must contain exactly six ASCII digits");
@@ -1125,7 +1136,13 @@ pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device:
             return error_json("session has no running viewer");
         };
         if let Err(error) = viewer.send_second_factor(std::mem::take(&mut code)) {
-            return error_json(&error.to_string());
+            let reason = match &error {
+                rd_engine::viewer::ViewerError::SecondFactorNotAwaiting => "SecondFactorNotAwaiting",
+                rd_engine::viewer::ViewerError::Backpressure => "Backpressure",
+                rd_engine::viewer::ViewerError::Closed => "Closed",
+                _ => "SecondFactorRejected",
+            };
+            return serde_json::json!({"ok":false,"code":reason,"message":error.to_string()}).to_string();
         }
         let snapshot = viewer.snapshot();
         let mut response = session_response(
@@ -1138,6 +1155,20 @@ pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device:
     // Covers every refusal before the engine takes ownership of the code.
     scrub_password(&mut code);
     response
+}
+
+/// The peer's actual LoginResponse flag, not local trusted enrollment.
+/// Unknown is an exception, never an invented false result.
+#[napi]
+pub fn session_get_enable_trusted_devices(session_id: String) -> napi_ohos::Result<bool> {
+    with_sessions(|sessions| {
+        let record = sessions.get(&session_id)
+            .ok_or_else(|| napi_ohos::Error::from_reason("unknown session"))?;
+        let snapshot = record.viewer.as_ref().map(|viewer| viewer.snapshot())
+            .or_else(|| record.terminal_snapshot.clone());
+        snapshot.and_then(|snapshot| snapshot.enable_trusted_devices)
+            .ok_or_else(|| napi_ohos::Error::from_reason("peer has not reported trusted-device capability"))
+    })
 }
 
 /// Records this session's one Surface destination.
@@ -2344,6 +2375,17 @@ implemented_entry_points!(
     ("sessionStart", session_start),
     ("sessionLogin", session_login),
     ("sessionSend2fa", session_send_2fa),
+    ("sessionSetImageQuality", session_set_image_quality),
+    ("sessionSetCustomImageQuality", session_set_custom_image_quality),
+    ("sessionSetCodecPreference", session_set_codec_preference),
+    ("sessionSetShowRemoteCursor", session_set_show_remote_cursor),
+    ("sessionSwitchDisplay", session_switch_display),
+    ("sessionChangeResolution", session_change_resolution),
+    ("sessionGetImageQuality", session_get_image_quality),
+    ("sessionGetToggleOption", session_get_toggle_option),
+    ("sessionToggleOption", session_toggle_option),
+    ("sessionGetRemoteAudioState", session_get_remote_audio_state),
+    ("sessionGetEnableTrustedDevices", session_get_enable_trusted_devices),
     ("sessionBindSurface", session_bind_surface),
     ("sessionClose", session_close),
     ("sessionAcknowledgeClose", session_acknowledge_close),
@@ -2482,20 +2524,15 @@ pub fn har_surface_manifest() -> String {
             },
             "viewer_controls": {
                 "entry_points": [
-                    "sessionSetSize", "sessionSwitchDisplay", "sessionSetVideoPaused",
-                    "sessionChangeResolution", "sessionSetShowRemoteCursor",
-                    "sessionSetCodecPreference", "sessionGetImageQuality",
-                    "sessionSetImageQuality", "sessionSetCustomImageQuality",
-                    "sessionGetToggleOption", "sessionToggleOption",
+                    "sessionSetSize", "sessionSetVideoPaused",
                 ],
-                "reason": "the shared Viewer has no backing operations for these contracts; received display metadata and recorded common options are not applied controls",
+                "reason": "local renderer sizing and pause are not implemented; remote resolution is a distinct control",
             },
             "viewer_state": {
                 "entry_points": [
-                    "sessionGetRemoteAudioState", "sessionGetConnToken",
-                    "sessionGetEnableTrustedDevices",
+                    "sessionGetConnToken",
                 ],
-                "reason": "the shared Viewer exposes no audio renderer state, connection token or trusted-device state; false, null and default objects would not be engine results",
+                "reason": "connection-token export is not yet implemented; trusted-device metadata is a peer report, not local enrollment; remote audio state explicitly reports the absent renderer",
             },
             "input_adapter": {
                 "entry_points": ["sessionEnterOrLeave", "sessionHandleFlutterKeyEvent"],

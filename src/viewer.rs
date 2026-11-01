@@ -12,6 +12,7 @@ pub mod decoder;
 use crate::{
     handshake::ViewerIdentity,
     protocol::Protocol,
+    session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
     rendezvous::{RendezvousConfig, RouteKind},
     session::{AuthenticatedParts, PeerCloseReason, ViewerEvent, ViewerSession, ViewerState},
     transport::{WireReader, WireWriter},
@@ -237,6 +238,7 @@ pub struct ViewerOptions {
     /// refuses it until its own operator accepts the connection (see
     /// `Viewer::set_input_policy`).
     pub input_policy: ViewerInputPolicy,
+    pub session_options: SessionOptions,
 }
 impl Drop for ViewerOptions {
     fn drop(&mut self) {
@@ -318,6 +320,8 @@ pub struct ViewerSnapshot {
     /// Advances only when the peer actually requests or rejects a second
     /// factor. Repeated Wrong replies remain observable between polls.
     pub second_factor_challenge: u64,
+    /// Exact LoginResponse metadata; None before any peer report.
+    pub enable_trusted_devices: Option<bool>,
     /// Actual authenticated connection evidence, never inferred from options.
     pub encrypted: bool,
     pub peer_verified: bool,
@@ -381,6 +385,7 @@ pub enum ViewerError {
     /// closing, a code would otherwise cross into an attempt it was not typed
     /// for.
     SecondFactorNotAwaiting,
+    SessionOption(OptionError),
     TransportFailed,
     RemoteClosed,
     InvalidPeerGeometry,
@@ -421,6 +426,7 @@ impl fmt::Display for ViewerError {
         match self {
             Self::Decoder(error) => write!(f, "Surface decoder: {error:?}"),
             Self::Rdp(error) => write!(f, "{error}"),
+            Self::SessionOption(error) => write!(f, "{error}"),
             Self::NoSoftwareVpx(reason) => write!(f, "no software VP8/VP9 decoder: {reason}"),
             // The string a refused login has always reported here: the category is
             // a field, so a consumer that reads only strings is unaffected by its
@@ -504,7 +510,9 @@ struct State {
     resources_unconfirmed: AtomicBool,
     // Installed by authenticate once the writer task owns the control channel,
     // so out-of-band control (keyframe requests) can be sent after login.
-    control: Mutex<Option<mpsc::Sender<Message>>>,
+    control: Mutex<Option<mpsc::Sender<Vec<Message>>>>,
+    session_options: Mutex<SessionOptions>,
+    advertised_decoding: Mutex<Option<proto::SupportedDecoding>>,
     /// The peer's second-factor step: installed by authentication only while
     /// this session really waits for a code on its own wire, and taken away
     /// when it leaves that step.
@@ -1137,6 +1145,8 @@ impl Viewer {
         let state = Arc::new(State {
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
+            session_options: Mutex::new(options.session_options.clone()),
+            advertised_decoding: Mutex::new(None),
             inner: Mutex::new(Inner {
                 snapshot: ViewerSnapshot {
                     phase: "capability".into(),
@@ -1188,6 +1198,42 @@ impl Viewer {
     }
 
     /// Current gate epoch for a refusal report, not a successful input receipt.
+    pub fn session_options_snapshot(&self) -> SessionOptions {
+        lock(&self.state.session_options).clone()
+    }
+
+    /// Commit requested state only after the entire change enters the one
+    /// writer queue. No option here claims the peer applied its request.
+    pub fn set_session_option(&self, change: SessionOptionChange) -> Result<(), ViewerError> {
+        if self.state.protocol != Protocol::RustDesk {
+            return Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol));
+        }
+        if self.state.cancel.is_cancelled() {
+            return Err(ViewerError::Closed);
+        }
+        if !self.state.authenticated.load(Ordering::Acquire) {
+            return Err(ViewerError::SessionOption(OptionError::SessionNotStarted));
+        }
+        let mut requested = lock(&self.state.session_options);
+        let snapshot = self.snapshot();
+        let advertised = lock(&self.state.advertised_decoding)
+            .clone().ok_or(ViewerError::SessionOption(OptionError::SessionNotStarted))?;
+        let prepared = requested.prepare(change, &OptionContext {
+            protocol: self.state.protocol,
+            peer_version: &snapshot.version,
+            advertised_decoding: &advertised,
+            displays: &snapshot.displays,
+            current_display: snapshot.current_display,
+        }).map_err(ViewerError::SessionOption)?;
+        let sender = lock(&self.state.control).clone().ok_or(ViewerError::Closed)?;
+        sender.try_send(prepared.messages).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+        })?;
+        *requested = prepared.next;
+        Ok(())
+    }
+
     pub fn input_generation(&self) -> u64 {
         lock(&self.state.input.state).generation
     }
@@ -1394,7 +1440,7 @@ impl Viewer {
         let mut message = Message::new();
         message.set_misc(misc);
         sender
-            .try_send(message)
+            .try_send(vec![message])
             .map_err(|_| ViewerError::TransportFailed)
     }
 
@@ -1531,18 +1577,8 @@ fn login_request(options: &ViewerOptions, supported: proto::SupportedDecoding) -
         session_id: u64::from_le_bytes(session_bytes).max(1),
         video_ack_required: false,
         option: Some(OptionMessage {
-            supported_decoding: Some(supported).into(),
             custom_fps: options.requested_fps as i32,
-            disable_audio: BoolOption::Yes.into(),
-            disable_clipboard: BoolOption::Yes.into(),
-            enable_file_transfer: BoolOption::No.into(),
-            // The keyboard channel is asked for whatever the local policy is:
-            // the local policy is what stops input, and a read-only switch that
-            // is turned off again must not be left waiting for a grant the peer
-            // was told never to send.
-            disable_keyboard: BoolOption::No.into(),
-            disable_camera: BoolOption::Yes.into(),
-            ..Default::default()
+            ..options.session_options.login_options(&supported)
         })
         .into(),
         ..Default::default()
@@ -1657,6 +1693,7 @@ async fn authenticate_loop(
         } else {
             AuthStep::Event(session.recv_for_auth().await.map_err(|_| ViewerError::TransportFailed))
         };
+        lock(&state.inner).snapshot.enable_trusted_devices = session.enable_trusted_devices();
         match step {
             // The session itself decides whether the code is still admissible:
             // it checks its own absolute deadline and that it is still waiting,
@@ -1780,6 +1817,10 @@ async fn run_rustdesk(
     let caps = tokio::task::spawn_blocking(video::capabilities)
         .await
         .map_err(|_| ViewerError::TaskFailed)??;
+    let advertised = caps.supported_decoding();
+    options.session_options.validate_advertisement(&advertised)
+        .map_err(ViewerError::SessionOption)?;
+    *lock(&state.advertised_decoding) = Some(advertised);
     let parts = tokio::select! {
         biased;
         _ = state.cancel.cancelled() => return Ok(()),
@@ -1901,7 +1942,7 @@ async fn receive(
     state: Arc<State>,
     mut reader: WireReader,
     mut admission: video::VideoAdmission<State>,
-    control: mpsc::Sender<Message>,
+    control: mpsc::Sender<Vec<Message>>,
 ) -> Result<(), ViewerError> {
     loop {
         let message = tokio::select! {
@@ -1920,7 +1961,7 @@ async fn receive(
                     let mut response = Message::new();
                     response.set_test_delay(probe);
                     control
-                        .try_send(response)
+                        .try_send(vec![response])
                         .map_err(|_| ViewerError::Backpressure)?;
                 }
             }
@@ -2090,7 +2131,7 @@ async fn write(
     state: Arc<State>,
     mut writer: WireWriter,
     mut mouse: mpsc::Receiver<QueuedInput>,
-    mut control: mpsc::Receiver<Message>,
+    mut control: mpsc::Receiver<Vec<Message>>,
 ) -> Result<(), ViewerError> {
     let mut held = RustDeskHeld::default();
     let outcome = write_loop(&state, &mut writer, &mut mouse, &mut control, &mut held).await;
@@ -2108,7 +2149,7 @@ async fn write_loop(
     state: &State,
     writer: &mut WireWriter,
     mouse: &mut mpsc::Receiver<QueuedInput>,
-    control: &mut mpsc::Receiver<Message>,
+    control: &mut mpsc::Receiver<Vec<Message>>,
     held: &mut RustDeskHeld,
 ) -> Result<(), ViewerError> {
     loop {
@@ -2123,8 +2164,10 @@ async fn write_loop(
                 release_unadmitted(state, writer, held).await?;
             }
             value = control.recv() => match value {
-                Some(message) => {
-                    wire_send(state, writer, &message).await?;
+                Some(messages) => {
+                    for message in messages {
+                        wire_send(state, writer, &message).await?;
+                    }
                 }
                 None => return Ok(()),
             },
@@ -3686,6 +3729,8 @@ mod tests {
             resources_unconfirmed: AtomicBool::new(false),
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
+            session_options: Mutex::new(crate::session_options::SessionOptions::default()),
+            advertised_decoding: Mutex::new(None),
         })
     }
 
@@ -4608,6 +4653,7 @@ mod tests {
                 password: String::new(),
                 requested_fps: 0,
                 input_policy: ViewerInputPolicy::interactive(),
+                session_options: Default::default(),
             };
             let password = super::Password(Vec::new());
             let (codes, answers) = mpsc::channel(1);

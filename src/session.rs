@@ -256,6 +256,7 @@ pub struct ViewerSession {
     permissions: Permissions,
     permission_reports: Vec<PermissionInfo>,
     peer_info: Option<PeerInfo>,
+    enable_trusted_devices: Option<bool>,
     auth_deadline: Instant,
     idle_timeout: Duration,
 }
@@ -277,6 +278,7 @@ impl ViewerSession {
             permissions: VIEWER_REMOTE_DEFAULTS,
             permission_reports: Vec::new(),
             peer_info: None,
+            enable_trusted_devices: None,
             auth_deadline: Instant::now() + auth_timeout,
             idle_timeout,
         }
@@ -316,6 +318,9 @@ impl ViewerSession {
             timeout,
             Duration::from_secs(30),
         ))
+    }
+    pub fn enable_trusted_devices(&self) -> Option<bool> {
+        self.enable_trusted_devices
     }
     pub fn state(&self) -> ViewerState {
         self.state
@@ -601,6 +606,7 @@ impl ViewerSession {
                 return Ok(ViewerEvent::Challenge);
             }
             Some(message::Union::LoginResponse(response)) if self.state != ViewerState::Active => {
+                self.enable_trusted_devices = Some(response.enable_trusted_devices);
                 match &response.union {
                     Some(base::message_proto::login_response::Union::Error(error)) => {
                         // Original on_open/whitelist policy can reject before

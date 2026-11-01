@@ -26,6 +26,7 @@ pub mod publisher;
 pub mod publisher;
 pub mod rendezvous;
 pub mod session;
+pub mod session_options;
 // Rectangle protocols present through a CPU-writable surface buffer; the
 // in-memory sink in this module is what the host build and tests exercise.
 #[path = "platform/ohos_surface.rs"]

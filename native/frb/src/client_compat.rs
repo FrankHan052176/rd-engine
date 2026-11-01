@@ -2604,6 +2604,7 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
         password,
         requested_fps,
         input_policy: session.input_policy(),
+        session_options: Default::default(),
     };
     let lease: Arc<dyn SurfaceLease> = Arc::new(BridgeLease {
         observer: Arc::new(SessionObserver {
