@@ -48,21 +48,33 @@ voice calls does not claim that desktop playback or recording is implemented.
   active: `native/ohos_napi/Cargo.toml` (`rd_engine_native_har`), built into
   `target/package.har` with `librd_engine_native_har.so`. Source exports live in
   `native/ohos_napi/package/index.ets`; binaries and provenance are assembled under `target/har/`.
-- Current imports have direct exports. Legacy names outside this viewer surface
-  remain intentionally absent rather than becoming compatibility stubs.
-- `harSurfaceManifest` (`native/ohos_napi/src/lib.rs`) reports, from the
-  `implemented_entry_points!` list, what this build serves as `implemented`,
-  what is `registry_only`, what is `pending`, and what is `not_served`. Read that
-  answer instead of inferring support from a name.
+- This build exports 41 functions. `package/libs/index.d.ts` and
+  `package/index.ets` are maintained together with the Rust NAPI exports; the
+  packaging build copies them rather than generating missing declarations.
+  Coverage is partial, not parity: a name the client imports that is absent from
+  the paired declarations has no export here,
+  and a name appearing in an older HAR, a forwarded helper or a historical list
+  is not an export. Names outside the surface stay absent rather than becoming
+  compatibility stubs.
+- `harSurfaceManifest` (`native/ohos_napi/src/lib.rs`) reports `implemented` from
+  the compile-time `implemented_entry_points!` list, `pending` as the client
+  import list compiled into the same function minus `implemented`/`registry_only`,
+  plus the static `refused_entry_points` and `not_served` classifications. Read
+  that answer instead of inferring support from a name. The 41 exported names
+  include the explicitly refused `sessionCancelJob`; the 40 implemented names
+  exclude it. `pending` means no implemented behavior, not necessarily no export.
+  Read the paired declarations and refusal classifications together.
 
 ### The 35-name `session*` list is a historical baseline
 
 The names below are the historical baseline this document recorded: the legacy
 client's `session*` call set as it stood then, kept here as provenance. They are
 **not** the current full ArkTS import contract, and a name appearing here is not
-a commitment to
-implement it. `har_surface_manifest` computes `pending` against this historical
-baseline only; it is not a current-client parity report.
+a commitment to implement it. `har_surface_manifest` computes `pending` against
+the client import list compiled into it, not against this baseline, and neither
+list is a parity report for the current client: a pending name is not implemented
+(and may have an explicit refusal export), while this historical list undercounts
+the client's real imports.
 
 ```
 sessionAdd            sessionStart          sessionLogin          sessionClose
@@ -90,7 +102,7 @@ fabricated values.
 | Export | Engine backing |
 | --- | --- |
 | `nativeVersion` | `CARGO_PKG_VERSION` of the HAR crate |
-| `harSurfaceManifest` | compiled `IMPLEMENTED` list and the client baseline list |
+| `harSurfaceManifest` | compiled `IMPLEMENTED` list and the client import list in the same function |
 | `queryDecoderCapabilities` | `AsyncTask` query of `media_capability::query_h264_hardware_decoder` and `query_hevc_hardware_decoder`; returns advertised metadata or per-query errors off the ArkTS UI thread, never measured throughput/HDR or a codec instance |
 | `appSetLifecycle` | synchronously fences consent/foreground and app epoch, requests old-owner close even after revocation, then waits for owned LAN cleanup and admitted bootstrap I/O in an `AsyncTask`; foreground never starts a scan |
 | `appInit` | serializes private `filesDir/rustdesk` bootstrap, sets official `APP_DIR`/`APP_HOME_DIR`, initializes crypto and obtains official `Config::get_id` off UI before publishing ready |
@@ -102,11 +114,12 @@ fabricated values.
 | `sessionAdd` | captures a direct target or owned v2 explicit-save ID route and initialized local ID; no dial/Config/persistence; refuses existing ids and a full 256-record registry without eviction |
 | `sessionStart` | captured ID route → existing strict `Viewer::start_rendezvous`; direct RustDesk/VNC/authenticated RDP → unchanged `Viewer::start` |
 | `sessionLogin` | records a password only on a nonterminal/nonclosing record; a live unauthenticated viewer returns `restart_required`, requiring close → final poll → ACK → new registration/start, not same-viewer reauthentication |
-| `sessionBindSurface` | `OhosSurfaceLease::bind` — records the ArkTS XComponent surface id the engine presents into |
-| `sessionClose` | requests cancellation; confirmed reclamation scrubs the registry password/Viewer, but retains the final receipt for poll and explicit ACK; never removes a record itself |
+| `sessionBindSurface` | takes the opaque `componentId` that `xcomponentAttach` returned on this UI environment (a Surface id, a node label or any other string is refused) and borrows that holder's real lease through `xcomponent::borrow_surface`; the record's single `PendingSurfaceLease` slot is published once and a second component is refused instead of redirecting a running viewer. An empty `componentId` is a give-back request that only a never-started or confirmed-reclaimed record may answer `released:true`, and a held give-back is a refusal, never a release |
+| `sessionClose` | `Promise` that resolves after native teardown, not on request acceptance: it requests close, waits for the owned reclamation verdict and answers `released`/`settle`; confirmed reclamation scrubs the registry password/Viewer but retains the final receipt, and it never removes the record or ACKs it |
+| `sessionAcknowledgeClose` | consumes a confirmed, already-constructed terminal receipt for the exact `lifecycleEpoch` and only then removes that one record; refused while closing, unconfirmed, or before a complete close/poll receipt |
 | `sessionPollEvents` | live or retained final `Viewer::snapshot()` facts, persistent `login_failure` and typed `peer_close_reason`, and one-shot authorization/close events (see "Polling" below) |
 | `sessionRefresh` | `Viewer::request_keyframe` |
-| `sessionCancelJob` | live: whole-viewer `request_close` (`actId` ignored); terminal: `actId=0` ACKs a confirmed, already-polled receipt and removes only that record; never a transfer-job cancellation |
+| `sessionCancelJob` | always answers `unsupported:true` with `record_removed:false`: no transfer-job owner is wired here, and no `actId` (including `0`) closes a viewer, releases a Surface or ACKs a receipt |
 | `sessionSetCommon` | `view-only` and `fps` are acted on; every other pair is recorded and not applied |
 | `sessionSetCustomFps` | applies to the next `sessionStart`; a running viewer keeps its rate |
 | `sessionSetViewOnly` | `Viewer::set_input_policy`; closes admission independently of input-queue capacity, retires the old generation, and wakes the writer to release its holds; acceptance is not release completion |
@@ -115,6 +128,19 @@ fabricated values.
 | `sessionInputKey` | `Viewer::send_rustdesk_key` on the legacy RustDesk key wire |
 | `sessionInputString` | `Viewer::send_rustdesk_key` with the text sequence |
 | `sessionGetFrameRateSnapshot` | cumulative counters from `Viewer::snapshot()` |
+| `runtimeGetServerConfig` | reads this bridge's own saved `server-profile.json`; `approved:false`/`config:null` when nothing was saved, a read failure is an error rather than an empty profile |
+| `runtimeSetServerConfig` | the explicit save: same admission as `validateServerProfile`, atomic private write under the reserved root, answers `approvedProfile` (`schemaVersion` 2, `approval:"explicit-save"`, new `revision`) and `committed`; not a reachability claim |
+| `runtimeTestServerConfig` | one bounded TCP connect per configured endpoint (two addresses, 2.5 s each); transport observation only, saves nothing |
+| `runtimeListRecentPeers` | engine-owned device directory rows; `ok:true, exists:false` means no store yet and `ok:false` is a read failure with no rows |
+| `runtimeListFavorites` | the same store's favorite targets, in insertion order |
+| `runtimeSetFavorite` | adds or removes one favorite id and reports the persisted list |
+| `runtimeRecordRecentPeer` | persists only the normalized fields the client observed; never infers a success time |
+| `runtimeRemoveRecentPeer` | removes one recent row by id and reports whether a row was removed |
+| `peerQueryOnline` | strict single hbbs `OnlineResponse` for the listed ids against the approved profile; any other message, short answer or wrong count is an error, not an offline guess |
+| `peerPresenceCancel` | cancels exactly the named query generation; a stale token changes nothing |
+| `xcomponentAttach` | adopts one live ArkUI `SurfaceHolder` on its UI environment thread behind manual XComponent lifecycle, returns the opaque never-reused `componentId`; real `ace_ndk.z`/`native_window` calls (API 20+) |
+| `xcomponentDetach` | releases the holder only when no loan, native callback or operation still owns it; otherwise `held:true` and everything stays retained |
+| `xcomponentSetFrameRateRangeNative` | declares the draw rate and registers the on-frame signal callback; `frameCallbacks` counts signals, not decoded or presented frames |
 
 ## Private app bootstrap, discovery and trusted ID routes
 
@@ -205,9 +231,15 @@ numeric-ID whitelist or LAN-derived server trust is introduced.
 
 
 The revision must be a positive safe integer. Missing/legacy records and editable
-drafts are not approved. This marker is supplied only by the controlled explicit
-Save → native syntax validation → successful Preferences flush → approved-state
-chain. Native validates/owns the value but cannot independently prove that flush.
+drafts are not approved. The approved source is now this bridge's own save:
+`runtimeSetServerConfig` validates the profile with the same rules as
+`validateServerProfile`, writes it atomically under the fixed private root and
+answers `approvedProfile` (`schemaVersion` 2, `approval:"explicit-save"`, the new
+`revision`) together with `committed`; `runtimeGetServerConfig` re-reads that
+store and answers `approved:false`/`config:null` when nothing was saved, a read
+failure being an error rather than an empty profile. The earlier Resk Preferences
+approval candidate was never applied, so nothing here claims a Preferences flush
+or a real UI pairing.
 Official mode ignores residual custom fields and uses only pinned
 `RENDEZVOUS_SERVERS[0]` and `RS_PUB_KEY`, matching the upstream `PUBLIC_SERVER`
 branch, never mutable Config server getters. Custom mode requires an explicit
@@ -232,15 +264,71 @@ regressions and large-cache performance are unverified here. Main owns the final
 paired generation/compilation/linking/packaging; the user owns functional,
 device/permission and performance acceptance.
 
+## Engine-owned stores, directory and presence
+
+These exports own small app-private files; none of them is discovery, server
+identity or a reachability claim. All of them are admitted under the app
+generation and the root `appInit` reserved, and every one answers a refusal
+instead of a fabricated success when that scope is unavailable.
+
+- Store owner: `app_storage.rs`. Files live only in the canonical
+  `<private root>/rustdesk` directory, and a write goes through a `0o600`
+  temporary file plus `rename`, so a failed write cannot leave a half store. A
+  missing file is "no store yet", which callers report separately from a read
+  failure.
+- Server profile: `app_profile.rs` (`server-profile.json`, 16 KiB cap, bounded
+  request JSON). `runtimeSetServerConfig` is the explicit save and increments the
+  stored revision up to the safe-integer bound; `runtimeGetServerConfig` reports
+  `approved`/`config`/`approvedProfile`/`revision` or that no profile was saved;
+  `runtimeTestServerConfig` saves nothing and reports one bounded TCP connection
+  attempt per configured endpoint (two addresses, 2.5 s each). An accepted TCP
+  connection does not identify the server and does not prove the RustDesk wire.
+- Device directory: `app_directory.rs` (`device-directory.json`, 512 KiB cap, 256
+  recent plus 256 favorites, one store mutex per read-modify-write).
+  `runtimeListRecentPeers`/`runtimeListFavorites` answer `ok:true, exists:false`
+  when no store exists and `ok:false` without rows on a read failure. A row is
+  what the client recorded after it observed a session, never a LAN hit and never
+  an online fact; `runtimeRecordRecentPeer`, `runtimeRemoveRecentPeer` and
+  `runtimeSetFavorite` persist the normalized fields they were given.
+- Presence: `app_presence.rs` performs the hbbs `OnlineRequest`/`OnlineResponse`
+  exchange with the pinned wire types and frame codec over a bounded blocking
+  socket, because this crate drives no engine runtime and may not start a second
+  one. The endpoint is the host of the approved profile re-normalized onto the
+  fixed presence port 21115; the local id comes from the initialized app, the peer
+  list is 1..=4096 validated ids, and only one query owns the admission at a time.
+  A peer is `online` only when a strict single `OnlineResponse` marks that exact
+  slot; any other message, a short answer or a wrong count is an error, never an
+  offline guess. The whole query (DNS, connect, write, one record) has a 15 s
+  deadline and reads in 250 ms slices so `peerPresenceCancel` can be observed
+  between slices; the name resolution itself is a blocking `to_socket_addrs` call
+  that cannot be interrupted, so a stuck resolver is not bounded by that deadline.
+  A LAN scan hit, a stored address, a successful TCP connect or a session in
+  progress is never evidence that a server exists or a peer is online.
+
 ## Presentation and frame-rate reporting
 
-Presentation is the **bound surface**, not an RGBA pull. `sessionBindSurface`
-stores the ArkTS XComponent surface id in `OhosSurfaceLease`, and the engine
-reads that lease when it opens the surface for the first frame; the manifest
-names `sessionGetRgbaSize`, `sessionNextRgba` and `sessionTakeRgbaFrame` under
-`not_served.rgba_pull` with the reason that the engine presents into the bound
-surface and has no CPU-side RGBA pull path. Do not add a JS frame-pull path to
-satisfy those legacy names.
+Presentation is the **native bound Surface**, not an RGBA pull.
+`xcomponentAttach` adopts one live ArkUI FrameNode's `SurfaceHolder` on its UI
+environment thread: manual XComponent lifecycle, the surface callbacks, a pinned
+`NativeWindow` reference and an opaque, never-reused `componentId`.
+`sessionBindSurface` accepts only that `componentId`, borrows the holder's real
+lease through `xcomponent::borrow_surface` and publishes it once into the
+record's `PendingSurfaceLease`; the engine reads it when it opens the surface for
+the first frame. There is no string-to-lease path, no `OhosSurfaceLease::bind` and
+no `AtomicU64` id holder: any of those would name a destination the engine never
+really owned. `xcomponentDetach` answers `released:true` only after the loan can no
+longer be upgraded and no native callback or operation is still active; otherwise
+`held:true` and the holder, its callback and its window stay retained for a later
+detach. The three `xcomponent*` exports call the real `ace_ndk.z`/`native_window`
+APIs and need API 20+ at runtime; a build without that surface ownership answers
+`ok:false` with that requirement instead of pretending to bind.
+
+The manifest names `sessionGetRgbaSize`, `sessionNextRgba` and
+`sessionTakeRgbaFrame` under `not_served.rgba_pull` with the reason that the
+engine presents into the bound surface and has no CPU-side RGBA pull path. That
+gap is the HAR's missing readback, not a decision against a product RGBA feature:
+a client that wants frames over RGBA needs a real engine readback this layer does
+not have, and a JS frame-pull path must not be added to satisfy the names.
 
 Late binding is already handled on the encoded RustDesk path: `feed_loop` waits
 at phase `awaiting_surface` for a nonzero lease up to `SURFACE_WAIT` (20 s, polled
@@ -252,13 +340,24 @@ ArkTS client creates it after it asks for the session.
 
 Known limits of this path (recorded, being repaired; not to be read as guarantees):
 
-- The NAPI lease is only an id holder (`AtomicU64`). It does not itself keep the
-  ArkUI component alive, while `src/platform/ohos_decoder.rs` requires the
-  surface to outlive every lease. `sessionClose` requests cancellation and
-  retains the viewer/lease until the actual terminal reclamation verdict. ArkTS
-  must keep the XComponent alive until `closed`, `reclamation_known`, and
-  `reclaimed` establish whether reuse is safe; a successful bind/close request
-  or terminal-record ACK is not a platform guarantee against component disposal.
+- Native ownership, not a lease id, is what keeps the Surface alive:
+  `src/platform/ohos_decoder.rs` requires it to outlive every lease, so the holder
+  registry retains the pinned window, callback and holder until that loan ends.
+  `sessionClose` requests cancellation and retains the viewer and lease until the
+  actual terminal reclamation verdict. ArkTS must keep the XComponent alive until
+  close or a poll answers `released:true` with a terminal `settle` (`settled` or
+  `neverstarted`) and only then call `xcomponentDetach`; a successful bind or
+  close request, and the terminal record itself, are not a platform guarantee
+  against component disposal. An unexpected ArkUI destruction revokes admission
+  and calls `request_close` on the record's viewer without any JS round trip, and
+  it releases nothing natively, so the terminal path still has to prove
+  reclamation.
+- The retirement link is registered in either arrival order: `sessionStart`
+  watches the loan this record already holds, and `sessionBindSurface` also
+  watches a viewer that is already running when it publishes. A Surface destroyed
+  before or after the dial therefore asks that viewer to close, and a bind whose
+  watch fails keeps both the binding and the viewer (the record is closing) rather
+  than dropping an owner the terminal path still has to settle.
 - `sessionGetFrameRateSnapshot` is honest about being cumulative: it reports
   `received_units` as `receivedPackets`, `pushed_units` as `decodedFrames`,
   `render_submissions` as `submittedFrames`, with `generation`/`intentRevision`
@@ -324,11 +423,13 @@ record; it is never converted to successful reclamation or evicted.
 Final facts are stable across repeated polls, even when `events` is empty after
 the one-shot `close`. Constructing a successful confirmed terminal poll sets a
 separate consumption flag; reporting an event or calling `sessionClose` does not.
-`sessionCancelJob(sessionId, 0)` then requires confirmed reclamation **and** that
-poll flag before returning `{ok:true, record_removed:true}` under the registry
-lock. Unknown ids, unconfirmed/quarantined records, unpolled terminals and nonzero
-terminal `actId` are refused. Live cancellation returns `record_removed:false`.
-After ACK, old ids return unknown; no timer or delayed id-based deletion is used.
+`sessionAcknowledgeClose(sessionId, lifecycleEpoch)` is that ACK: it requires the
+exact current epoch, confirmed reclamation **and** the complete-receipt flag
+before returning `{ok:true, record_removed:true}` and removing that one record
+under the registry lock. Unknown ids, stale epochs, unconfirmed/quarantined
+records and unpolled terminals are refused, and `sessionCancelJob` can do none of
+this. After ACK, old ids return unknown; no timer or delayed id-based deletion is
+used.
 Start/login/bind and policy/common/FPS setters cannot refill a closed tombstone.
 
 Registration never overwrites a still-registered id. `MAX_SESSION_RECORDS=256`
@@ -481,16 +582,15 @@ available merely because `Host` exists:
   audio, clipboard and file transfer, and a 2FA requirement ends as
   `SecondFactorUnsupported`. Names in this class must be answered as unsupported
   — never with default state, a silently swallowed call, or a fabricated success.
-- `sessionCancelJob` cancels the whole live viewer or explicitly ACKs an already
-  polled, confirmed terminal receipt (see above); neither path reports a single
-  file task as cancelled.
+- `sessionCancelJob` has no job owner to cancel and is refused as a whole; it is
+  neither a viewer close nor a terminal ACK (see the ACK contract above).
 - `queryDecoderCapabilities` is metadata-only: `src/media_capability.rs` reports
   real H264/HEVC decoder advertisements while preserving unmeasured and
   advertised distinctions. Its `AsyncTask` performs the possibly-IPC capability
   queries off the JS/UI thread, does not start capture, raise permissions or
   create codec instances, and returns the individual query errors rather than a
-  synthetic unsupported success. `runtimeGetDecoderCapabilities` is retired;
-  it is not an alias for this asynchronous contract.
+  synthetic unsupported success. `runtimeGetDecoderCapabilities` is a real export
+  that runs the same asynchronous advertised-metadata query under its legacy name.
 - LAN responding/advertising, WOL, host registration, UDP/KCP route selection,
   account login and cloud address-book synchronization are not activated by the
   outbound discovery/approved-profile increment. A cached ID is not online proof.
