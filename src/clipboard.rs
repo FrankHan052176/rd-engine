@@ -1063,6 +1063,10 @@ mod tests {
     fn single(message: Message) -> Clipboard {
         match message.union {
             Some(proto::message::Union::Clipboard(clipboard)) => clipboard,
+            Some(proto::message::Union::MultiClipboards(mut clipboards)) => {
+                assert_eq!(clipboards.clipboards.len(), 1);
+                clipboards.clipboards.remove(0)
+            }
             other => panic!("expected one clipboard, got {other:?}"),
         }
     }
@@ -1388,7 +1392,7 @@ mod tests {
         // enter the mailbox it has left behind.
         assert_eq!(
             clipboard.accept_peer(revision, ClipboardPayload::text("late")),
-            Err(ClipboardError::StaleGeneration)
+            Err(ClipboardError::NotAccepted)
         );
         assert_eq!(
             clipboard.accept_peer(revoked, ClipboardPayload::text("late")),
@@ -1398,6 +1402,11 @@ mod tests {
 
         let regranted = clipboard.set_accepted(true);
         assert!(regranted > revoked);
+        assert_eq!(
+            clipboard.accept_peer(revision, ClipboardPayload::text("late")),
+            Err(ClipboardError::StaleGeneration),
+            "a new grant does not admit a decode from the withdrawn generation"
+        );
         clipboard
             .accept_peer(regranted, ClipboardPayload::text("after"))
             .unwrap();

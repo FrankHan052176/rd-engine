@@ -6,6 +6,7 @@ use crate::{
     authentication::{
         self, AuthAction, HostAuthConfig, HostAuthState, HostAuthentication, Permissions,
     },
+    conn_token::{ConnToken, PasswordSource, H1_BYTES},
     handshake::{self, Established, HostIdentity, Security, ViewerIdentity},
     transport::{WireReader, WireWriter},
 };
@@ -254,6 +255,56 @@ pub enum ViewerEvent {
     Closed,
 }
 
+/// What one login attempt carries as its password material.
+///
+/// The two password forms are the same computation at two points of the official
+/// protocol: the client keeps h1 = SHA256(clear_password || peer salt) and sends
+/// SHA256(h1 || the peer's challenge). A password a user types becomes h1 on this
+/// path; a reconnect credential arrives as an h1 that was already salted with this
+/// peer's salt, so salting it again would send a response no peer can verify.
+/// Which one it is stays the caller's statement — and a `Reconnect` material can
+/// only come from the official token text, never from an invented one.
+pub enum LoginCredential<'a> {
+    /// The original manual-approval login: no password material at all.
+    ManualApproval,
+    /// A password the user typed, in the clear, for this attempt only.
+    Password(&'a [u8]),
+    /// The official reconnect material with the provenance it arrived with. It is
+    /// owned because that provenance may be a shared password string, and the
+    /// token is consumed so the secret is never copied.
+    Reconnect(ConnToken),
+}
+
+/// Password-equivalent material kept only so an authenticated session can be
+/// reconnected from.
+///
+/// It holds the same h1 a typed password produces, where that password came from
+/// and the session id this attempt used. It exists only while the attempt does: a
+/// refusal that judged the password itself, a termination, a close, a replacement
+/// by another attempt or the session's own drop zeroes it.
+struct ReconnectCandidate {
+    h1: Vec<u8>,
+    source: PasswordSource,
+    session_id: u64,
+}
+
+impl ReconnectCandidate {
+    /// Hands the material to the caller that asked for it, without a copy. The
+    /// emptied candidate drops as a shell.
+    fn into_token(mut self) -> Option<ConnToken> {
+        let h1 = std::mem::take(&mut self.h1);
+        let source = std::mem::replace(&mut self.source, PasswordSource::Undefined);
+        ConnToken::from_h1(h1, source, self.session_id)
+    }
+}
+
+impl Drop for ReconnectCandidate {
+    fn drop(&mut self) {
+        utils::memzero(&mut self.h1);
+        self.h1.clear();
+    }
+}
+
 pub struct ViewerSession {
     io: SessionIo,
     security: Security,
@@ -265,6 +316,10 @@ pub struct ViewerSession {
     permission_reports: Vec<PermissionInfo>,
     peer_info: Option<PeerInfo>,
     enable_trusted_devices: Option<bool>,
+    /// The credential a reconnect of this attempt would reuse, while the attempt
+    /// is still running. Never part of a snapshot: it is taken explicitly, and
+    /// only from an authenticated session.
+    reconnect: Option<ReconnectCandidate>,
     auth_deadline: Instant,
     idle_timeout: Duration,
 }
@@ -287,6 +342,7 @@ impl ViewerSession {
             permission_reports: Vec::new(),
             peer_info: None,
             enable_trusted_devices: None,
+            reconnect: None,
             auth_deadline: Instant::now() + auth_timeout,
             idle_timeout,
         }
@@ -405,6 +461,9 @@ impl ViewerSession {
         self.request = None;
         self.permission_reports.clear();
         self.peer_info = None;
+        // A terminated session is not one a reconnect may be made from, so the
+        // material kept for that is scrubbed here rather than left for its drop.
+        self.reconnect = None;
         self.io.terminate();
     }
 
@@ -417,8 +476,32 @@ impl ViewerSession {
     /// a CPU-copy compatibility exception.
     pub async fn login(
         &mut self,
-        mut request: LoginRequest,
+        request: LoginRequest,
         password: Option<&[u8]>,
+    ) -> io::Result<()> {
+        let credential = match password {
+            None => LoginCredential::ManualApproval,
+            Some(password) => LoginCredential::Password(password),
+        };
+        self.login_with(request, credential).await
+    }
+
+    /// The one login path: it validates the request, answers this peer's
+    /// challenge from whichever material it was given, writes the login on the
+    /// open wire and keeps the material a reconnect would need.
+    ///
+    /// Target, controller identity, session id and role are still frozen after
+    /// the first written login, the deadline still applies, and nothing here
+    /// dials or resets it: a retry is this login again on this session.
+    ///
+    /// A typed `Password` also makes the provenance `Undefined`, as the official
+    /// client does whenever the password came from the user (client.rs:4774-4778):
+    /// an earlier address-book claim must not survive a password the user just
+    /// typed.
+    pub async fn login_with(
+        &mut self,
+        mut request: LoginRequest,
+        credential: LoginCredential<'_>,
     ) -> io::Result<()> {
         if Instant::now() >= self.auth_deadline {
             self.terminate();
@@ -430,10 +513,9 @@ impl ViewerSession {
         ) {
             return Err(failure("Login is not allowed in this state"));
         }
-        let hash = self
-            .hash
-            .as_ref()
-            .ok_or_else(|| failure("No peer challenge"))?;
+        if self.hash.is_none() {
+            return Err(failure("No peer challenge"));
+        }
         let mode = match &request.union {
             None => SessionMode::Desktop,
             Some(base::message_proto::login_request::Union::FileTransfer(_)) => SessionMode::FileTransfer,
@@ -456,10 +538,51 @@ impl ViewerSession {
                 return Err(failure("Login retry cannot change identity/scope"));
             }
         }
-        request.password = match password {
-            None => Default::default(),
-            Some([]) => return Err(failure("Empty supplied password")),
-            Some(password) => {
+        let (response, reconnect) = self.challenge_material(request.session_id, credential)?;
+        request.password = response.into();
+        let mut retained = request.clone();
+        retained.password = Default::default();
+        let mut message = Message::new();
+        message.set_login_request(request);
+        if let Err(error) = self.io.send(&message).await {
+            self.terminate();
+            return Err(error);
+        }
+        // Only a login that actually reached the wire keeps material. A failed or
+        // cancelled write terminated the session, which scrubs what an earlier
+        // attempt held; a written one replaces it.
+        self.reconnect = reconnect;
+        self.request = Some(retained);
+        self.state = ViewerState::AwaitLogin;
+        Ok(())
+    }
+
+    /// The bytes this login carries in `LoginRequest.password`, plus the material
+    /// a reconnect of this attempt would need.
+    ///
+    /// This is the only place the challenge response is computed, for both kinds
+    /// of material, so neither can drift from the other: the wire always gets
+    /// `SHA256(h1 || challenge)` of this peer's own challenge. A typed password
+    /// becomes h1 here with this peer's salt; a reconnect credential already is
+    /// h1 and is hashed exactly once, never salted again. The retained h1 is
+    /// zeroed here and lives on only in the returned candidate.
+    fn challenge_material(
+        &self,
+        session_id: u64,
+        credential: LoginCredential<'_>,
+    ) -> io::Result<(Vec<u8>, Option<ReconnectCandidate>)> {
+        let hash = self
+            .hash
+            .as_ref()
+            .ok_or_else(|| failure("No peer challenge"))?;
+        match credential {
+            // The original manual-approval login: no wire password, and nothing a
+            // reconnect could reuse. No material is invented for it.
+            LoginCredential::ManualApproval => Ok((Vec::new(), None)),
+            LoginCredential::Password(password) => {
+                if password.is_empty() {
+                    return Err(failure("Empty supplied password"));
+                }
                 if std::env::var_os("RD_LOG_CHALLENGE").is_some() {
                     // Both fields travel in the clear on this wire; the password
                     // and everything derived from it are never printed.
@@ -473,21 +596,62 @@ impl ViewerSession {
                 }
                 let mut h1 = authentication::salted_password(password, &hash.salt);
                 let response = authentication::password_response(&h1, &hash.challenge);
+                let reconnect = ReconnectCandidate {
+                    h1: h1.to_vec(),
+                    source: PasswordSource::Undefined,
+                    session_id,
+                };
                 utils::memzero(&mut h1);
-                response.to_vec().into()
+                Ok((response.to_vec(), Some(reconnect)))
             }
-        };
-        let mut retained = request.clone();
-        retained.password = Default::default();
-        let mut message = Message::new();
-        message.set_login_request(request);
-        if let Err(error) = self.io.send(&message).await {
-            self.terminate();
-            return Err(error);
+            LoginCredential::Reconnect(token) => {
+                // A token without a session id repeats the official reader's own
+                // rule (client.rs:2934-2941): the caller supplies the fresh
+                // nonzero id, because choosing it is the caller's step. A zero id
+                // here is a caller that skipped it, not a token this session may
+                // pretend was usable.
+                if session_id == 0 {
+                    return Err(failure("Reconnect requires a fresh nonzero session id"));
+                }
+                let token_session = token.session_id();
+                if token_session != 0 && token_session != session_id {
+                    return Err(failure("Reconnect credential belongs to another session"));
+                }
+                let (h1, source) = token.into_parts();
+                let Ok(mut material) = <[u8; H1_BYTES]>::try_from(h1.as_slice()) else {
+                    let mut h1 = h1;
+                    utils::memzero(&mut h1);
+                    return Err(failure("Reconnect credential is not a salted password"));
+                };
+                let response = authentication::password_response(&material, &hash.challenge);
+                let reconnect = ReconnectCandidate {
+                    h1,
+                    source,
+                    session_id,
+                };
+                utils::memzero(&mut material);
+                Ok((response.to_vec(), Some(reconnect)))
+            }
         }
-        self.request = Some(retained);
-        self.state = ViewerState::AwaitLogin;
-        Ok(())
+    }
+
+    /// The credential a reconnect of this authenticated session may be made with.
+    ///
+    /// Nothing is exported before the peer's own `PeerInfo` moved this session to
+    /// [`ViewerState::Active`]: a demanded password, an approval wait or a second
+    /// factor is not an authentication, and a credential handed out then would
+    /// claim a session this engine never got. A session that carried no password
+    /// material (manual approval) exports nothing rather than an invented one, and
+    /// a closed or terminated one has already scrubbed what it held.
+    ///
+    /// Taking is explicit and once: the caller owns the token from here (the
+    /// Viewer keeps it in a slot of its own, outside every snapshot), and a second
+    /// call returns `None` instead of duplicating a password-equivalent secret.
+    pub fn take_reconnect_credential(&mut self) -> Option<ConnToken> {
+        if self.state != ViewerState::Active {
+            return None;
+        }
+        self.reconnect.take()?.into_token()
     }
 
     /// The login this session already sent, with the identity and role it
@@ -635,6 +799,15 @@ impl ViewerSession {
                 self.enable_trusted_devices = Some(response.enable_trusted_devices);
                 match &response.union {
                     Some(base::message_proto::login_response::Union::Error(error)) => {
+                        // The peer's verdict on the password itself is the one
+                        // refusal that invalidates the material a reconnect would
+                        // reuse. A second factor or an approval refusal comes
+                        // after that password was accepted, so it must not throw
+                        // it away, and neither must a rejection this engine cannot
+                        // attribute to the password.
+                        if error == authentication::WRONG_PASSWORD || error == "Empty Password" {
+                            self.reconnect = None;
+                        }
                         // Original on_open/whitelist policy can reject before
                         // Hash or any LoginRequest. Surface the refusal, never
                         // mistake it for an application payload or an auth grant.
@@ -1005,8 +1178,12 @@ impl HostSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{ViewerEvent, ViewerSession, ViewerState};
-    use crate::handshake::{self, ViewerIdentity};
+    use super::{LoginCredential, ViewerEvent, ViewerSession, ViewerState};
+    use crate::{
+        authentication,
+        conn_token::{ConnToken, PasswordSource, PasswordSourceKind, H1_BYTES},
+        handshake::{self, ViewerIdentity},
+    };
     use base::message_proto::{Hash, LoginRequest, LoginResponse, Message, PeerInfo, message};
     use hbb_common::{protobuf::Message as _, tcp::FramedStream};
     use std::time::Duration;
@@ -1022,6 +1199,325 @@ mod tests {
             .expect("the wire is still open")
             .expect("the record was read");
         Message::parse_from_bytes(&bytes).expect("the record is a message")
+    }
+
+    /// The challenge this fixture's peer sends, and the salt it names.
+    const SALT: &str = "fixture-salt";
+    const CHALLENGE: &str = "fixture-challenge";
+
+    fn request(session_id: u64) -> LoginRequest {
+        LoginRequest {
+            username: "fixture-target".into(),
+            my_id: "fixture-controller".into(),
+            my_name: "fixture".into(),
+            version: "1.4.9".into(),
+            session_id,
+            ..Default::default()
+        }
+    }
+
+    /// A viewer session that has already read this peer's challenge, plus the
+    /// fixture's own end of the same wire.
+    async fn challenged() -> (ViewerSession, FramedStream) {
+        let address = "127.0.0.1:1".parse().unwrap();
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let established = handshake::viewer(
+            FramedStream::from(client, address),
+            ViewerIdentity::LegacyUnverified,
+            LIMIT,
+        )
+        .await
+        .expect("the legacy handshake needs no peer record");
+        let mut fixture = FramedStream::from(peer, address);
+        assert!(fixture_recv(&mut fixture).await.union.is_none());
+        let mut session = ViewerSession::from_established(established, LIMIT, LIMIT);
+        let mut challenge = Message::new();
+        challenge.set_hash(Hash {
+            salt: SALT.into(),
+            challenge: CHALLENGE.into(),
+            ..Default::default()
+        });
+        fixture
+            .send(&challenge)
+            .await
+            .expect("the challenge is written");
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Challenge)));
+        (session, fixture)
+    }
+
+    /// The record the official client sends for this h1: SHA256(h1 || challenge),
+    /// computed by the same helper the host verifies with.
+    fn official_response(h1: &[u8; H1_BYTES]) -> Vec<u8> {
+        authentication::password_response(h1, CHALLENGE).to_vec()
+    }
+
+    fn credential(h1: &[u8; H1_BYTES], source: PasswordSource, session_id: u64) -> ConnToken {
+        ConnToken::from_h1(h1.to_vec(), source, session_id).expect("a real h1 is a token")
+    }
+
+    /// The login the session wrote, as the fixture read it.
+    async fn written_login(fixture: &mut FramedStream) -> LoginRequest {
+        match fixture_recv(fixture).await.union {
+            Some(message::Union::LoginRequest(request)) => request,
+            other => panic!("the fixture expects the viewer's login, not {other:?}"),
+        }
+    }
+
+    async fn send_response(fixture: &mut FramedStream, response: LoginResponse) {
+        let mut message = Message::new();
+        message.set_login_response(response);
+        fixture
+            .send(&message)
+            .await
+            .expect("the response is written");
+    }
+
+    fn error_response(error: &str) -> LoginResponse {
+        let mut response = LoginResponse::new();
+        response.set_error(error.to_owned());
+        response
+    }
+
+    fn authorized_response() -> LoginResponse {
+        let mut response = LoginResponse::new();
+        response.set_peer_info(PeerInfo::new());
+        response
+    }
+
+    /// A reconnect credential is challenged exactly once. The token's h1 is what
+    /// SHA256(clear password || salt) produces, and the wire carries
+    /// SHA256(h1 || challenge) — the same record a freshly typed password
+    /// produces. Salting h1 a second time would be a different, unverifiable
+    /// response, so that is what this refuses.
+    #[tokio::test]
+    async fn a_reconnect_credential_is_challenged_once() {
+        let clear = b"fixture-password";
+        let h1 = authentication::salted_password(clear, SALT);
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(
+                request(7),
+                LoginCredential::Reconnect(credential(&h1, PasswordSource::Undefined, 7)),
+            )
+            .await
+            .expect("the reconnect login is written");
+        let sent = written_login(&mut fixture).await;
+        assert_eq!(sent.password, official_response(&h1));
+        assert_eq!(sent.session_id, 7);
+        let twice = authentication::salted_password(&h1, SALT);
+        assert_ne!(
+            sent.password,
+            official_response(&twice),
+            "the imported h1 is not salted a second time"
+        );
+
+        // The same clear password, typed instead of imported, is the same record.
+        let (mut typed, mut typed_fixture) = challenged().await;
+        typed
+            .login_with(request(7), LoginCredential::Password(clear))
+            .await
+            .expect("the typed login is written");
+        assert_eq!(written_login(&mut typed_fixture).await.password, sent.password);
+    }
+
+    /// The credential is exported only after the peer's own success, carrying the
+    /// session id and provenance this attempt used, and only once.
+    #[tokio::test]
+    async fn a_credential_is_exported_only_after_the_peer_authorizes() {
+        let h1 = authentication::salted_password(b"fixture-password", SALT);
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(
+                request(9),
+                LoginCredential::Reconnect(credential(
+                    &h1,
+                    PasswordSource::SharedAb("shared-fixture".into()),
+                    9,
+                )),
+            )
+            .await
+            .expect("the reconnect login is written");
+        assert_eq!(written_login(&mut fixture).await.password, official_response(&h1));
+        assert_eq!(session.state(), ViewerState::AwaitLogin);
+        assert!(
+            session.take_reconnect_credential().is_none(),
+            "a written login is not an authentication"
+        );
+
+        send_response(&mut fixture, authorized_response()).await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        let exported = session
+            .take_reconnect_credential()
+            .expect("the peer authorized this attempt");
+        assert_eq!(exported.session_id(), 9);
+        assert_eq!(exported.source_kind(), PasswordSourceKind::SharedAb);
+        assert_eq!(exported.h1(), h1.as_slice());
+        assert!(
+            session.take_reconnect_credential().is_none(),
+            "the credential is handed over once, not duplicated"
+        );
+    }
+
+    /// The peer's verdict on the password itself leaves nothing to reconnect
+    /// with, even if a later record authorizes the session.
+    #[tokio::test]
+    async fn a_password_refusal_leaves_no_credential_to_export() {
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(request(7), LoginCredential::Password(b"wrong-fixture"))
+            .await
+            .expect("the login is written");
+        let _ = written_login(&mut fixture).await;
+        send_response(
+            &mut fixture,
+            error_response(authentication::WRONG_PASSWORD),
+        )
+        .await;
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(error)) if error == authentication::WRONG_PASSWORD
+        ));
+        send_response(&mut fixture, authorized_response()).await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(session.take_reconnect_credential().is_none());
+    }
+
+    /// A refusal of the second factor is not a refusal of the password: the
+    /// material stays, because the peer had already accepted it.
+    #[tokio::test]
+    async fn a_second_factor_refusal_keeps_the_password_credential() {
+        let clear = b"fixture-password";
+        let h1 = authentication::salted_password(clear, SALT);
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(request(7), LoginCredential::Password(clear))
+            .await
+            .expect("the login is written");
+        let _ = written_login(&mut fixture).await;
+        send_response(
+            &mut fixture,
+            error_response(authentication::TWO_FACTOR_REQUIRED),
+        )
+        .await;
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(error)) if error == authentication::TWO_FACTOR_REQUIRED
+        ));
+        send_response(&mut fixture, error_response("Wrong 2FA Code")).await;
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(error)) if error == "Wrong 2FA Code"
+        ));
+        send_response(&mut fixture, authorized_response()).await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        let exported = session
+            .take_reconnect_credential()
+            .expect("the password was never refused");
+        assert_eq!(exported.h1(), h1.as_slice());
+        assert_eq!(exported.source_kind(), PasswordSourceKind::Undefined);
+    }
+
+    /// A typed answer replaces the imported provenance, as the official client
+    /// does whenever the password came from the user.
+    #[tokio::test]
+    async fn a_typed_password_replaces_the_imported_source() {
+        let imported = authentication::salted_password(b"shared-fixture", SALT);
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(
+                request(7),
+                LoginCredential::Reconnect(credential(
+                    &imported,
+                    PasswordSource::SharedAb("shared-fixture".into()),
+                    7,
+                )),
+            )
+            .await
+            .expect("the imported login is written");
+        let _ = written_login(&mut fixture).await;
+        send_response(
+            &mut fixture,
+            error_response(authentication::WRONG_PASSWORD),
+        )
+        .await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::LoginError(_))));
+
+        let typed = b"typed-fixture";
+        session
+            .login_with(request(7), LoginCredential::Password(typed))
+            .await
+            .expect("the typed retry travels on the same request");
+        let retried = written_login(&mut fixture).await;
+        assert_eq!(
+            retried.password,
+            official_response(&authentication::salted_password(typed, SALT))
+        );
+        send_response(&mut fixture, authorized_response()).await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        let exported = session
+            .take_reconnect_credential()
+            .expect("the typed password was accepted");
+        assert_eq!(exported.source_kind(), PasswordSourceKind::Undefined);
+        assert_eq!(
+            exported.h1(),
+            authentication::salted_password(typed, SALT).as_slice()
+        );
+    }
+
+    /// A session that is no longer authenticated exports nothing: closing it
+    /// scrubs what it held.
+    #[tokio::test]
+    async fn a_closed_session_exports_no_credential() {
+        let (mut session, mut fixture) = challenged().await;
+        session
+            .login_with(request(7), LoginCredential::Password(b"fixture-password"))
+            .await
+            .expect("the login is written");
+        let _ = written_login(&mut fixture).await;
+        send_response(&mut fixture, authorized_response()).await;
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        session.close().await.expect("the close is written");
+        assert_eq!(session.state(), ViewerState::Closed);
+        assert!(session.take_reconnect_credential().is_none());
+    }
+
+    /// A token that names its session is that session's credential and no other's,
+    /// and one that names none takes the caller's fresh nonzero id — the same rule
+    /// the official reader applies, without pretending a zero id was usable.
+    #[tokio::test]
+    async fn a_token_session_id_must_match_unless_it_is_absent() {
+        let h1 = authentication::salted_password(b"fixture-password", SALT);
+        let (mut session, mut fixture) = challenged().await;
+        assert!(
+            session
+                .login_with(
+                    request(9),
+                    LoginCredential::Reconnect(credential(&h1, PasswordSource::Undefined, 7)),
+                )
+                .await
+                .is_err(),
+            "a token from another session is not this one's credential"
+        );
+        assert!(
+            session
+                .login_with(
+                    request(0),
+                    LoginCredential::Reconnect(credential(&h1, PasswordSource::Undefined, 0)),
+                )
+                .await
+                .is_err(),
+            "a zero session id is not the fresh nonzero id the caller must supply"
+        );
+        assert_eq!(session.state(), ViewerState::AwaitLogin);
+
+        session
+            .login_with(
+                request(9),
+                LoginCredential::Reconnect(credential(&h1, PasswordSource::Undefined, 0)),
+            )
+            .await
+            .expect("a token without a session id takes the caller's fresh one");
+        assert_eq!(written_login(&mut fixture).await.session_id, 9);
     }
 
     /// The peer's second factor is answered on the one session that asked for

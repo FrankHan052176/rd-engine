@@ -81,6 +81,8 @@ jobs:
           cargo test --locked --lib second_factor
           cargo test --locked --lib session_options
           cargo test --locked --lib password
+          cargo test --locked --lib conn_token
+          cargo test --locked --lib session::tests
           cargo test --locked --lib transfer
           cargo test --locked --lib clipboard
           cargo test --locked --lib host::security

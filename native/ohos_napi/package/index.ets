@@ -80,6 +80,11 @@ export function sessionSend2fa(sessionId: string, code: string, trustThisDevice:
   return native.sessionSend2fa(sessionId, code, trustThisDevice);
 }
 
+/** Explicit reusable password-equivalent credential; null before authentication or after close. */
+export function sessionGetConnToken(sessionId: string): string | null {
+  return native.sessionGetConnToken(sessionId);
+}
+
 /**
  * Resolves only after native teardown finishes, not when the request is accepted.
  * JSON always carries released and settle ("settled" | "unconfirmed" |

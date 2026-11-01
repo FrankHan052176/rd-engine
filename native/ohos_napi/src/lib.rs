@@ -10,6 +10,7 @@ use napi_ohos::{
     Env, JsValue, Unknown,
 };
 use rd_engine::protocol::Target;
+use rd_engine::conn_token::ConnToken;
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
     direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
@@ -196,6 +197,7 @@ struct SessionRecord {
     /// from a remote/authentication failure, which lives in the snapshot.
     reclaimed: Option<bool>,
     password: String,
+    conn_token: Option<ConnToken>,
     fps: u32,
     session_options: SessionOptions,
     viewer: Option<Arc<Viewer>>,
@@ -258,9 +260,24 @@ fn scrub_password(password: &mut String) {
     hbb_common::sodiumoxide::utils::memzero(&mut bytes);
 }
 
+struct RegistrationCredentials {
+    password: String,
+    conn_token: Option<String>,
+}
+
+impl Drop for RegistrationCredentials {
+    fn drop(&mut self) {
+        scrub_password(&mut self.password);
+        if let Some(token) = &mut self.conn_token {
+            scrub_password(token);
+        }
+    }
+}
+
 /// Only called after confirmed reclamation (or a close that never had a Viewer).
 fn scrub_terminal_record(record: &mut SessionRecord) {
     scrub_password(&mut record.password);
+    record.conn_token = None;
     record.viewer.take();
     record.cursor = None;
     record.common.clear();
@@ -592,7 +609,7 @@ fn parse_viewer_target(
 /// XComponent waits in `awaiting_surface` for the holder borrow, whose bounded
 /// surface wait turns "never bound" into an explicit failure rather than a
 /// permanent one.
-fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
+fn dial(record: &mut SessionRecord) -> Result<Arc<Viewer>, String> {
     let _admission = record
         .id_route
         .as_ref()
@@ -612,6 +629,7 @@ fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
         ),
         local_name: LOCAL_NAME.to_owned(),
         password: record.password.clone(),
+        conn_token: record.conn_token.take(),
         requested_fps: record.fps,
         input_policy: record.input_policy,
         session_options: record.session_options.clone(),
@@ -733,12 +751,26 @@ pub fn runtime_get_decoder_capabilities() -> AsyncTask<capabilities::DecoderCapa
 /// ID routes also require current initialized foreground consent. Direct RDP
 /// still requires an explicit account and uses the existing driver/security.
 #[napi]
-pub fn session_add(session_id: String, target: String, options: String) -> String {
+pub fn session_add(session_id: String, target: String, mut options: String) -> String {
     if session_id.is_empty() {
+        scrub_password(&mut options);
         return error_json("empty session id");
     }
-    let options: serde_json::Value =
-        serde_json::from_str(&options).unwrap_or(serde_json::Value::Null);
+    let decoded = serde_json::from_str(&options);
+    scrub_password(&mut options);
+    let mut options: serde_json::Value = decoded.unwrap_or(serde_json::Value::Null);
+    let mut credentials = RegistrationCredentials {
+        password: match options.get_mut("password").map(serde_json::Value::take) {
+            Some(serde_json::Value::String(value)) => value,
+            _ => String::new(),
+        },
+        conn_token: None,
+    };
+    credentials.conn_token = match options.get_mut("connToken").map(serde_json::Value::take) {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value),
+        Some(_) => return error_json("connToken must be a RustDesk credential string"),
+    };
     match options.get("isViewCamera") {
         None | Some(serde_json::Value::Bool(false)) => {}
         Some(serde_json::Value::Bool(true)) => {
@@ -788,10 +820,19 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
     } else {
         None
     };
-    let password = options
-        .get("password")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
+    let conn_token = match credentials.conn_token.as_deref() {
+        None => None,
+        Some("") => None,
+        Some(value) => {
+            if viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk {
+                return error_json("connToken requires the RustDesk protocol");
+            }
+            match ConnToken::parse(value) {
+                Some(token) => Some(token),
+                None => return error_json("invalid RustDesk reconnect credential"),
+            }
+        }
+    };
     let fps = options
         .get("customFps")
         .and_then(|value| value.as_u64())
@@ -809,7 +850,7 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
         view_only,
         unverified_accepted: false,
     };
-    let credentials_note = if password.is_empty() {
+    let credentials_note = if credentials.password.is_empty() && conn_token.is_none() {
         "no password in the options: sessionLogin records one for the next dial"
     } else {
         "password and rate held for the next sessionStart"
@@ -849,7 +890,8 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
             closed: false,
             closing: false,
             reclaimed: None,
-            password: password.to_owned(),
+            password: std::mem::take(&mut credentials.password),
+            conn_token,
             fps,
             session_options: SessionOptions::default(),
             dials: 0,
@@ -1171,6 +1213,7 @@ pub fn session_login(session_id: String, mut payload: String) -> String {
             }
             let Some(viewer) = record.viewer.as_ref() else {
                 scrub_password(&mut record.password);
+                record.conn_token = None;
                 record.password = std::mem::take(&mut password);
                 let mut response = session_response(true, "session_login", &session_id, record, None);
                 response["queued"] = serde_json::json!(false);
@@ -1260,6 +1303,18 @@ pub fn session_get_enable_trusted_devices(session_id: String) -> napi_ohos::Resu
             .or_else(|| record.terminal_snapshot.clone());
         snapshot.and_then(|snapshot| snapshot.enable_trusted_devices)
             .ok_or_else(|| napi_ohos::Error::from_reason("peer has not reported trusted-device capability"))
+    })
+}
+
+/// Explicit export only; an input token is never returned before peer authorization.
+#[napi]
+pub fn session_get_conn_token(session_id: String) -> Option<String> {
+    with_sessions(|sessions| {
+        let record = sessions.get(&session_id)?;
+        if record.closed || record.closing {
+            return None;
+        }
+        record.viewer.as_ref()?.conn_token_json()
     })
 }
 
@@ -2559,6 +2614,7 @@ implemented_entry_points!(
     ("sessionToggleOption", session_toggle_option),
     ("sessionGetRemoteAudioState", session_get_remote_audio_state),
     ("sessionGetEnableTrustedDevices", session_get_enable_trusted_devices),
+    ("sessionGetConnToken", session_get_conn_token),
     ("sessionBindSurface", session_bind_surface),
     ("sessionClose", session_close),
     ("sessionAcknowledgeClose", session_acknowledge_close),
@@ -2705,12 +2761,6 @@ pub fn har_surface_manifest() -> String {
                     "sessionSetSize", "sessionSetVideoPaused",
                 ],
                 "reason": "local renderer sizing and pause are not implemented; remote resolution is a distinct control",
-            },
-            "viewer_state": {
-                "entry_points": [
-                    "sessionGetConnToken",
-                ],
-                "reason": "connection-token export is not yet implemented; trusted-device metadata is a peer report, not local enrollment; remote audio state explicitly reports the absent renderer",
             },
             "input_adapter": {
                 "entry_points": ["sessionEnterOrLeave", "sessionHandleFlutterKeyEvent"],

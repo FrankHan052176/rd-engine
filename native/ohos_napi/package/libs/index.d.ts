@@ -50,6 +50,9 @@ export declare function sessionLogin(sessionId: string, loginJson: string): stri
 /** Same authentication; queued is not authorized. Trusted enrollment is explicitly refused. */
 export declare function sessionSend2fa(sessionId: string, code: string, trustThisDevice: boolean): string
 
+/** Explicit reusable password-equivalent credential; null before authentication or after close. */
+export declare function sessionGetConnToken(sessionId: string): string | null
+
 /**
  * Resolves with native teardown completion, never request acceptance.
  * JSON always carries released:boolean and settle:"settled"|"unconfirmed"|"neverstarted";

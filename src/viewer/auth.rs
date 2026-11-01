@@ -4,8 +4,9 @@ use super::{
     State, ViewerError, ViewerOptions, ViewerTarget, CLIENT_VERSION, discard_password, lock,
 };
 use crate::{
+    conn_token::ConnToken,
     rendezvous::RouteKind,
-    session::{AuthenticatedParts, SessionMode, ViewerEvent, ViewerSession, ViewerState},
+    session::{AuthenticatedParts, LoginCredential, SessionMode, ViewerEvent, ViewerSession, ViewerState},
 };
 use base::message_proto::{self as proto, LoginRequest, OptionMessage};
 use std::time::Duration;
@@ -62,7 +63,8 @@ pub(super) async fn authenticate(
     connector: Connector,
 ) -> Result<AuthenticatedParts, ViewerError> {
     let mut password = Password(std::mem::take(&mut options.password).into_bytes());
-    let mut session = match connector {
+    let conn_token = options.conn_token.take();
+    let session = match connector {
         Connector::Direct(identity) => {
             state.phase("connecting");
             let ViewerTarget::RustDesk {
@@ -112,6 +114,7 @@ pub(super) async fn authenticate(
         session,
         &options,
         &mut password,
+        conn_token,
         supported,
         &codes,
         &passwords,
@@ -149,6 +152,7 @@ pub(super) async fn authenticate_loop(
     mut session: ViewerSession,
     options: &ViewerOptions,
     password: &mut Password,
+    mut conn_token: Option<ConnToken>,
     supported: proto::SupportedDecoding,
     codes: &mpsc::Sender<String>,
     passwords: &mpsc::Sender<String>,
@@ -221,17 +225,18 @@ pub(super) async fn authenticate_loop(
                         .map_err(|_| ViewerError::TransportFailed)?;
                 }
                 ViewerEvent::Challenge => {
-                    let request = login_request(options, supported.clone());
-                    let written = session
-                        .login(
-                            request,
-                            if password.0.is_empty() {
-                                None
-                            } else {
-                                Some(&password.0)
-                            },
-                        )
-                        .await;
+                    let mut request = login_request(options, supported.clone());
+                    let credential = match conn_token.take() {
+                        Some(token) => {
+                            if token.session_id() != 0 {
+                                request.session_id = token.session_id();
+                            }
+                            LoginCredential::Reconnect(token)
+                        }
+                        None if password.0.is_empty() => LoginCredential::ManualApproval,
+                        None => LoginCredential::Password(&password.0),
+                    };
+                    let written = session.login_with(request, credential).await;
                     hbb_common::sodiumoxide::utils::memzero(&mut password.0);
                     password.0.clear();
                     written
@@ -241,9 +246,15 @@ pub(super) async fn authenticate_loop(
                         .map_err(|_| ViewerError::TransportFailed)?;
                 }
                 ViewerEvent::Authorized(_) => {
-                    return session
+                    let token = session.take_reconnect_credential();
+                    let parts = session
                         .into_authenticated_parts()
-                        .map_err(|_| ViewerError::AuthenticationFailed);
+                        .map_err(|_| ViewerError::AuthenticationFailed)?;
+                    let mut inner = lock(&state.inner);
+                    if !state.cancel.is_cancelled() {
+                        inner.conn_token = token;
+                    }
+                    return Ok(parts);
                 }
                 ViewerEvent::LoginError(error) if error == "No Password Access" => {
                     // The peer's operator has to accept this request, so the

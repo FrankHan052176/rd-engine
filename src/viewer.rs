@@ -15,6 +15,7 @@ use auth::authenticate_loop;
 #[path = "platform/decoder.rs"]
 pub mod decoder;
 use crate::{
+    conn_token::ConnToken,
     clipboard::{
         ClipboardError, ClipboardImage, ClipboardMetadata, ClipboardPayload, ClipboardState,
         PeerClipboardSupport,
@@ -249,6 +250,8 @@ pub struct ViewerOptions {
     pub local_id: String,
     pub local_name: String,
     pub password: String,
+    /// Password-equivalent material explicitly supplied for this RustDesk login.
+    pub conn_token: Option<ConnToken>,
     pub requested_fps: u32,
     /// The local input policy this viewer is started under.
     ///
@@ -549,6 +552,8 @@ impl LoginFailure {
 
 struct Inner {
     snapshot: ViewerSnapshot,
+    // Explicit export only: never included in snapshots or events.
+    conn_token: Option<ConnToken>,
     geometry: Option<Geometry>,
     decoder: Option<DecoderObserver>,
     // Observation only; State::finish decides whether cleanup permits publishing it.
@@ -1179,6 +1184,7 @@ impl State {
         // applied to the next generation.
         self.clipboard.revoke();
         let mut inner = lock(&self.inner);
+        inner.conn_token = None;
         if !inner.snapshot.closed {
             inner.snapshot.phase = "closing".into();
         }
@@ -1204,6 +1210,7 @@ impl State {
             Ok(())
         };
         let mut inner = lock(&self.inner);
+        inner.conn_token = None;
         inner.snapshot.closed = true;
         inner.snapshot.keyboard_allowed = false;
         // The category is published beside the string, not inside it: `error`
@@ -1394,6 +1401,7 @@ impl Viewer {
             || options.local_id.len() > 512
             || options.local_name.len() > 512
             || options.password.len() > 4096
+            || (options.conn_token.is_some() && options.target.protocol() != Protocol::RustDesk)
             || (options.mode == SessionMode::Desktop
                 && !(1..=240).contains(&options.requested_fps))
             || (options.mode == SessionMode::FileTransfer
@@ -1410,6 +1418,7 @@ impl Viewer {
             session_options: Mutex::new(options.session_options.clone()),
             advertised_decoding: Mutex::new(None),
             inner: Mutex::new(Inner {
+                conn_token: None,
                 snapshot: ViewerSnapshot {
                     phase: "capability".into(),
                     mode: options.mode,
@@ -1468,6 +1477,18 @@ impl Viewer {
     }
     pub fn snapshot(&self) -> ViewerSnapshot {
         self.state.snapshot()
+    }
+
+    /// Explicit, repeatable export of the current authenticated login's h1.
+    pub fn conn_token_json(&self) -> Option<String> {
+        let inner = lock(&self.state.inner);
+        if self.state.cancel.is_cancelled()
+            || !self.state.authenticated.load(Ordering::Acquire)
+            || inner.snapshot.closed
+        {
+            return None;
+        }
+        inner.conn_token.as_ref().map(ConnToken::to_json)
     }
 
     /// A session-owned mailbox retained for terminal event consumption too.
@@ -4167,6 +4188,7 @@ mod tests {
     fn writer_state() -> Arc<State> {
         Arc::new(State {
             inner: Mutex::new(Inner {
+                conn_token: None,
                 snapshot: ViewerSnapshot::default(),
                 geometry: None,
                 decoder: None,
@@ -5218,6 +5240,7 @@ mod tests {
                 local_id: "controller".into(),
                 local_name: "fixture".into(),
                 password: String::new(),
+                conn_token: None,
                 requested_fps: 0,
                 input_policy: ViewerInputPolicy::interactive(),
                 session_options: Default::default(),
@@ -5230,7 +5253,7 @@ mod tests {
                 passwords: password_answers,
             };
             let driver = super::authenticate_loop(
-                &state, session, &options, &mut password, Default::default(),
+                &state, session, &options, &mut password, None, Default::default(),
                 &codes, &passwords, &mut answers,
             );
             let fixture = async {
@@ -5448,6 +5471,7 @@ mod tests {
                     local_id: "controller".into(),
                     local_name: "fixture".into(),
                     password: String::new(),
+                    conn_token: None,
                     requested_fps: 0,
                     input_policy: ViewerInputPolicy::interactive(),
                     session_options: Default::default(),
@@ -5466,6 +5490,7 @@ mod tests {
                     session,
                     &options,
                     &mut password,
+                    None,
                     Default::default(),
                     &codes,
                     &passwords,

@@ -21,6 +21,7 @@ use hbb_common::config::{
 use hbb_common::log;
 use hbb_common::sodiumoxide::crypto::sign;
 use hbb_common::sodiumoxide::utils;
+use rd_engine::conn_token::ConnToken;
 use rd_engine::lan::{self, LanCompletion, LanNotice, LanOwner, LanSnapshot};
 use rd_engine::official_account::{self as account, CacheKind};
 use rd_engine::protocol::rect::Rect;
@@ -1955,31 +1956,88 @@ static SESSIONS: LazyLock<Mutex<HashMap<SessionID, Arc<Session>>>> =
 static SESSIONS_OF_PEER: LazyLock<Mutex<HashMap<String, Vec<SessionID>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Credential material is session-local only. It is never persisted, returned,
-/// logged, or reused after `session_close`.
+/// The authentication material one session retains for its next attempt.
+///
+/// It is session-local only: it lives in the one buffer this bridge wipes on
+/// replacement, on `session_close` and on drop, and it is never persisted,
+/// never logged, and never returned as the text the client typed. The buffer
+/// holds exactly one of the two real spellings a login can carry, which
+/// `conn_token` names:
+///
+///  * a clear password (`session_add_sync.password`, `session_login.password`),
+///    which nothing in this bridge hands back;
+///  * the official reconnect token text the client imported
+///    (`session_add_sync.conn_token`). That text is password-equivalent - it
+///    carries the peer's salted h1 - and it is answered only by the running
+///    viewer's own export (`session_get_conn_token`), never from this buffer.
 #[derive(Default)]
-struct SessionCredential(Vec<u8>);
+struct SessionCredential {
+    bytes: Vec<u8>,
+    /// Whether `bytes` is the official token text rather than a clear password.
+    conn_token: bool,
+}
 
 impl SessionCredential {
-    fn replace(&mut self, value: String) {
-        self.clear();
-        self.0 = value.into_bytes();
+    /// A clear password the operator supplied. A password is not an imported
+    /// token, so retaining one also drops the token's provenance: the credential
+    /// a later retry sends is the secret the user actually typed.
+    fn from_password(value: String) -> Self {
+        Self {
+            bytes: value.into_bytes(),
+            conn_token: false,
+        }
     }
 
-    fn copy_for_viewer(&self) -> String {
-        // The bytes originated as a Rust `String`, so this preserved copy is UTF-8.
-        unsafe { String::from_utf8_unchecked(self.0.clone()) }
+    /// The official reconnect token text, which `session_add_sync` validated
+    /// before this call. The text itself is what is retained, so an explicit
+    /// Retry can parse it again; a `ConnToken` is never copied or cloned.
+    fn from_conn_token(value: String) -> Self {
+        Self {
+            bytes: value.into_bytes(),
+            conn_token: true,
+        }
     }
 
-    /// Whether this attempt carries a password at all. The bytes themselves are
-    /// never read out of the session for anything but the viewer that needs them.
+    /// Whether this attempt carries a credential at all. A token is one, so a
+    /// session that imported a token is not a session that supplied nothing.
+    /// The bytes themselves are never read out of the session for anything but
+    /// the viewer that needs them.
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.bytes.is_empty()
+    }
+
+    /// The clear password, copied out for the engine, which takes its own
+    /// `String` and scrubs it.
+    fn password_for_viewer(&self) -> String {
+        // The bytes originated as a Rust `String`, so this preserved copy is UTF-8.
+        unsafe { String::from_utf8_unchecked(self.bytes.clone()) }
+    }
+
+    /// What one viewer start takes from this session: the clear password, or the
+    /// parsed official token.
+    ///
+    /// The token is parsed straight out of the retained bytes, so no second copy
+    /// of the secret text exists even for a moment. A retained token that no
+    /// longer parses is an error rather than an empty credential: dialling
+    /// without it would answer the peer's password challenge with nothing and
+    /// turn a supplied secret into "no credentials", which is exactly the silent
+    /// fallback `session_add_sync` refuses at creation.
+    fn for_viewer(&self) -> Result<(String, Option<ConnToken>)> {
+        if !self.conn_token {
+            return Ok((self.password_for_viewer(), None));
+        }
+        let text = std::str::from_utf8(&self.bytes)
+            .map_err(|_| anyhow::anyhow!("retained connection token is not UTF-8"))?;
+        let token = ConnToken::parse(text).ok_or_else(|| {
+            anyhow::anyhow!("retained connection token is not a RustDesk reconnect token")
+        })?;
+        Ok((String::new(), Some(token)))
     }
 
     fn clear(&mut self) {
-        utils::memzero(&mut self.0);
-        self.0.clear();
+        utils::memzero(&mut self.bytes);
+        self.bytes.clear();
+        self.conn_token = false;
     }
 }
 
@@ -1995,6 +2053,19 @@ impl Drop for SessionCredential {
 fn discard_credential(password: String) {
     let mut bytes = password.into_bytes();
     utils::memzero(&mut bytes);
+}
+
+/// Wipes everything a refused session creation carried: the password, and the
+/// token text when the client sent one.
+///
+/// Both are password-equivalent secrets, so both are wiped on every early return
+/// a creation can take - the same rule that kept a refused password from
+/// outliving its call before the token existed.
+fn discard_credentials(password: String, conn_token: Option<String>) {
+    discard_credential(password);
+    if let Some(token) = conn_token {
+        discard_credential(token);
+    }
 }
 
 /// Wipes a second-factor code this bridge refuses.
@@ -2015,8 +2086,9 @@ struct Session {
     /// Decoded raw peer and immutable route intent, fixed before any peer store.
     peer: String,
     rustdesk_id_only: bool,
-    /// Authentication material for this one live session. It is zeroed on
-    /// replacement and close and never reaches hbb_common persistence.
+    /// Authentication material for this one live session: the clear password or
+    /// the official reconnect token it imported. It is zeroed on replacement and
+    /// close and never reaches hbb_common persistence.
     credential: Mutex<SessionCredential>,
     remember: AtomicBool,
     /// The session's event stream, set by `session_start`.
@@ -2152,9 +2224,11 @@ impl Session {
         }
     }
 
-    /// Whether the attempt the engine just finished carried no password: the
-    /// difference between a peer that asked for one and a password that was
-    /// rejected. Credential material itself is never read out here.
+    /// Whether the attempt the engine just finished carried no credential at
+    /// all: the difference between a peer that asked for one and a credential
+    /// that was rejected. A retained token counts as a credential, so a refused
+    /// token login is a refusal and not an empty password. Credential material
+    /// itself is never read out here.
     fn credential_is_empty(&self) -> bool {
         lock(&self.credential).is_empty()
     }
@@ -2625,6 +2699,15 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
         "persistent RustDesk identity is unavailable"
     );
 
+    // The credential this attempt takes, read before the existing viewer is
+    // retired: a session whose retained token cannot be read refuses here rather
+    // than stopping a working connection and then dialling without a secret.
+    let (password, conn_token) = lock(&session.credential).for_viewer()?;
+    // Whether this attempt carries a credential at all - which is what tells the
+    // peer's refusal of a secret from its demand for one nobody sent. A token is
+    // such a credential: an attempt that used one did not go in empty-handed.
+    let credential_was_empty = password.is_empty() && conn_token.is_none();
+
     session.unverified_accepted.store(false, Ordering::SeqCst);
     session.stop_viewer();
     let generation = session.frames.restart();
@@ -2638,14 +2721,18 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
         },
         Route::Rendezvous(_) => ViewerTarget::RustDesk { address: None },
     };
-    let password = lock(&session.credential).copy_for_viewer();
-    let password_was_empty = password.is_empty();
     let options = ViewerOptions {
         target,
         username: peer.clone(),
         local_id,
         local_name: local_name(),
         password,
+        // The official reconnect credential this attempt takes, when the client
+        // imported one: the engine answers the peer's challenge from it instead
+        // of from a clear password, and it is exported again only by the
+        // viewer's own authenticated credential. `None` is what a password-only
+        // attempt carries.
+        conn_token,
         requested_fps,
         input_policy: session.input_policy(),
         // What this session asked for while it had not dialled: the login
@@ -2675,7 +2762,7 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
     .map_err(|error| anyhow::anyhow!("viewer start failed: {error}"))?;
 
     *lock(&session.viewer) = Some(viewer.clone());
-    spawn_pump(session, viewer, password_was_empty);
+    spawn_pump(session, viewer, credential_was_empty);
     Ok(())
 }
 
@@ -2687,13 +2774,13 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
 /// really happened: a password form, the peer's approval wait, the trust
 /// question for a peer the handshake did not prove, or the failure the client's
 /// Retry can act on.
-fn spawn_pump(session: &Arc<Session>, viewer: Arc<Viewer>, password_was_empty: bool) {
+fn spawn_pump(session: &Arc<Session>, viewer: Arc<Viewer>, credential_was_empty: bool) {
     let stop = Arc::new(AtomicBool::new(false));
     *lock(&session.stop) = Some(stop.clone());
     let weak = Arc::downgrade(session);
     let result = std::thread::Builder::new()
         .name(format!("rd-engine-flutter-{}", session.session_id))
-        .spawn(move || pump(weak, viewer, stop, password_was_empty));
+        .spawn(move || pump(weak, viewer, stop, credential_was_empty));
     match result {
         Ok(handle) => *lock(&session.pump) = Some(handle),
         Err(error) => log::error!("{}: cannot start the pump: {error}", session.session_id),
@@ -2752,7 +2839,7 @@ fn password_prompt(phase: &str, challenge: u64, announced: u64) -> Option<Passwo
     }
 }
 
-fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, password_was_empty: bool) {
+fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credential_was_empty: bool) {
     let mut announced_ready = false;
     let mut asked_for_password = false;
     let mut announced_approval = false;
@@ -2785,7 +2872,7 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, passwor
                 ENGINE_AWAITING_SECOND_FACTOR | ENGINE_SECOND_FACTOR_REJECTED
             );
             if snapshot.protocol != rd_engine::protocol::Protocol::RustDesk.as_str()
-                && password_was_empty && !asked_for_password && !awaiting_second_factor
+                && credential_was_empty && !asked_for_password && !awaiting_second_factor
             {
                 asked_for_password = true;
                 session.password_required();
@@ -2971,14 +3058,14 @@ pub fn session_add_sync(
         Ok(target) => target,
         Err(error) => {
             let reason = error.to_string();
-            discard_credential(password);
+            discard_credentials(password, conn_token);
             if session_record(session_id).is_none() { reject(session_id, reason.clone()); }
             return SyncReturn(format!("err={reason}"));
         }
     };
     if let Some(session) = session_record(session_id) {
         if session.peer != id || session.rustdesk_id_only != rustdesk_id_only {
-            discard_credential(password);
+            discard_credentials(password, conn_token);
             return SyncReturn("err=session identity or route intent changed; close it and use a fresh session ID".to_owned());
         }
     }
@@ -2993,15 +3080,25 @@ pub fn session_add_sync(
     } else {
         None
     };
-    // None of these is a label the client may ignore: switching sides and the
-    // connection token carry real login semantics, and a forced relay is a
-    // routing decision this engine cannot honour.
+    // The token the client sends is the one its toolbar read back from a running
+    // session (`sessionGetConnToken`) to start the next connection with it. It is
+    // password-equivalent material, so the two real answers are: empty or absent,
+    // which is the same "no token" the client that carries none sends, or text
+    // this engine can actually answer a challenge with.
+    let token_is_readable = match conn_token.as_deref().filter(|token| !token.is_empty()) {
+        Some(token) => ConnToken::parse(token).is_some(),
+        None => true,
+    };
+    // None of these is a label the client may ignore: switching sides and a
+    // forced relay carry real routing intent this engine cannot honour, and a
+    // token it cannot read is refused rather than quietly dropped - a fallback
+    // would dial with a different authentication story than the caller gave.
     let refusal = if let Some(kind) = kind {
         Some(format!("unsupported: {kind} session"))
     } else if !switch_uuid.is_empty() {
         Some("unsupported: switching sides is not implemented".to_owned())
-    } else if conn_token.as_deref().is_some_and(|token| !token.is_empty()) {
-        Some("unsupported: connection-token login is not implemented".to_owned())
+    } else if !token_is_readable {
+        Some("invalid connection token: this is not a RustDesk reconnect token".to_owned())
     } else if force_relay || peer_forces_relay(&id) {
         Some("unsupported: forced relay is not implemented by this engine".to_owned())
     } else {
@@ -3009,10 +3106,10 @@ pub fn session_add_sync(
     };
     match refusal {
         Some(reason) => {
-            // The password this call carried is wiped and dropped with it: a
-            // refused session keeps no credential, so a refused password does
-            // not outlive the call that was refused.
-            discard_credential(password);
+            // The password and token this call carried are wiped and dropped
+            // with it: a refused session keeps no credential, so a refused
+            // secret does not outlive the call that was refused.
+            discard_credentials(password, conn_token);
             reject(session_id, reason.clone());
             unsupported("session_add_sync");
             SyncReturn(format!("err={reason}"))
@@ -3022,7 +3119,7 @@ pub fn session_add_sync(
                 Ok(session) => session,
                 Err(error) => {
                     let reason = error.to_string();
-                    discard_credential(password);
+                    discard_credentials(password, conn_token);
                     if session_record(session_id).is_none() { reject(session_id, reason.clone()); }
                     return SyncReturn(format!("err={reason}"));
                 }
@@ -3031,7 +3128,19 @@ pub fn session_add_sync(
             // any earlier refusal for it is over.
             lock(&REJECTED).remove(&session_id);
             LocalConfig::set_remote_id(&session.peer);
-            lock(&session.credential).replace(password);
+            // The token is password-equivalent and the official reader lets it
+            // take the place of the password a caller carried, so a readable
+            // token is what this session retains and the password that came
+            // with it is wiped here rather than kept as a second, dead copy of
+            // the same authority. A manual password remains the one credential
+            // that answers a peer's later demand through `session_login`.
+            match conn_token.filter(|token| !token.is_empty()) {
+                Some(token) => {
+                    discard_credential(password);
+                    *lock(&session.credential) = SessionCredential::from_conn_token(token);
+                }
+                None => *lock(&session.credential) = SessionCredential::from_password(password),
+            }
             SyncReturn(String::new())
         }
     }
@@ -3102,8 +3211,8 @@ pub fn session_login(
     password: String,
     remember: bool,
 ) -> Result<()> {
-    let password = SessionCredential(password.into_bytes());
-    let os_password = SessionCredential(os_password.into_bytes());
+    let password = SessionCredential::from_password(password);
+    let os_password = SessionCredential::from_password(os_password);
     ensure!(
         os_username.is_empty() && os_password.is_empty(),
         "unsupported: OS-credential login is not implemented"
@@ -3115,8 +3224,13 @@ pub fn session_login(
     let session = session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
     session.remember.store(false, Ordering::SeqCst);
     if let Some(viewer) = lock(&session.viewer).clone() {
-        match viewer.send_password(password.copy_for_viewer()) {
+        match viewer.send_password(password.password_for_viewer()) {
             Ok(()) => {
+                // The password the operator typed answered this viewer's own
+                // challenge, and it is also what a later retry carries: it
+                // replaces any token this session imported, because the token's
+                // provenance belongs to the login that brought it, not to a
+                // secret the user just entered.
                 *lock(&session.credential) = password;
                 return Ok(());
             }
@@ -3362,10 +3476,35 @@ pub fn session_is_multi_ui_session(session_id: SessionID) -> SyncReturn<bool> {
     SyncReturn(false)
 }
 
+// ---------------------------------------------------------------------------
+// Sessions: the official reconnect credential
+// ---------------------------------------------------------------------------
+
+/// The client's explicit read of the credential a running session can be
+/// reconnected with.
+///
+/// The answer comes from the viewer itself: it is the h1 the peer's own login
+/// accepted, exported only by an authenticated, not-closing RustDesk session,
+/// and never from anything this bridge stored. That matters twice over - the
+/// text the client supplied at creation is not proof of what the peer accepted,
+/// and UI state ("a password was typed") is not authorization. An
+/// unauthenticated or stopped session therefore answers `None`, which is the
+/// same answer the pinned client's own `get_conn_token` gives for an empty
+/// password.
+///
+/// This is deliberately a getter the client calls on purpose (the pinned
+/// toolbar's `connectWithToken`), not a field of any event, snapshot, peer
+/// option, history entry or log: the material is password-equivalent, and the
+/// only thing narrower than it is the clear password a user typed, which stays
+/// unexported here.
 pub fn session_get_conn_token(session_id: SessionID) -> SyncReturn<Option<String>> {
-    let _ = session_record(session_id);
-    no_state("session_get_conn_token");
-    SyncReturn(None)
+    let Some(session) = session_record(session_id) else {
+        return SyncReturn(None);
+    };
+    let Some(viewer) = lock(&session.viewer).clone() else {
+        return SyncReturn(None);
+    };
+    SyncReturn(viewer.conn_token_json())
 }
 
 pub fn session_get_conn_session_id(session_id: SessionID) -> SyncReturn<String> {
@@ -4614,5 +4753,55 @@ mod tests {
         assert_eq!(password_prompt("verifying_password", 3, 2), None);
         assert_eq!(password_prompt(ENGINE_AWAITING_SECOND_FACTOR, 3, 2), None);
         assert_eq!(password_prompt("awaiting_approval", 3, 2), None);
+    }
+
+    /// The one credential a session retains crosses to the viewer as what the
+    /// client actually supplied: an imported token is handed over parsed, and a
+    /// password the operator typed replaces it outright, because a password is
+    /// not the token's provenance.
+    #[test]
+    fn a_retained_credential_crosses_to_the_viewer_as_what_was_supplied() {
+        // The official text, in the schema the pinned client writes.
+        let token_text = format!(
+            r#"{{"password":[{}],"password_source":"Undefined","session_id":7}}"#,
+            vec!["7"; 32].join(",")
+        );
+        let mut credential = SessionCredential::from_conn_token(token_text.clone());
+        assert!(!credential.is_empty());
+        let (password, token) = credential.for_viewer().unwrap();
+        let token = token.expect("a supplied token is what the viewer receives");
+        assert!(password.is_empty());
+        assert_eq!(token.session_id(), 7);
+        assert_eq!(token.to_json(), token_text);
+
+        // A typed password replaces the imported token.
+        credential = SessionCredential::from_password("typed".to_owned());
+        assert!(!credential.is_empty());
+        let (password, token) = credential.for_viewer().unwrap();
+        assert_eq!(password, "typed");
+        assert!(token.is_none());
+
+        // Nothing supplied: no password and no token, which is what makes the
+        // peer's demand a demand rather than its refusal of a secret.
+        let empty = SessionCredential::default();
+        assert!(empty.is_empty());
+        let (password, token) = empty.for_viewer().unwrap();
+        assert!(password.is_empty());
+        assert!(token.is_none());
+    }
+
+    /// A retained token that cannot be read is refused rather than turning into
+    /// an empty credential: `session_add_sync` only retains text it read, and
+    /// nothing downstream may quietly dial without the secret it was given.
+    #[test]
+    fn an_unreadable_retained_token_never_becomes_no_credentials() {
+        let mut credential = SessionCredential::from_conn_token("not a token".to_owned());
+        assert!(!credential.is_empty());
+        assert!(credential.for_viewer().is_err());
+        credential.clear();
+        assert!(credential.is_empty());
+        let (password, token) = credential.for_viewer().unwrap();
+        assert!(password.is_empty());
+        assert!(token.is_none());
     }
 }

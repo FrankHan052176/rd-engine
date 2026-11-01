@@ -2,6 +2,7 @@
 //! upstream contract; legacy Connection/VideoService/VideoHandler are not linked.
 pub mod authentication;
 pub mod clipboard;
+pub mod conn_token;
 mod executor;
 pub mod handshake;
 #[cfg(any(
