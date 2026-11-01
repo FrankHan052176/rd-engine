@@ -1318,6 +1318,17 @@ pub fn session_get_conn_token(session_id: String) -> Option<String> {
     })
 }
 
+/// Availability only, so a share affordance never exports a credential on a poll.
+#[napi]
+pub fn session_has_conn_token(session_id: String) -> bool {
+    with_sessions(|sessions| {
+        sessions.get(&session_id)
+            .filter(|record| !record.closed && !record.closing)
+            .and_then(|record| record.viewer.as_ref())
+            .is_some_and(|viewer| viewer.has_conn_token())
+    })
+}
+
 /// Records this session's one Surface destination.
 ///
 /// The third argument is the `componentId` an `xcomponentAttach` on this UI
@@ -2615,6 +2626,7 @@ implemented_entry_points!(
     ("sessionGetRemoteAudioState", session_get_remote_audio_state),
     ("sessionGetEnableTrustedDevices", session_get_enable_trusted_devices),
     ("sessionGetConnToken", session_get_conn_token),
+    ("sessionHasConnToken", session_has_conn_token),
     ("sessionBindSurface", session_bind_surface),
     ("sessionClose", session_close),
     ("sessionAcknowledgeClose", session_acknowledge_close),

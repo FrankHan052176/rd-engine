@@ -53,6 +53,9 @@ export declare function sessionSend2fa(sessionId: string, code: string, trustThi
 /** Explicit reusable password-equivalent credential; null before authentication or after close. */
 export declare function sessionGetConnToken(sessionId: string): string | null
 
+/** Non-secret query; does not serialize or return reconnect material. */
+export declare function sessionHasConnToken(sessionId: string): boolean
+
 /**
  * Resolves with native teardown completion, never request acceptance.
  * JSON always carries released:boolean and settle:"settled"|"unconfirmed"|"neverstarted";

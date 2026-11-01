@@ -85,6 +85,11 @@ export function sessionGetConnToken(sessionId: string): string | null {
   return native.sessionGetConnToken(sessionId);
 }
 
+/** Non-secret query; does not serialize or return reconnect material. */
+export function sessionHasConnToken(sessionId: string): boolean {
+  return native.sessionHasConnToken(sessionId);
+}
+
 /**
  * Resolves only after native teardown finishes, not when the request is accepted.
  * JSON always carries released and settle ("settled" | "unconfirmed" |

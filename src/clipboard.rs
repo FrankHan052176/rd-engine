@@ -1166,13 +1166,13 @@ mod tests {
 
     #[test]
     fn rgba_dimensions_and_stride_describe_its_own_bytes() {
-        let pixels = vec![7u8; 2 * 2 * 4];
-        let payload = ClipboardPayload::rgba(2, 2, 8, pixels.clone());
+        let pixels = vec![7u8; 64 * 64 * 4];
+        let payload = ClipboardPayload::rgba(64, 64, 256, pixels.clone());
         let encoded = single(message(
             payload.clone(),
             PeerClipboardSupport { multi: true },
         ));
-        assert_eq!((encoded.width, encoded.height), (2, 2));
+        assert_eq!((encoded.width, encoded.height), (64, 64));
         assert!(encoded.compress, "RGBA pixels are zstd-compressed on the wire");
         assert_eq!(decode_clipboard(encoded).unwrap(), Some(payload));
 

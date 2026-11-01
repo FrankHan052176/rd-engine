@@ -1479,6 +1479,15 @@ impl Viewer {
         self.state.snapshot()
     }
 
+    /// Non-secret availability; registering a share gesture need not export h1.
+    pub fn has_conn_token(&self) -> bool {
+        let inner = lock(&self.state.inner);
+        !self.state.cancel.is_cancelled()
+            && self.state.authenticated.load(Ordering::Acquire)
+            && !inner.snapshot.closed
+            && inner.conn_token.is_some()
+    }
+
     /// Explicit, repeatable export of the current authenticated login's h1.
     pub fn conn_token_json(&self) -> Option<String> {
         let inner = lock(&self.state.inner);
