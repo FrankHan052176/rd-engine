@@ -248,6 +248,8 @@ struct Run {
 pub struct HostService {
     run: Mutex<Option<Run>>,
     facts: Mutex<Facts>,
+    /// A run taken out of `run` still belongs to its in-flight teardown.
+    closing: tokio::sync::Mutex<()>,
 }
 
 /// A freshly generated temporary password. This is only the plaintext the local
@@ -282,6 +284,7 @@ impl HostService {
         Self {
             run: Mutex::new(None),
             facts: Mutex::new(Facts::default()),
+            closing: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -442,6 +445,9 @@ impl HostService {
     }
 
     async fn stop_async(&self, epoch: Option<u64>) -> Result<HostServiceStatus, HostServiceError> {
+        // A concurrent close may already have taken the run. Wait for its real
+        // join before reading an empty slot as an idempotently completed stop.
+        let _closing = self.closing.lock().await;
         // Taking the run and validating the epoch happen under one lock, so a
         // stop can never terminate a run other than the one it names.
         let run = {
@@ -472,6 +478,7 @@ impl HostService {
 
     /// Joins the run this service owns, if it was not taken by `stop`.
     async fn close_owned(&self, epoch: u64, error: Option<HostError>) {
+        let _closing = self.closing.lock().await;
         let run = {
             let mut slot = lock(&self.run);
             if slot.as_ref().is_some_and(|run| run.epoch == epoch) {
@@ -796,5 +803,32 @@ mod tests {
             service.approve("0:0:0:0", true),
             Err(HostServiceError::NotRunning)
         );
+    }
+
+    #[tokio::test]
+    async fn a_repeated_stop_waits_for_the_teardown_that_already_took_the_run() {
+        let service = HostService::new();
+        // Model the interval after the first close took the run but before its
+        // native joins completed. The second stop must not return "stopping"
+        // from the now-empty slot as though it had confirmed reclamation.
+        let closing = service.closing.lock().await;
+        *lock(&service.facts) = Facts {
+            epoch: 7,
+            state: "stopping",
+            ..Facts::default()
+        };
+        let pending = service.stop_async(Some(7));
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err()
+        );
+        lock(&service.facts).state = "disabled";
+        drop(closing);
+        let status = pending.await.expect("the same run's completed close");
+        assert_eq!(status.run_epoch, 7);
+        assert_eq!(status.state, "disabled");
+        assert!(!status.teardown_unconfirmed);
     }
 }

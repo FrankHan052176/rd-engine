@@ -3351,8 +3351,9 @@ mod tests {
         loop {
             let effect = session.effect_raw().await;
             let cancels = matches!(
-                action(effect.message()).union.as_ref(),
-                Some(file_action::Union::Cancel(_))
+                effect.message().union.as_ref(),
+                Some(message::Union::FileAction(action))
+                    if matches!(action.union.as_ref(), Some(file_action::Union::Cancel(_)))
             );
             if cancels {
                 assert!(
@@ -3366,7 +3367,7 @@ mod tests {
                 !effect.is_permitted(),
                 "bytes read before the withdrawal were sent under the new epoch"
             );
-            effect.complete(true);
+            effect.complete(false);
         }
         // The job the revocation reached keeps its one real failure.
         session
