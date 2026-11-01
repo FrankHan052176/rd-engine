@@ -94,6 +94,33 @@ export declare function sessionInputKey(sessionId: string, keyJson: string, inpu
 
 export declare function sessionInputString(sessionId: string, value: string, inputGeneration: number): string
 
+/**
+ * Sends one clipboard copy; queued:true means it entered the session's one writer
+ * under clipboard_revision, never that the peer applied it (the wire has no clipboard
+ * acknowledgement, so applied is always false). Empty content is the protocol's clear.
+ * A refusal carries ok:false/queued:false and a reason such as not_allowed,
+ * not_deliverable, too_large, closed, backpressure or unknown_session.
+ */
+export declare function sessionSendClipboard(sessionId: string, content: string): string
+
+/** Sends an encoded PNG image clipboard; the bound is checked before any copy. */
+export declare function sessionSendClipboardImage(sessionId: string, image: Uint8Array): string
+
+/**
+ * Next peer clipboard update, reserving its image for sessionTakeClipboardImage.
+ * JSON: {ok,queued:false,applied:false,action,revision,text,html,image,formats};
+ * No pending update: {ok:false,reason:"no_pending_update"}; absent text/html/image
+ * are omitted, never null. The image descriptor exists only when the update
+ * carried one.
+ */
+export declare function sessionTakeClipboard(sessionId: string): string
+
+/**
+ * The bytes the descriptor from sessionTakeClipboard described, or an empty array when
+ * no image was described or the acceptance was withdrawn before this call.
+ */
+export declare function sessionTakeClipboardImage(sessionId: string): Uint8Array
+
 export declare function sessionSetCustomFps(sessionId: string, fps: number): string
 
 export declare function sessionSetViewOnly(sessionId: string, enabled: boolean): string

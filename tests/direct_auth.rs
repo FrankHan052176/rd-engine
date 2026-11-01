@@ -534,11 +534,27 @@ async fn encrypted_new_host_authenticates_hbb_viewer_fixture_with_wrong_retry() 
     let peer = response.login_response().peer_info();
     assert!(peer.encoding.is_none());
     assert!(peer.displays.is_empty());
-    for _ in 0..4 {
-        assert!(matches!(
-            recv(&mut wire).await.union,
-            Some(message::Union::Misc(_))
-        ));
+    // The authenticated host explicitly reports every local capability,
+    // including denied desktop features; none may consume the following probe.
+    use base::message_proto::{misc, permission_info::Permission};
+    for expected in [
+        Permission::Keyboard,
+        Permission::Clipboard,
+        Permission::Audio,
+        Permission::File,
+        Permission::Restart,
+        Permission::Recording,
+        Permission::BlockInput,
+        Permission::PrivacyMode,
+    ] {
+        let Some(message::Union::Misc(misc)) = recv(&mut wire).await.union else {
+            panic!("Expected authenticated permission report for {expected:?}")
+        };
+        let Some(misc::Union::PermissionInfo(info)) = misc.union else {
+            panic!("Expected PermissionInfo for {expected:?}")
+        };
+        assert_eq!(info.permission.enum_value(), Ok(expected));
+        assert!(!info.enabled, "this host config grants no {expected:?} capability");
     }
     assert!(matches!(
         recv(&mut wire).await.union,

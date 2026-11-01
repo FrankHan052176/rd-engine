@@ -224,11 +224,10 @@ impl std::error::Error for OptionError {}
 /// This is what a change produces and what a login advertises, so the same value
 /// can be frozen into a session's start options and later replaced by the answer
 /// the running session gives. Its default is this engine's own desktop default
-/// rather than the peer's: no quality request, clipboard and audio off (the
-/// engine has no clipboard or audio owner it could admit either to), no remote
-/// cursor, display 0, no remembered custom resolution. That default reproduces
-/// the login this engine already sent, so replacing the old literal with
-/// [`SessionOptions::login_options`] changes no byte on the wire.
+/// rather than the peer's: no quality request, clipboard enabled, audio off
+/// (there is not yet an audio renderer), no remote cursor, display 0, and no
+/// remembered custom resolution. Clipboard admission still requires the live
+/// authenticated desktop, the peer grant and a non-view-only local policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOptions {
     /// The named preset asked for, if any.
@@ -255,7 +254,7 @@ impl Default for SessionOptions {
             image_quality: None,
             custom_image_quality: None,
             codec_preference: PreferCodec::Auto,
-            clipboard_enabled: false,
+            clipboard_enabled: true,
             audio_enabled: false,
             show_remote_cursor: false,
             display: 0,
@@ -746,7 +745,7 @@ mod tests {
     fn login_advertises_only_the_controls_this_default_holds() {
         let advertised = decoding(true, false, false, false);
         let option = SessionOptions::default().login_options(&advertised);
-        // Clipboard and audio are off by default, so their disable flags are on.
+        // The clipboard owner is available by default; audio has no renderer.
         assert_eq!(
             option.disable_audio.enum_value().unwrap(),
             BoolOption::Yes,
@@ -754,8 +753,8 @@ mod tests {
         );
         assert_eq!(
             option.disable_clipboard.enum_value().unwrap(),
-            BoolOption::Yes,
-            "clipboard is disabled unless this session asks for it"
+            BoolOption::NotSet,
+            "the default clipboard request follows the peer default; the owner enforces its live grants"
         );
         assert_eq!(
             option.show_remote_cursor.enum_value().unwrap(),

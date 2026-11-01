@@ -10,6 +10,10 @@
 #[path = "platform/decoder.rs"]
 pub mod decoder;
 use crate::{
+    clipboard::{
+        ClipboardError, ClipboardImage, ClipboardMetadata, ClipboardPayload, ClipboardState,
+        PeerClipboardSupport,
+    },
     handshake::ViewerIdentity,
     protocol::Protocol,
     session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
@@ -209,6 +213,12 @@ impl InputPolicyOutcome {
 }
 
 const COMMANDS: usize = 128;
+/// How many encoded clipboard payloads one writer may have queued.
+///
+/// Two, not `COMMANDS`: one payload can be a 64 MiB image, so this bound is
+/// about how many bytes a slow writer may hold. Two is one being written and one
+/// waiting; a third is refused with `Backpressure` rather than held.
+const CLIPBOARD_QUEUE: usize = 2;
 /// How long a session waits for the client to bind its surface before the first
 /// native consumer opens, and how often the lease is checked while it does.
 pub(crate) const SURFACE_WAIT: Duration = Duration::from_secs(20);
@@ -313,6 +323,16 @@ pub struct ViewerSnapshot {
     /// Whether the peer still holds the key or button is unknown, so this is
     /// neither a completed release nor a claim that nothing arrived.
     pub releases_unreleased: u64,
+    /// Whether a decoded peer clipboard update is waiting in this viewer's
+    /// mailbox, unconsumed.
+    ///
+    /// It says one thing: there is something a platform clipboard owner could
+    /// take right now. It is not a permission, it never carries content, and it
+    /// is not evidence that anything was applied — reading it takes nothing, so
+    /// a client may see it more than once for one update. It turns false when
+    /// the update is taken out of the mailbox, and also when a withdrawal, a
+    /// `disable-clipboard` change or a close empties the mailbox.
+    pub clipboard_pending: bool,
     pub closed: bool,
     /// The peer's authentication decision as the session records it: set when
     /// the session is authorized and cleared when it is closing or finished.
@@ -445,6 +465,14 @@ pub enum ViewerError {
     Decoder(DecoderError),
     /// Safe adapter errors retain TLS, protocol and graceful-close distinctions.
     Rdp(crate::protocol::rdp::RdpError),
+    /// A clipboard payload this viewer refused, could not interpret, or owes a
+    /// peer that cannot receive it.
+    ///
+    /// The typed reason travels with it rather than being folded into one
+    /// string: an oversized, corrupt, undeliverable and permission-refused
+    /// payload are four different answers, and a caller that reports a send has
+    /// to be able to tell "nothing was queued" from "queued".
+    Clipboard(ClipboardError),
     /// An unavailable protocol capability. A local constant, never peer text.
     UnsupportedProtocol(&'static str),
     /// The peer refused the login, classified instead of folded into one opaque
@@ -462,6 +490,7 @@ impl fmt::Display for ViewerError {
         match self {
             Self::Decoder(error) => write!(f, "Surface decoder: {error:?}"),
             Self::Rdp(error) => write!(f, "{error}"),
+            Self::Clipboard(error) => write!(f, "{error}"),
             Self::SessionOption(error) => write!(f, "{error}"),
             Self::NoSoftwareVpx(reason) => write!(f, "no software VP8/VP9 decoder: {reason}"),
             // The string a refused login has always reported here: the category is
@@ -559,6 +588,81 @@ struct State {
     /// authentication only while this session really waits for an answer on its
     /// own wire, and taken away when it leaves that step.
     password: Mutex<PasswordGate>,
+    /// This viewer's clipboard mailbox: the one place a decoded peer update
+    /// waits, and the permission fence it waits behind.
+    clipboard: ClipboardState,
+    /// The peer's own clipboard grant, mirrored so this viewer can recompute
+    /// the combined fence when a *local* switch moves. It is never raised from
+    /// this side: a grant the peer withdrew stays withdrawn until the peer
+    /// grants it again.
+    peer_clipboard: AtomicBool,
+    /// The way an encoded clipboard payload reaches this session's one writer.
+    /// A second channel into the same writer, not a second writer: the same
+    /// `write` loop takes it, in order with every other message, after the same
+    /// re-checks.
+    clipboard_out: Mutex<Option<mpsc::Sender<QueuedClipboard>>>,
+    /// The bounded decode this viewer owns: one slot being decoded and one
+    /// pending, so a peer cannot make this session inflate frames in parallel
+    /// or build a backlog, and the reader never waits for either.
+    clipboard_in: ClipboardDecoder,
+}
+
+/// One clipboard message as the reader hands it to the decode worker.
+///
+/// It is the wire's own union and not a decoded payload: the reader does no
+/// inflation, so the work that can take a quarter of a gigabyte happens on the
+/// decode worker and never on the reader.
+enum ClipboardMessage {
+    Single(proto::Clipboard),
+    Multi(proto::MultiClipboards),
+}
+
+/// The one bounded slot this viewer's clipboard decode waits in.
+///
+/// A clipboard is a value, not a stream, so this holds the newest message that
+/// has not been decoded yet and lets a newer one replace it. That replacement is
+/// the whole bound: one message being decoded plus one pending, whatever rate
+/// the peer sends at.
+#[derive(Default)]
+struct ClipboardDecoder {
+    pending: Mutex<Option<(u64, ClipboardMessage)>>,
+    ready: Notify,
+}
+
+impl ClipboardDecoder {
+    /// Offers one message, stamped with the clipboard generation it arrived
+    /// under. A newer message replaces one that has not been decoded yet.
+    fn offer(&self, generation: u64, message: ClipboardMessage) {
+        *lock(&self.pending) = Some((generation, message));
+        self.ready.notify_one();
+    }
+
+    /// The newest message that has not been decoded yet, with the generation it
+    /// was offered under.
+    ///
+    /// The slot is checked before the wait and the notification permit survives
+    /// that check, so a message offered between the two is taken rather than
+    /// waited behind.
+    async fn next(&self) -> (u64, ClipboardMessage) {
+        loop {
+            if let Some(job) = lock(&self.pending).take() {
+                return job;
+            }
+            self.ready.notified().await;
+        }
+    }
+}
+
+/// One encoded clipboard payload waiting for the session's one writer, with the
+/// clipboard generation that admitted it.
+///
+/// The generation is fixed when the payload is queued and never re-read: the
+/// writer asks whether *that* generation is still the one in force instead of
+/// taking a fresh stamp, so a payload queued before a withdrawal cannot be
+/// relabelled under the generation that follows it.
+struct QueuedClipboard {
+    generation: u64,
+    message: Message,
 }
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -962,6 +1066,61 @@ impl State {
     fn route(&self, route: &'static str) {
         lock(&self.inner).snapshot.route = route.into();
     }
+    /// Whether this viewer may exchange clipboard content with its peer right
+    /// now: the AND of every fact that has to hold, collected in one place.
+    ///
+    /// Each term is a real fact this session owns — the peer's own clipboard
+    /// grant, the operator's read-only switch, the local `disable-clipboard`
+    /// option that the login and every later `OptionMessage` state, the
+    /// authenticated connection, and the cancellation that ends it. None is
+    /// inferred from another, and no term is defaulted to true on this side.
+    fn clipboard_facts(&self) -> bool {
+        self.mode == SessionMode::Desktop
+            && self.authenticated.load(Ordering::Acquire)
+            && !self.cancel.is_cancelled()
+            && !self.input.policy().view_only
+            && self.peer_clipboard.load(Ordering::Acquire)
+            && lock(&self.session_options).clipboard_enabled()
+    }
+
+    /// Publishes the combined clipboard fence, and returns the generation in
+    /// force afterwards.
+    ///
+    /// Called from every place one of those facts moves. A change in either
+    /// direction advances the mailbox's generation and empties it, so a payload
+    /// queued or decoded under the previous answer can neither be written to the
+    /// peer nor applied from it. A repeated report changes nothing, so a peer
+    /// re-sending a grant it already gave does not refuse a decode in flight.
+    fn refresh_clipboard(&self) -> u64 {
+        self.clipboard.set_accepted(self.clipboard_facts())
+    }
+
+    /// Whether a clipboard payload queued under `generation` may still be
+    /// written, asked at the writer that owns the wire.
+    ///
+    /// Both answers are needed and they are different questions: the facts say
+    /// whether delivery is allowed at this instant, and the mailbox's generation
+    /// says whether the permission that admitted *this* payload is still the one
+    /// in force. A payload queued before a withdrawal, a read-only switch or a
+    /// close therefore fails both, and one queued before a withdrawal that was
+    /// then granted again fails the generation while passing the facts.
+    fn clipboard_write_allowed(&self, generation: u64) -> bool {
+        self.clipboard_facts() && self.clipboard.admits(generation)
+    }
+
+    /// Hands one peer clipboard message to the decode worker, stamped with the
+    /// generation it arrived under.
+    ///
+    /// That generation is read before the fence is consulted, so a change in
+    /// between makes the message stale rather than stamping earlier content with
+    /// a later generation. Nothing is offered while the fence is closed.
+    fn offer_clipboard(&self, message: ClipboardMessage) {
+        let generation = self.clipboard.revision();
+        if !self.clipboard_facts() {
+            return;
+        }
+        self.clipboard_in.offer(generation, message);
+    }
     fn snapshot(&self) -> ViewerSnapshot {
         let inner = lock(&self.inner);
         let mut out = inner.snapshot.clone();
@@ -978,6 +1137,10 @@ impl State {
         out.releases_owed = gate.owed;
         out.releases_retired = gate.retired;
         out.releases_unreleased = gate.unreleased;
+        // Read from the mailbox itself rather than remembered here: a client
+        // that asks again before taking gets the same answer, and the answer
+        // goes away exactly when the update is taken or the fence drops it.
+        out.clipboard_pending = self.clipboard.has_pending();
         if let Some(observer) = &inner.decoder {
             if let Ok(stats) = observer.stats() {
                 out.pushed_units = out.pushed_units.saturating_add(stats.pushed_units);
@@ -1004,6 +1167,12 @@ impl State {
     fn request_close(&self) {
         self.authenticated.store(false, Ordering::Release);
         self.cancel.cancel();
+        // The clipboard fence is withdrawn with the session: what a peer sent
+        // and what a client queued belong to a session that is ending, so the
+        // mailbox is emptied (including any image a descriptor reserved) and a
+        // decode or a write that outlives this point is refused rather than
+        // applied to the next generation.
+        self.clipboard.revoke();
         let mut inner = lock(&self.inner);
         if !inner.snapshot.closed {
             inner.snapshot.phase = "closing".into();
@@ -1014,6 +1183,11 @@ impl State {
     }
     fn finish(&self, result: Result<(), ViewerError>) {
         self.authenticated.store(false, Ordering::Release);
+        // A viewer that ends without `request_close` — an authentication
+        // failure, a transport failure, a cancelled start — closes the fence
+        // here too, so no descriptor can be handed out and no reserved image
+        // can be read after the session it belonged to is over.
+        self.clipboard.revoke();
         let reclamation = if self.resources_unconfirmed.load(Ordering::Acquire) {
             Err(match &result {
                 Err(error @ ViewerError::Decoder(DecoderError::DestroyFailed { .. })) => {
@@ -1254,6 +1428,14 @@ impl Viewer {
             // the first caller asks: this is what makes a read-only viewer
             // read-only from its first event.
             input: InputGate::new(options.input_policy),
+            // The mailbox exists from the start, but the fence opens only once
+            // the handshake has reported the peer's grant: `run_rustdesk` calls
+            // `refresh_clipboard` as soon as those facts are in, and nothing can
+            // decode or send before it does.
+            clipboard: ClipboardState::new(),
+            peer_clipboard: AtomicBool::new(false),
+            clipboard_out: Mutex::new(None),
+            clipboard_in: ClipboardDecoder::default(),
             resources_unconfirmed: AtomicBool::new(false),
         });
         let viewer = Arc::new(Self {
@@ -1337,7 +1519,88 @@ impl Viewer {
             mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
         })?;
         *requested = prepared.next;
+        drop(requested);
+        // `disable-clipboard` is one of the facts the clipboard fence is the AND
+        // of, so a change to it is published where the fence lives rather than
+        // only on the wire: the option and the mailbox can never disagree about
+        // whether this session exchanges clipboard content.
+        self.state.refresh_clipboard();
         Ok(())
+    }
+
+    /// Sends one clipboard payload through this session's one writer.
+    ///
+    /// The payload is encoded for the peer's own reported version and platform,
+    /// so a peer without `MultiClipboards` is sent its text format only. The
+    /// answer is the clipboard generation the payload was queued under: it is in
+    /// the writer's queue, which is not the peer's application of it, because the
+    /// original wire has no clipboard acknowledgement to wait for.
+    ///
+    /// Every refusal is an error and never a quiet success: `NotDeliverable` is a
+    /// peer owed nothing for this payload, `InputNotAllowed` a session that may
+    /// not send right now (not authenticated, read-only, or without the peer's
+    /// grant and the local option), `Closed` one that has ended, `Backpressure` a
+    /// queue that took nothing.
+    pub fn clipboard_send(&self, payload: ClipboardPayload) -> Result<u64, ViewerError> {
+        if self.state.cancel.is_cancelled() {
+            return Err(ViewerError::Closed);
+        }
+        // The ticket is taken first, before the permission is read and before any
+        // encoding: compressing a text payload or handing on a 64 MiB image takes
+        // long enough for a withdrawal, a re-grant or a close to land, and a
+        // generation read after that would stamp this content with a generation
+        // that never admitted it. What the writer checks is this value, re-read
+        // from the mailbox only to compare it, never to replace it.
+        let generation = self.state.clipboard.revision();
+        if !self.state.clipboard_facts() {
+            return Err(ViewerError::InputNotAllowed);
+        }
+        let snapshot = self.snapshot();
+        let peer = PeerClipboardSupport::of(&snapshot.version, &snapshot.platform);
+        let Some(message) =
+            crate::clipboard::encode(payload, peer).map_err(ViewerError::Clipboard)?
+        else {
+            return Err(ViewerError::Clipboard(ClipboardError::NotDeliverable));
+        };
+        // The writer asks whether that same generation is still in force instead
+        // of taking a fresh stamp, so nothing encoded here can be written after
+        // the permission that admitted it is gone.
+        let sender = lock(&self.state.clipboard_out)
+            .clone()
+            .ok_or(ViewerError::Closed)?;
+        sender
+            .try_send(QueuedClipboard { generation, message })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+                mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+            })?;
+        Ok(generation)
+    }
+
+    /// Takes the next decoded clipboard update with its bytes, as one value.
+    ///
+    /// The revision and the content come from one mailbox hand-out, so a caller
+    /// that keeps that pair cannot end up with metadata from one update beside
+    /// bytes from another.
+    pub fn clipboard_take(&self) -> Option<crate::clipboard::ClipboardUpdate> {
+        self.state.clipboard.take()
+    }
+
+    /// Takes the next update's metadata and reserves its image, if it had one,
+    /// for [`Self::clipboard_take_image`].
+    ///
+    /// This is the two-call shape a platform clipboard owner uses. The descriptor
+    /// handed out here and the bytes handed out next are the same accepted
+    /// update, so a withdrawal between the two calls withholds the bytes instead
+    /// of writing an image the permission no longer covers.
+    pub fn clipboard_take_metadata(&self) -> Option<ClipboardMetadata> {
+        self.state.clipboard.take_metadata()
+    }
+
+    /// Hands out the image bytes [`Self::clipboard_take_metadata`] described, at
+    /// most once.
+    pub fn clipboard_take_image(&self) -> Option<ClipboardImage> {
+        self.state.clipboard.take_image()
     }
 
     pub fn input_generation(&self) -> u64 {
@@ -1392,6 +1655,11 @@ impl Viewer {
     pub fn set_input_policy(&self, policy: ViewerInputPolicy) -> InputPolicyOutcome {
         let facts = Facts::of(&self.state);
         let outcome = self.state.input.set(policy, &facts);
+        // The read-only switch is one of the facts the clipboard fence is the
+        // AND of, so it is published to the mailbox here: turning it on stops
+        // clipboard delivery in both directions and empties what waited, and
+        // turning it off can only restore a grant the peer still holds.
+        self.state.refresh_clipboard();
         // The writer releases what the new policy no longer admits; waking it
         // here is what makes that release happen without waiting for the next
         // event, and a permit it cannot consume yet is not lost.
@@ -2180,6 +2448,16 @@ async fn run_rustdesk(
         Ordering::Release,
     );
     state.authenticated.store(true, Ordering::Release);
+    // The handshake's own clipboard grant, mirrored beside the local switches:
+    // the fence is the AND of them, and it can only open now because those facts
+    // only exist now. An omitted report keeps upstream's viewer default, which is
+    // exactly what `permissions` already holds, and a host-side permission is
+    // never read as this viewer's own.
+    state.peer_clipboard.store(
+        mode == SessionMode::Desktop && parts.context.permissions.clipboard,
+        Ordering::Release,
+    );
+    state.refresh_clipboard();
     state.phase(if mode == SessionMode::FileTransfer {
         "file_transfer_ready"
     } else {
@@ -2195,6 +2473,11 @@ async fn run_rustdesk(
     *lock(&state.transfer) = Some(transfer_handle);
     let (control_tx, control_rx) = mpsc::channel(COMMANDS);
     *lock(&state.control) = Some(control_tx.clone());
+    // The clipboard reaches the wire through this same writer, on its own
+    // bounded channel: a payload is a value the writer either writes or drops,
+    // never a second socket, runtime or writer.
+    let (clipboard_tx, clipboard_rx) = mpsc::channel(CLIPBOARD_QUEUE);
+    *lock(&state.clipboard_out) = Some(clipboard_tx);
     let mut tasks = JoinSet::new();
     // Move the optional media pair once; the file role owns no feed or Surface.
     let (admission, feed) = match media {
@@ -2202,7 +2485,19 @@ async fn run_rustdesk(
         None => (None, None),
     };
     tasks.spawn(receive(state.clone(), parts.reader, admission, control_tx, transfer.inbound));
-    tasks.spawn(write(state.clone(), parts.writer, mouse, control_rx, transfer.outbound));
+    tasks.spawn(write(
+        state.clone(),
+        parts.writer,
+        mouse,
+        control_rx,
+        transfer.outbound,
+        clipboard_rx,
+    ));
+    // The clipboard decode is a task in this same set, not a `spawn_blocking`
+    // call the reader throws away: every decode is joined here before the run is
+    // over, so a close cannot be acknowledged over a decode still in flight, and
+    // the reader only ever hands the message over.
+    tasks.spawn(clipboard_decode(state.clone()));
     tasks.spawn(async move {
         match transfer.owner.run().await {
             crate::transfer::TransferExit::Cancelled => Ok(()),
@@ -2304,6 +2599,16 @@ async fn receive(
                         .map_err(|_| ViewerError::Backpressure)?;
                 }
             }
+            // Clipboard content is handed to this viewer's decode worker and
+            // never decoded here: the reader stays responsive whatever size the
+            // peer sends, and the permission generation is captured before the
+            // decode runs.
+            Some(message::Union::Clipboard(clipboard)) => {
+                state.offer_clipboard(ClipboardMessage::Single(clipboard));
+            }
+            Some(message::Union::MultiClipboards(multi)) => {
+                state.offer_clipboard(ClipboardMessage::Multi(multi));
+            }
             Some(message::Union::Misc(m)) => match m.union {
                 Some(misc::Union::PermissionInfo(permission)) => {
                     if permission.permission.enum_value().ok() == Some(Permission::Keyboard) {
@@ -2320,6 +2625,19 @@ async fn receive(
                             handle.set_enabled(permission.enabled);
                         }
                     }
+                    if permission.permission.enum_value().ok() == Some(Permission::Clipboard) {
+                        // The peer's own clipboard grant, mirrored and then
+                        // combined with the local facts. A withdrawal closes the
+                        // fence in both directions and empties what was waiting;
+                        // this side never re-grants on its own, so turning the
+                        // local read-only switch off cannot recover a grant the
+                        // peer took away.
+                        state.peer_clipboard.store(
+                            state.mode == SessionMode::Desktop && permission.enabled,
+                            Ordering::Release,
+                        );
+                        state.refresh_clipboard();
+                    }
                 }
                 Some(misc::Union::CloseReason(reason)) => {
                     lock(&state.inner).observed_peer_close_reason = PeerCloseReason::of(&reason);
@@ -2332,11 +2650,63 @@ async fn receive(
                 }
                 _ => {}
             },
-            // Audio/clipboard/file features were explicitly disabled. Cursor and
-            // informational messages do not authorize input or fake video state.
+            // Audio is not rendered here, and cursor/informational messages
+            // neither authorize input nor fake video state. The clipboard is not
+            // in this arm: it has its own arms above and its own owner.
             _ => {}
         }
     }
+}
+
+/// The one worker that decodes this viewer's clipboard messages.
+///
+/// It runs as a task in the session's own `JoinSet`, so the run cannot end while
+/// a decode is still in flight: the close is acknowledged only after this
+/// returns. Each decode runs on a blocking worker and its handle is awaited
+/// rather than dropped, and the mailbox it delivers into refuses anything that
+/// outlived the generation it was read under.
+async fn clipboard_decode(state: Arc<State>) -> Result<(), ViewerError> {
+    loop {
+        let (generation, message) = tokio::select! {
+            biased;
+            _ = state.cancel.cancelled() => return Ok(()),
+            job = state.clipboard_in.next() => job,
+        };
+        clipboard_decode_once(&state, generation, message).await?;
+    }
+}
+
+/// One decode step, joined by its caller.
+///
+/// The inflation is real CPU work, so it runs on a blocking worker; the handle is
+/// awaited instead of dropped, which is what makes the join real when the run's
+/// teardown reaches this task. Nothing here decides whether the result is wanted —
+/// the mailbox does, from the generation the message was offered under.
+async fn clipboard_decode_once(
+    state: &State,
+    generation: u64,
+    message: ClipboardMessage,
+) -> Result<(), ViewerError> {
+    let decoded = tokio::task::spawn_blocking(move || match message {
+        ClipboardMessage::Single(clipboard) => crate::clipboard::decode_clipboard(clipboard),
+        ClipboardMessage::Multi(multi) => crate::clipboard::decode_multi_clipboards(multi),
+    })
+    .await
+    .map_err(|_| ViewerError::TaskFailed)?;
+    match decoded {
+        // The mailbox decides whether this decode is still wanted: a withdrawal,
+        // a fresh grant or a close between the read and here leaves its
+        // generation behind, and the update is refused rather than applied to
+        // the generation in force now.
+        Ok(Some(payload)) => {
+            let _ = state.clipboard.accept_peer(generation, payload);
+        }
+        // A format this build does not know, or the peer's own ownership marker.
+        Ok(None) => {}
+        // One unreadable message is one refused update, never a broken session.
+        Err(_error) => {}
+    }
+    Ok(())
 }
 
 /// The keys and buttons this writer emitted as down and has not released.
@@ -2481,9 +2851,19 @@ async fn write(
     mut mouse: mpsc::Receiver<QueuedInput>,
     mut control: mpsc::Receiver<Vec<Message>>,
     mut bulk: mpsc::Receiver<crate::transfer::Outbound>,
+    mut clipboard: mpsc::Receiver<QueuedClipboard>,
 ) -> Result<(), ViewerError> {
     let mut held = RustDeskHeld::default();
-    let outcome = write_loop(&state, &mut writer, &mut mouse, &mut control, &mut bulk, &mut held).await;
+    let outcome = write_loop(
+        &state,
+        &mut writer,
+        &mut mouse,
+        &mut control,
+        &mut bulk,
+        &mut clipboard,
+        &mut held,
+    )
+    .await;
     // The transport stops with the writer, so nothing it still held can be
     // released through it any more. Those holds are reported as releases whose
     // completion is unconfirmed: whether the peer still holds a key or button is
@@ -2492,14 +2872,16 @@ async fn write(
     outcome
 }
 
-/// One loop over the writer's own channels: session messages, queued input, and
-/// the policy changes that must be answered before either.
+/// One loop over the writer's own channels: session messages, queued input,
+/// queued clipboard payloads, and the policy changes that must be answered
+/// before either.
 async fn write_loop(
     state: &State,
     writer: &mut WireWriter,
     mouse: &mut mpsc::Receiver<QueuedInput>,
     control: &mut mpsc::Receiver<Vec<Message>>,
     bulk: &mut mpsc::Receiver<crate::transfer::Outbound>,
+    clipboard: &mut mpsc::Receiver<QueuedClipboard>,
     held: &mut RustDeskHeld,
 ) -> Result<(), ViewerError> {
     loop {
@@ -2523,6 +2905,15 @@ async fn write_loop(
             },
             value = mouse.recv() => match value {
                 Some(queued) => take_input(state, writer, held, queued).await?,
+                None => return Ok(()),
+            },
+            // The clipboard comes after input, under this loop's `biased`
+            // ordering: a key or button already queued is taken before an image,
+            // so the one message this writer can spend seconds on never makes the
+            // operator's own event wait behind it. A payload refused here was
+            // never written, and the fence is asked again when it is taken.
+            value = clipboard.recv() => match value {
+                Some(queued) => take_clipboard(state, writer, queued).await?,
                 None => return Ok(()),
             },
             value = bulk.recv() => match value {
@@ -2588,6 +2979,32 @@ async fn take_input(
     if let Some(stamped) = released {
         state.input.released(stamped);
     }
+    Ok(())
+}
+
+/// Writes one queued clipboard payload, or drops it.
+///
+/// The permission is asked again here, at the writer that owns the wire, and it
+/// is asked as two facts a payload cannot substitute for: what is allowed right
+/// now, and whether the generation this payload was queued under is still the
+/// one in force. A payload queued before a withdrawal, a read-only switch, a
+/// `disable-clipboard` change or a close therefore owns nothing and is dropped
+/// without being written; one the current generation still admits is the only
+/// thing that reaches the wire.
+///
+/// Nothing here waits for the peer. The original wire has no clipboard
+/// acknowledgement — upstream applies what it receives — so a write is the end of
+/// this side's responsibility, and the receipt a client got said "queued", which
+/// is exactly what was true.
+async fn take_clipboard(
+    state: &State,
+    writer: &mut WireWriter,
+    queued: QueuedClipboard,
+) -> Result<(), ViewerError> {
+    if !state.clipboard_write_allowed(queued.generation) {
+        return Ok(());
+    }
+    wire_send(state, writer, &queued.message).await?;
     Ok(())
 }
 
@@ -4020,10 +4437,10 @@ fn rdp_error(error: crate::protocol::rdp::RdpError) -> ViewerError {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMANDS, DIRECT_ACCESS_PORT, Facts, GateView, Inner, InputGate, MAX_HELD_INPUTS, Protocol,
-        PasswordGate, QueuedInput, RustDeskHeld, SecondFactorGate, State, Viewer, ViewerError,
-        ViewerInput, ViewerInputPolicy, ViewerSnapshot, WireReader, WireWriter, direct_address, lock,
-        take_input,
+        CLIPBOARD_QUEUE, COMMANDS, ClipboardMessage, DIRECT_ACCESS_PORT, Facts, GateView, Inner,
+        InputGate, MAX_HELD_INPUTS, PasswordGate, Protocol, QueuedInput, RustDeskHeld,
+        SecondFactorGate, State, Viewer, ViewerError, ViewerInput, ViewerInputPolicy, ViewerSnapshot,
+        WireReader, WireWriter, direct_address, lock, take_clipboard, take_input,
     };
     use crate::transport;
     use base::message_proto::{ControlKey, KeyEvent, Message, message};
@@ -4097,6 +4514,13 @@ mod tests {
             rdp_input_flags: super::AtomicU16::new(0),
             peer_proven: AtomicBool::new(true),
             input: InputGate::new(ViewerInputPolicy::interactive()),
+            // The clipboard mailbox and its fence, with the peer's grant and the
+            // local option left to each test: nothing is admitted until a test
+            // opens the AND the way a session does.
+            clipboard: crate::clipboard::ClipboardState::new(),
+            peer_clipboard: AtomicBool::new(false),
+            clipboard_out: Mutex::new(None),
+            clipboard_in: super::ClipboardDecoder::default(),
             resources_unconfirmed: AtomicBool::new(false),
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
@@ -4824,6 +5248,102 @@ mod tests {
             (5, 6),
             "the event queued under the withdrawn grant was not replayed"
         );
+    }
+
+    /// The clipboard is the session's own: a payload queued under a generation
+    /// this viewer has left is not written, and the peer's own update lands in
+    /// the mailbox stamped with the generation it arrived under.
+    ///
+    /// Both directions are driven over one real state, and the send half asserts
+    /// what the peer received rather than what a call answered.
+    #[tokio::test]
+    async fn clipboard_delivery_follows_the_generation_it_was_accepted_under() {
+        let state = writer_state();
+        state.input.grant(true);
+        // The local `disable-clipboard` option a login states, and the peer's own
+        // grant: the fence this viewer uses is the AND of the two.
+        *lock(&state.session_options) = crate::session_options::SessionOptions::default()
+            .request(crate::session_options::SessionOptionChange::ClipboardEnabled(true))
+            .expect("clipboard can be asked for");
+        state.peer_clipboard.store(true, super::Ordering::Release);
+        state.refresh_clipboard();
+        let (clipboard_tx, mut clipboard_rx) = mpsc::channel(CLIPBOARD_QUEUE);
+        *lock(&state.clipboard_out) = Some(clipboard_tx);
+        let viewer = Arc::new(Viewer {
+            state: state.clone(),
+            mouse: mpsc::channel(COMMANDS).0,
+        });
+        let mut wire = writer_wire();
+
+        // Queued while every fact holds, and the peer withdraws before the writer
+        // reaches it.
+        let withdrawn = viewer
+            .clipboard_send(crate::clipboard::ClipboardPayload::text("withdrawn"))
+            .expect("the live fence admits this payload");
+        state.peer_clipboard.store(false, super::Ordering::Release);
+        assert!(
+            state.refresh_clipboard() > withdrawn,
+            "a withdrawal moves the fence"
+        );
+        let queued = clipboard_rx.recv().await.expect("the payload was queued");
+        take_clipboard(&state, &mut wire.writer, queued)
+            .await
+            .expect("a dropped payload is not a writer failure");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), wire.peer.recv())
+                .await
+                .is_err(),
+            "the payload queued under the withdrawn grant was not written"
+        );
+
+        // The peer grants it again: a payload queued now belongs to the new
+        // generation, and that one is written.
+        state.peer_clipboard.store(true, super::Ordering::Release);
+        assert!(
+            state.refresh_clipboard() > withdrawn,
+            "a fresh grant moves the fence too"
+        );
+        let live = viewer
+            .clipboard_send(crate::clipboard::ClipboardPayload::text("kept"))
+            .expect("the live fence admits this payload");
+        assert!(
+            live > withdrawn,
+            "the receipt names the generation in force, not the one before"
+        );
+        let queued = clipboard_rx.recv().await.expect("the payload was queued");
+        take_clipboard(&state, &mut wire.writer, queued)
+            .await
+            .expect("the writer takes a payload the fence admits");
+        match received(&mut wire.peer).await.union {
+            Some(message::Union::Clipboard(clipboard)) => {
+                assert_eq!(clipboard.content.as_ref(), b"kept".as_slice());
+                assert!(
+                    !clipboard.compress,
+                    "a payload that saves nothing is not compressed"
+                );
+            }
+            other => panic!("expected one clipboard, got {other:?}"),
+        }
+
+        // The other direction on the same state: the peer's message goes through
+        // the decode step and lands in the mailbox under the generation in force.
+        super::clipboard_decode_once(
+            &state,
+            live,
+            ClipboardMessage::Single(base::message_proto::Clipboard {
+                compress: false,
+                content: b"from peer".to_vec().into(),
+                format: base::message_proto::ClipboardFormat::Text.into(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("one decode step");
+        assert!(viewer.snapshot().clipboard_pending);
+        let metadata = viewer.clipboard_take_metadata().expect("a hand-out");
+        assert!(!viewer.snapshot().clipboard_pending);
+        assert_eq!(metadata.revision, live);
+        assert_eq!(metadata.text.as_deref(), Some("from peer"));
     }
 
     /// The enqueue boundary answers with the generation it stamped, and the

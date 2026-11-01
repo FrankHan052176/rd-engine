@@ -43,6 +43,8 @@ x509-cert = "0.2"
 zeroize = "1"
 ring = "0.17"
 bytes = "1"
+# Clipboard decompression is bounded by its format, not the shared 256 MiB cap.
+zstd = "0.13"
 # Wakeable native VNC worker; protocol parsing remains in LibVNCClient.
 mio = { version = "1", features = ["net", "os-poll"] }
 # Official shared configuration/transport and client protocol types use one

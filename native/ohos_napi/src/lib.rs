@@ -28,6 +28,7 @@ mod app_directory;
 mod app_presence;
 mod app_profile;
 mod app_storage;
+mod clipboard;
 mod host_bridge;
 mod host_security;
 mod server_profile;
@@ -50,6 +51,10 @@ use app_directory::{
 };
 use app_presence::{peer_presence_cancel, peer_query_online};
 use app_profile::{runtime_get_server_config, runtime_set_server_config, runtime_test_server_config};
+use clipboard::{
+    session_send_clipboard, session_send_clipboard_image, session_take_clipboard,
+    session_take_clipboard_image,
+};
 use host_bridge::{
     controlled_incoming_poll, controlled_incoming_resolve, controlled_password_get,
     controlled_password_refresh, controlled_screen_capture_status, controlled_screen_capture_stop,
@@ -342,6 +347,17 @@ impl Reported {
                 event["err"] = serde_json::Value::String(error.clone());
             }
             events.push(event);
+        }
+        // A clipboard update really waiting in this viewer's mailbox. This is a
+        // notification, not a hand-out: it carries no content, it claims nothing
+        // was applied, and it is repeated on every poll for as long as the update
+        // is still pending — a client that is not ready yet (an ArkTS clipboard
+        // owner that has not published its preview, a route that is not
+        // DirectWire) would otherwise lose the only message that says there is
+        // something to take. It stops when the update is taken, and when a
+        // withdrawal, a `disable-clipboard` change or a close empties the mailbox.
+        if !snapshot.closed && snapshot.clipboard_pending {
+            events.push(serde_json::json!({ "name": "clipboard_multi" }));
         }
         events
     }
@@ -2563,6 +2579,10 @@ implemented_entry_points!(
     ("sessionSendMouse", session_send_mouse),
     ("sessionInputKey", session_input_key),
     ("sessionInputString", session_input_string),
+    ("sessionSendClipboard", session_send_clipboard),
+    ("sessionSendClipboardImage", session_send_clipboard_image),
+    ("sessionTakeClipboard", session_take_clipboard),
+    ("sessionTakeClipboardImage", session_take_clipboard_image),
     (
         "sessionGetFrameRateSnapshot",
         session_get_frame_rate_snapshot
@@ -2951,6 +2971,45 @@ mod tests {
             .any(|event| event["name"] == "connection_ready"));
         assert!(!events.iter().any(|event| event["type"] == "input-password"));
         assert!(reported.events(&snapshot).is_empty());
+    }
+
+    /// A clipboard update waiting in the mailbox is announced on every poll until
+    /// it is taken, and a closed session announces nothing to take.
+    #[test]
+    fn a_pending_clipboard_update_is_announced_until_it_is_taken() {
+        let mut reported = Reported::default();
+        let idle = ViewerSnapshot {
+            phase: "streaming".to_owned(),
+            ..Default::default()
+        };
+        assert!(
+            reported.events(&idle).is_empty(),
+            "an empty mailbox is not an event"
+        );
+        let pending = ViewerSnapshot {
+            clipboard_pending: true,
+            ..idle.clone()
+        };
+        for _ in 0..2 {
+            let events = reported.events(&pending);
+            assert_eq!(events.len(), 1, "one announcement per poll");
+            assert_eq!(events[0]["name"], "clipboard_multi");
+            let announcement = events[0].as_object().expect("an event object");
+            assert_eq!(
+                announcement.len(),
+                1,
+                "the announcement carries no clipboard content"
+            );
+        }
+        // A close empties the mailbox, so the terminal snapshot announces the
+        // close alone.
+        let closed = ViewerSnapshot {
+            closed: true,
+            ..pending.clone()
+        };
+        let events = reported.events(&closed);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["name"], "close");
     }
 
     /// A coordinate-less button borrows the last position the engine admitted,

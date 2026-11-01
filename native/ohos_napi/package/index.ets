@@ -142,6 +142,51 @@ export function sessionInputString(sessionId: string, value: string, inputGenera
   return native.sessionInputString(sessionId, value, inputGeneration);
 }
 
+/**
+ * Sends one clipboard copy through the session's one writer.
+ * JSON: {ok,queued,applied,action,clipboard_revision,formats} or
+ * {ok:false,queued:false,applied:false,action,reason,error}. queued:true means the
+ * payload entered the writer's queue under clipboard_revision; it does not mean the
+ * peer applied it, because the protocol has no clipboard acknowledgement, so applied
+ * is always false. Empty content is the protocol's clear. A refusal (not_allowed,
+ * not_deliverable, too_large, corrupt, closed, backpressure, unknown_session) never
+ * reports ok:true.
+ */
+export function sessionSendClipboard(sessionId: string, content: string): string {
+  return native.sessionSendClipboard(sessionId, content);
+}
+
+/**
+ * Sends an encoded PNG as this session's image clipboard. The size bound is checked
+ * against the typed array's own length before any copy; the receipt is
+ * sessionSendClipboard's.
+ */
+export function sessionSendClipboardImage(sessionId: string, image: Uint8Array): string {
+  return native.sessionSendClipboardImage(sessionId, image);
+}
+
+/**
+ * Hands out the next peer clipboard update and reserves its image for
+ * sessionTakeClipboardImage.
+ * JSON: {ok,queued:false,applied:false,action,revision,text,html,image,formats}.
+ * No pending update: {ok:false,reason:"no_pending_update"}. Missing text/html/image
+ * formats are omitted, never null. Text "" is a real clear. Image is
+ * {format:"rgba"|"png"|"svg",width,height,byteLength}, with width/height 0 for PNG/SVG.
+ */
+export function sessionTakeClipboard(sessionId: string): string {
+  return native.sessionTakeClipboard(sessionId);
+}
+
+/**
+ * Returns exactly the bytes the descriptor from sessionTakeClipboard described. An
+ * empty array means no image was described, or the permission that described it was
+ * withdrawn before this call: compare the length with byteLength instead of applying
+ * an image the engine did not hand out now.
+ */
+export function sessionTakeClipboardImage(sessionId: string): Uint8Array {
+  return native.sessionTakeClipboardImage(sessionId);
+}
+
 export function sessionSetCustomFps(sessionId: string, fps: number): string {
   return native.sessionSetCustomFps(sessionId, fps);
 }

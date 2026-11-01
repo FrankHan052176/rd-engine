@@ -4274,6 +4274,7 @@ dependencies = [
  "x509-cert",
  "zbus",
  "zeroize",
+ "zstd 0.13.3",
 ]
 
 [[package]]
