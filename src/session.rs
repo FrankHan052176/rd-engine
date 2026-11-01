@@ -11,7 +11,7 @@ use crate::{
 };
 use base::message_proto::{
     Auth2FA, Hash, LoginRequest, LoginResponse, Message, Misc, OptionMessage, PeerInfo,
-    PermissionInfo, message, misc, permission_info::Permission,
+    PermissionInfo, TestDelay, message, misc, permission_info::Permission,
 };
 use hbb_common::{
     protobuf::Message as _,
@@ -43,6 +43,17 @@ fn close_reason(message: &Message) -> Option<&str> {
     match &m.union {
         Some(misc::Union::CloseReason(reason)) => Some(reason.as_str()),
         _ => None,
+    }
+}
+
+/// Owns the single-use code through early refusal and cancelled writes too.
+struct SecondFactorMessage(Message);
+impl Drop for SecondFactorMessage {
+    fn drop(&mut self) {
+        if let Some(message::Union::Auth2fa(factor)) = self.0.union.as_mut() {
+            let mut bytes = std::mem::take(&mut factor.code).into_bytes();
+            utils::memzero(&mut bytes);
+        }
     }
 }
 
@@ -226,6 +237,9 @@ pub enum ViewerEvent {
     /// Explicitly allowed peer negotiation/UI control BEFORE login success.
     /// Never an authorization grant and never a media/input payload.
     PreAuthControl(Message),
+    /// A pre-authentication probe read without writing a response. The
+    /// multiplexing authentication driver replies outside its read select.
+    PreAuthProbe(TestDelay),
     /// Authenticated wire payload, not proof of decode/render completion.
     Payload(Message),
     Progress,
@@ -457,7 +471,20 @@ impl ViewerSession {
         Ok(())
     }
 
+    /// Answers the peer's second-factor step on this same session and wire.
+    ///
+    /// The session is the one that decides whether a code is still admissible:
+    /// it refuses one before the peer asked, after an answer moved it past that
+    /// step, and after its own absolute authentication deadline, and it writes
+    /// on the wire a failed login would use. No trusted-device enrollment or
+    /// bypass is implemented here, so the `hwid` stays empty; a code is sent and
+    /// then cleared, never kept.
     pub async fn send_second_factor(&mut self, code: String) -> io::Result<()> {
+        let mut message = SecondFactorMessage(Message::new());
+        message.0.set_auth_2fa(Auth2FA {
+            code,
+            ..Default::default()
+        });
         if Instant::now() >= self.auth_deadline {
             self.terminate();
             return Err(failure("Authentication deadline expired"));
@@ -465,13 +492,7 @@ impl ViewerSession {
         if self.state != ViewerState::Await2Fa {
             return Err(failure("Not awaiting second factor"));
         }
-        let mut message = Message::new();
-        // No trusted-device enrollment or bypass is implemented by this slice.
-        message.set_auth_2fa(Auth2FA {
-            code,
-            ..Default::default()
-        });
-        let result = self.io.send(&message).await;
+        let result = self.io.send(&message.0).await;
         if result.is_err() {
             self.terminate();
         }
@@ -479,8 +500,37 @@ impl ViewerSession {
     }
 
     pub async fn recv(&mut self) -> io::Result<ViewerEvent> {
+        match self.recv_for_auth().await? {
+            ViewerEvent::PreAuthProbe(probe) => {
+                self.reply_auth_probe(probe).await?;
+                Ok(ViewerEvent::Progress)
+            }
+            event => Ok(event),
+        }
+    }
+
+    /// Pure framed read plus synchronous dispatch, safe to multiplex with a
+    /// local answer. In particular it never awaits a probe response write.
+    pub(crate) async fn recv_for_auth(&mut self) -> io::Result<ViewerEvent> {
         let result = self.recv_inner().await;
         if result.is_err() || self.state == ViewerState::Closed {
+            self.terminate();
+        }
+        result
+    }
+
+    pub(crate) async fn reply_auth_probe(&mut self, probe: TestDelay) -> io::Result<()> {
+        if Instant::now() >= self.auth_deadline {
+            self.terminate();
+            return Err(failure("Authentication deadline expired"));
+        }
+        if self.state == ViewerState::Closed || self.state == ViewerState::Active {
+            return Err(failure("Not in authentication"));
+        }
+        let mut response = Message::new();
+        response.set_test_delay(probe);
+        let result = self.io.send(&response).await;
+        if result.is_err() {
             self.terminate();
         }
         result
@@ -521,13 +571,14 @@ impl ViewerSession {
         }
         match &message.union {
             Some(message::Union::TestDelay(probe)) => {
-                // Authentication may echo serially; Active runtime owns the
-                // scheduling. Never await a write in an Active receive call.
+                // Never write inside this read: the authentication driver may
+                // cancel it when a local 2FA answer arrives. Writes retain the
+                // wire across await and must be scheduled outside that select.
                 if self.state == ViewerState::Active {
                     return Ok(ViewerEvent::Payload(message));
                 }
                 if !probe.from_client {
-                    self.io.send(&message).await?;
+                    return Ok(ViewerEvent::PreAuthProbe(probe.clone()));
                 }
                 return Ok(ViewerEvent::Progress);
             }
@@ -917,5 +968,146 @@ impl HostSession {
         let result = self.io.send(&close_message()).await;
         self.io.terminate();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ViewerEvent, ViewerSession, ViewerState};
+    use crate::handshake::{self, ViewerIdentity};
+    use base::message_proto::{Hash, LoginRequest, LoginResponse, Message, PeerInfo, message};
+    use hbb_common::{protobuf::Message as _, tcp::FramedStream};
+    use std::time::Duration;
+
+    /// How long the fixture's own end of the wire waits for one record.
+    const LIMIT: Duration = Duration::from_secs(5);
+
+    /// One record read from the fixture's end of the wire.
+    async fn fixture_recv(wire: &mut FramedStream) -> Message {
+        let bytes = tokio::time::timeout(LIMIT, wire.next())
+            .await
+            .expect("the fixture never waits past its own limit")
+            .expect("the wire is still open")
+            .expect("the record was read");
+        Message::parse_from_bytes(&bytes).expect("the record is a message")
+    }
+
+    /// The peer's second factor is answered on the one session that asked for
+    /// it: a wrong code keeps that session and admits a retry, and only the
+    /// peer's own `PeerInfo` ends the login.
+    ///
+    /// The wire is a real framed stream owned by both ends here, so the records
+    /// asserted are the ones the session actually wrote — not a restatement of
+    /// the message the test built.
+    #[tokio::test]
+    async fn a_wrong_second_factor_code_keeps_the_session_and_admits_a_retry() {
+        let address = "127.0.0.1:1".parse().unwrap();
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let established = handshake::viewer(
+            FramedStream::from(client, address),
+            ViewerIdentity::LegacyUnverified,
+            LIMIT,
+        )
+        .await
+        .expect("the legacy handshake needs no peer record");
+        let mut fixture = FramedStream::from(peer, address);
+        // The viewer's own handshake record, before any authentication state.
+        assert!(fixture_recv(&mut fixture).await.union.is_none());
+
+        let mut session = ViewerSession::from_established(established, LIMIT, LIMIT);
+        let mut challenge = Message::new();
+        challenge.set_hash(Hash {
+            salt: "fixture-salt".into(),
+            challenge: "fixture-challenge".into(),
+            ..Default::default()
+        });
+        fixture
+            .send(&challenge)
+            .await
+            .expect("the challenge is written");
+        assert!(matches!(session.recv().await, Ok(ViewerEvent::Challenge)));
+        session
+            .login(
+                LoginRequest {
+                    username: "fixture-target".into(),
+                    my_id: "fixture-controller".into(),
+                    my_name: "fixture".into(),
+                    version: "1.4.9".into(),
+                    session_id: 7,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .expect("the login is written");
+        let Some(message::Union::LoginRequest(_)) = fixture_recv(&mut fixture).await.union else {
+            panic!("the fixture expects the viewer's login")
+        };
+
+        // A code offered before the peer asks is not this peer's second factor:
+        // the session refuses it and nothing reaches the wire.
+        assert!(session.send_second_factor("111111".into()).await.is_err());
+
+        let mut response = LoginResponse::new();
+        response.set_error("2FA Required".into());
+        let mut demand = Message::new();
+        demand.set_login_response(response);
+        fixture.send(&demand).await.expect("the demand is written");
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(error)) if error == "2FA Required"
+        ));
+        assert_eq!(session.state(), ViewerState::Await2Fa);
+
+        session
+            .send_second_factor("222222".into())
+            .await
+            .expect("a code is written while the peer waits for one");
+        let Some(message::Union::Auth2fa(factor)) = fixture_recv(&mut fixture).await.union else {
+            panic!("the fixture expects the viewer's code")
+        };
+        assert_eq!(factor.code, "222222");
+        assert!(
+            factor.hwid.is_empty(),
+            "no trusted-device enrollment is claimed"
+        );
+
+        // The peer refused that code: the same session is still waiting, and the
+        // retry travels on it.
+        let mut response = LoginResponse::new();
+        response.set_error("Wrong 2FA Code".into());
+        let mut wrong = Message::new();
+        wrong.set_login_response(response);
+        fixture.send(&wrong).await.expect("the refusal is written");
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(error)) if error == "Wrong 2FA Code"
+        ));
+        assert_eq!(session.state(), ViewerState::Await2Fa);
+        session
+            .send_second_factor("333333".into())
+            .await
+            .expect("the retry is written on the same wait");
+        let Some(message::Union::Auth2fa(factor)) = fixture_recv(&mut fixture).await.union else {
+            panic!("the fixture expects the retry")
+        };
+        assert_eq!(factor.code, "333333");
+
+        // Only the peer's own evidence authorizes the session.
+        let mut response = LoginResponse::new();
+        response.set_peer_info(PeerInfo::new());
+        let mut success = Message::new();
+        success.set_login_response(response);
+        fixture
+            .send(&success)
+            .await
+            .expect("the peer info is written");
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
+        assert_eq!(session.state(), ViewerState::Active);
+        // Past that step a code is refused rather than written.
+        assert!(session.send_second_factor("444444".into()).await.is_err());
     }
 }

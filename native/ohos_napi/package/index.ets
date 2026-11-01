@@ -73,6 +73,11 @@ export function sessionLogin(sessionId: string, loginJson: string): string {
   return native.sessionLogin(sessionId, loginJson);
 }
 
+/** Same-session 2FA answer; ok/queued is not authentication success. true trust is explicitly refused. */
+export function sessionSend2fa(sessionId: string, code: string, trustThisDevice: boolean): string {
+  return native.sessionSend2fa(sessionId, code, trustThisDevice);
+}
+
 /**
  * Resolves only after native teardown finishes, not when the request is accepted.
  * JSON always carries released and settle ("settled" | "unconfirmed" |

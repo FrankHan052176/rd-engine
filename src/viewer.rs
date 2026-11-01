@@ -13,7 +13,7 @@ use crate::{
     handshake::ViewerIdentity,
     protocol::Protocol,
     rendezvous::{RendezvousConfig, RouteKind},
-    session::{AuthenticatedParts, PeerCloseReason, ViewerEvent, ViewerSession},
+    session::{AuthenticatedParts, PeerCloseReason, ViewerEvent, ViewerSession, ViewerState},
     transport::{WireReader, WireWriter},
 };
 pub use decoder::SurfaceLease;
@@ -315,6 +315,9 @@ pub struct ViewerSnapshot {
     /// while its phase is `awaiting_surface`, and a session that has finished
     /// reads `false` even though `phase` still names the last media state.
     pub authenticated: bool,
+    /// Advances only when the peer actually requests or rejects a second
+    /// factor. Repeated Wrong replies remain observable between polls.
+    pub second_factor_challenge: u64,
     /// Actual authenticated connection evidence, never inferred from options.
     pub encrypted: bool,
     pub peer_verified: bool,
@@ -361,7 +364,23 @@ pub enum ViewerError {
     ConnectFailed,
     RendezvousFailed,
     AuthenticationFailed,
+    /// Kept as a public spelling; this viewer no longer ends here.
+    ///
+    /// The viewer used to stop as soon as the peer asked for a second factor.
+    /// It now keeps that one session and carries the step through
+    /// [`Viewer::send_second_factor`]: a peer still waiting is reported by the
+    /// snapshot's own state (`awaiting_second_factor` / `second_factor_rejected`)
+    /// and a refusal no code can answer is a [`ViewerError::LoginFailed`]
+    /// category. The variant and its string stay so existing consumers' matches
+    /// keep compiling.
     SecondFactorUnsupported,
+    /// The caller offered a second-factor code this session is not waiting for.
+    ///
+    /// Refused rather than held: before the peer asks, after it has stopped
+    /// asking, on a wire with no such step, and on a viewer that is already
+    /// closing, a code would otherwise cross into an attempt it was not typed
+    /// for.
+    SecondFactorNotAwaiting,
     TransportFailed,
     RemoteClosed,
     InvalidPeerGeometry,
@@ -422,9 +441,10 @@ impl std::error::Error for ViewerError {}
 /// out of every error string, so a peer cannot put words of its choosing into the
 /// UI.
 ///
-/// `No Password Access` (awaiting approval) and the second-factor refusals do not
-/// appear here: they have their own states (`phase == "awaiting_approval"` and
-/// `SecondFactorUnsupported`), and this is the vocabulary of a login that failed.
+/// `No Password Access` (awaiting approval) and the peer's second-factor step do
+/// not appear here: they have their own states (`phase == "awaiting_approval"`,
+/// `"awaiting_second_factor"` and `"second_factor_rejected"`), and this is the
+/// vocabulary of a login that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginFailure {
     /// `Empty Password`: the peer wants a password this client did not send.
@@ -485,6 +505,10 @@ struct State {
     // Installed by authenticate once the writer task owns the control channel,
     // so out-of-band control (keyframe requests) can be sent after login.
     control: Mutex<Option<mpsc::Sender<Message>>>,
+    /// The peer's second-factor step: installed by authentication only while
+    /// this session really waits for a code on its own wire, and taken away
+    /// when it leaves that step.
+    second_factor: Mutex<SecondFactorGate>,
 }
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -770,6 +794,40 @@ impl InputGate {
         state.unreleased += state.owed;
         state.owed = 0;
         state.retired = 0;
+    }
+}
+
+/// One viewer's second-factor entry point, installed by authentication only
+/// while its session is really waiting for a code.
+///
+/// Both facts live under one lock because they only mean anything together:
+/// `code` exists exactly between the peer asking for a second factor and this
+/// session leaving that step, and `submitted` says a code admitted through it
+/// has not been answered yet. A code offered with no sender installed is
+/// refused instead of kept, and a second code offered before the peer answered
+/// the first is refused rather than queued into the attempt that follows.
+#[derive(Default)]
+struct SecondFactorGate {
+    /// The channel the authentication loop is reading; `None` outside that step.
+    code: Option<mpsc::Sender<String>>,
+    /// Whether an admitted code is still waiting for the peer's answer.
+    submitted: bool,
+}
+
+/// The receiving end of one viewer's second-factor channel.
+///
+/// Authentication reads it, which is what lets an admitted code reach the
+/// session's own writer. It also clears whatever is still in the channel when
+/// that exchange ends: a code the peer never got — it authorized first, or the
+/// viewer was cancelled while one was queued — is single-use, and must not be
+/// left for the allocator to hand back.
+struct SecondFactorAnswers(mpsc::Receiver<String>);
+
+impl Drop for SecondFactorAnswers {
+    fn drop(&mut self) {
+        while let Ok(code) = self.0.try_recv() {
+            discard_code(code);
+        }
     }
 }
 
@@ -1078,6 +1136,7 @@ impl Viewer {
         let (mouse, mouse_rx) = mpsc::channel(COMMANDS);
         let state = Arc::new(State {
             control: Mutex::new(None),
+            second_factor: Mutex::new(SecondFactorGate::default()),
             inner: Mutex::new(Inner {
                 snapshot: ViewerSnapshot {
                     phase: "capability".into(),
@@ -1339,6 +1398,56 @@ impl Viewer {
             .map_err(|_| ViewerError::TransportFailed)
     }
 
+    /// Answers the peer's second-factor step on this same, still-open session.
+    ///
+    /// A code is admitted only while this viewer's own RustDesk session is
+    /// waiting for one: authentication installs the entry point when the peer
+    /// asks and takes it away when the session leaves that step, so a code
+    /// offered before the peer asks, after it stopped asking, on another wire,
+    /// or after this viewer closed is refused instead of kept for a later
+    /// attempt. One code per peer answer is admitted — a second one offered
+    /// while the first is still unanswered is `Backpressure`, never a queue —
+    /// which is what stops an answer typed for one attempt from travelling as
+    /// part of the next.
+    ///
+    /// `Ok(())` is the receipt that the code reached the session's own
+    /// authentication loop, which writes it on the same wire; it is never a
+    /// claim that the peer accepted it. Acceptance is the snapshot's
+    /// `authenticated`/`Authorized` fact, and a refusal is the peer's next
+    /// `second_factor_rejected` state.
+    pub fn send_second_factor(&self, code: String) -> Result<(), ViewerError> {
+        if self.state.cancel.is_cancelled() {
+            discard_code(code);
+            return Err(ViewerError::Closed);
+        }
+        let mut gate = lock(&self.state.second_factor);
+        // Cloned, so the refusals below neither hold nor extend a borrow of the
+        // gate they are about to mutate.
+        let Some(sender) = gate.code.clone() else {
+            discard_code(code);
+            return Err(ViewerError::SecondFactorNotAwaiting);
+        };
+        if gate.submitted {
+            discard_code(code);
+            return Err(ViewerError::Backpressure);
+        }
+        match sender.try_send(code) {
+            Ok(()) => {
+                gate.submitted = true;
+                self.state.phase("verifying_second_factor");
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Full(code)) => {
+                discard_code(code);
+                Err(ViewerError::Backpressure)
+            }
+            Err(mpsc::error::TrySendError::Closed(code)) => {
+                discard_code(code);
+                Err(ViewerError::Closed)
+            }
+        }
+    }
+
     pub fn request_close(&self) {
         self.state.request_close();
     }
@@ -1370,6 +1479,16 @@ impl Drop for Password {
     }
 }
 
+/// Drops one second-factor code without leaving its bytes for the allocator.
+///
+/// A code is single-use and never logged or written anywhere. One this viewer
+/// refused never reached the peer, so its bytes are cleared here instead of
+/// being kept until the allocation happens to be reused.
+fn discard_code(mut code: String) {
+    let mut bytes = std::mem::take(&mut code).into_bytes();
+    hbb_common::sodiumoxide::utils::memzero(&mut bytes);
+}
+
 /// The official-client version whose wire behavior this engine implements.
 ///
 /// One constant, because a peer gates features on it (`get_version_number` in its
@@ -1398,12 +1517,11 @@ fn my_platform() -> String {
     }
 }
 
-fn login_request(options: &ViewerOptions, decoders: Decoders) -> LoginRequest {
+fn login_request(options: &ViewerOptions, supported: proto::SupportedDecoding) -> LoginRequest {
     // Key handshake has initialized sodium before Challenge. Never reuse a
     // process-local counter as an original-peer reconnect session identifier.
     let mut session_bytes = [0u8; 8];
     hbb_common::sodiumoxide::randombytes::randombytes_into(&mut session_bytes);
-    let supported = decoders.supported_decoding();
     LoginRequest {
         username: options.username.clone(),
         my_id: options.local_id.clone(),
@@ -1470,57 +1588,160 @@ async fn authenticate(
         }
     };
     state.phase("authenticating");
+    // The one channel a second-factor answer travels on, bounded to one
+    // outstanding code. Its sender is what makes the channel outlive every wait
+    // it arms; the copy published in `state.second_factor` exists only while the
+    // session is really waiting for a code, so nothing offered outside that step
+    // is kept for a later attempt. The receiver clears anything still in it when
+    // this exchange ends, including on cancellation.
+    let (codes, answers) = mpsc::channel::<String>(1);
+    let mut answers = SecondFactorAnswers(answers);
+    let result = authenticate_loop(
+        state,
+        session,
+        &options,
+        &password,
+        decoders.supported_decoding(),
+        &codes,
+        &mut answers.0,
+    )
+    .await;
+    // Whatever ended this authentication — acceptance, refusal or a broken wire
+    // — the entry point ends with it: a code offered afterwards is not this
+    // session's second factor. A cancelling viewer never reaches this line, but
+    // it is already closing, which `Viewer::send_second_factor` refuses before
+    // it looks at the gate at all.
+    *lock(&state.second_factor) = SecondFactorGate::default();
+    result
+}
+
+/// What one authentication step is waiting on: the peer's own record, or a
+/// second-factor answer this viewer's consumer submitted.
+enum AuthStep {
+    Code(String),
+    Event(Result<ViewerEvent, ViewerError>),
+}
+
+/// The authentication exchange, the peer's second-factor step included.
+///
+/// The wire read is the same `ViewerSession::recv` the rest of authentication
+/// uses, so it inherits the original absolute deadline. `recv_for_auth` does
+/// only framed reads and synchronous dispatch; probe replies and codes are
+/// written serially outside the select. Cancelling an in-progress write still
+/// destroys that wire, never restores or retries a partial record.
+async fn authenticate_loop(
+    state: &State,
+    mut session: ViewerSession,
+    options: &ViewerOptions,
+    password: &Password,
+    supported: proto::SupportedDecoding,
+    codes: &mpsc::Sender<String>,
+    answers: &mut mpsc::Receiver<String>,
+) -> Result<AuthenticatedParts, ViewerError> {
     loop {
-        match session
-            .recv()
-            .await
-            // A recv failure is a transport outcome, not an authentication
-            // verdict: the peer said nothing about this login, and folding it into
-            // a login failure would make a client offer a password form for a
-            // broken wire.
-            .map_err(|_| ViewerError::TransportFailed)?
-        {
-            ViewerEvent::Challenge => {
-                let request = login_request(&options, decoders);
-                session
-                    .login(
-                        request,
-                        if password.0.is_empty() {
-                            None
-                        } else {
-                            Some(&password.0)
-                        },
-                    )
-                    .await
-                    // The login could not be sent, which is the same transport
-                    // outcome and not the peer's decision about the credential.
-                    .map_err(|_| ViewerError::TransportFailed)?;
+        // A code is multiplexed beside the wire only while the session really
+        // waits for one. The wire is polled first, so a record the peer already
+        // sent — including its answer to a code — is dispatched before a
+        // submission this loop is holding.
+        let step = if session.state() == ViewerState::Await2Fa {
+            tokio::select! {
+                biased;
+                event = session.recv_for_auth() => AuthStep::Event(event.map_err(|_| ViewerError::TransportFailed)),
+                code = answers.recv() => match code {
+                    Some(code) => AuthStep::Code(code),
+                    // The sender above outlives this loop; a closed channel is
+                    // not a state authentication waits in.
+                    None => return Err(ViewerError::Closed),
+                },
             }
-            ViewerEvent::Authorized(_) => {
-                return session
-                    .into_authenticated_parts()
-                    .map_err(|_| ViewerError::AuthenticationFailed);
-            }
-            ViewerEvent::LoginError(error) if error == "No Password Access" => {
-                state.phase("awaiting_approval")
-            }
-            ViewerEvent::LoginError(error)
-                if error == "2FA Required" || error == "Wrong 2FA Code" =>
-            {
-                return Err(ViewerError::SecondFactorUnsupported);
-            }
-            // Every other refusal keeps its category: the peer's text is what the
-            // classification reads, and the category is what a client decides
-            // with.
-            ViewerEvent::LoginError(error) => {
-                return Err(ViewerError::LoginFailed(LoginFailure::of(&error)));
-            }
-            ViewerEvent::Closed => {
-                lock(&state.inner).observed_peer_close_reason = session.peer_close_reason();
-                return Err(ViewerError::RemoteClosed);
-            }
-            ViewerEvent::Progress | ViewerEvent::PreAuthControl(_) => {}
-            _ => return Err(ViewerError::AuthenticationFailed),
+        } else {
+            AuthStep::Event(session.recv_for_auth().await.map_err(|_| ViewerError::TransportFailed))
+        };
+        match step {
+            // The session itself decides whether the code is still admissible:
+            // it checks its own absolute deadline and that it is still waiting,
+            // and it writes on the same wire a failed login would use.
+            AuthStep::Code(code) => session
+                .send_second_factor(code)
+                .await
+                .map_err(|_| ViewerError::TransportFailed)?,
+            AuthStep::Event(event) => match event? {
+                ViewerEvent::PreAuthProbe(probe) => {
+                    session
+                        .reply_auth_probe(probe)
+                        .await
+                        .map_err(|_| ViewerError::TransportFailed)?;
+                }
+                ViewerEvent::Challenge => {
+                    let request = login_request(options, supported.clone());
+                    session
+                        .login(
+                            request,
+                            if password.0.is_empty() {
+                                None
+                            } else {
+                                Some(&password.0)
+                            },
+                        )
+                        .await
+                        // The login could not be sent, which is the same
+                        // transport outcome and not the peer's decision about
+                        // the credential.
+                        .map_err(|_| ViewerError::TransportFailed)?;
+                }
+                ViewerEvent::Authorized(_) => {
+                    return session
+                        .into_authenticated_parts()
+                        .map_err(|_| ViewerError::AuthenticationFailed);
+                }
+                ViewerEvent::LoginError(error) if error == "No Password Access" => {
+                    state.phase("awaiting_approval")
+                }
+                // The peer asked for a second factor, and the same session is
+                // what answers it. `Wrong 2FA Code` is the peer's answer to the
+                // code this loop sent, so the step is armed again for the retry
+                // instead of ending a session the peer has not refused.
+                ViewerEvent::LoginError(error)
+                    if error == "2FA Required" || error == "Wrong 2FA Code" =>
+                {
+                    // A demand that did not leave the session waiting for a code
+                    // — a peer refusing before any login, where `recv` already
+                    // closed the session — has no step to answer, so nothing is
+                    // armed and no code is accepted for it.
+                    if session.state() != ViewerState::Await2Fa {
+                        return Err(ViewerError::LoginFailed(LoginFailure::Refused));
+                    }
+                    let mut gate = lock(&state.second_factor);
+                    let mut inner = lock(&state.inner);
+                    inner.snapshot.second_factor_challenge = inner
+                        .snapshot
+                        .second_factor_challenge
+                        .checked_add(1)
+                        .ok_or(ViewerError::AuthenticationFailed)?;
+                    inner.snapshot.phase = if error == "Wrong 2FA Code" {
+                        "second_factor_rejected"
+                    } else {
+                        "awaiting_second_factor"
+                    }
+                    .into();
+                    gate.code = Some(codes.clone());
+                    gate.submitted = false;
+                }
+                // Every other refusal keeps its category: the peer's text is
+                // what the classification reads, and the category is what a
+                // client decides with. A peer that reports its own second-factor
+                // verification unsupported is one of them — no code can settle
+                // it, so it is not a wait this engine enters.
+                ViewerEvent::LoginError(error) => {
+                    return Err(ViewerError::LoginFailed(LoginFailure::of(&error)));
+                }
+                ViewerEvent::Closed => {
+                    lock(&state.inner).observed_peer_close_reason = session.peer_close_reason();
+                    return Err(ViewerError::RemoteClosed);
+                }
+                ViewerEvent::Progress | ViewerEvent::PreAuthControl(_) => {}
+                _ => return Err(ViewerError::AuthenticationFailed),
+            },
         }
     }
 }
@@ -3389,8 +3610,8 @@ fn rdp_error(error: crate::protocol::rdp::RdpError) -> ViewerError {
 mod tests {
     use super::{
         COMMANDS, DIRECT_ACCESS_PORT, Facts, GateView, Inner, InputGate, MAX_HELD_INPUTS, Protocol,
-        QueuedInput, RustDeskHeld, State, Viewer, ViewerError, ViewerInput, ViewerInputPolicy,
-        ViewerSnapshot, WireReader, WireWriter, direct_address, take_input,
+        QueuedInput, RustDeskHeld, SecondFactorGate, State, Viewer, ViewerError, ViewerInput,
+        ViewerInputPolicy, ViewerSnapshot, WireReader, WireWriter, direct_address, lock, take_input,
     };
     use crate::transport;
     use base::message_proto::{ControlKey, KeyEvent, Message, message};
@@ -3464,6 +3685,7 @@ mod tests {
             input: InputGate::new(ViewerInputPolicy::interactive()),
             resources_unconfirmed: AtomicBool::new(false),
             control: Mutex::new(None),
+            second_factor: Mutex::new(SecondFactorGate::default()),
         })
     }
 
@@ -4249,5 +4471,203 @@ mod tests {
         assert_eq!(receipt, regranted.input_generation);
         let event = queue.try_recv().expect("the admitted event was queued");
         assert_eq!(event.generation, regranted.input_generation);
+    }
+
+    /// The second-factor entry point admits one code per peer answer, only while
+    /// the session really waits for one, and never reports an admission it did
+    /// not make.
+    ///
+    /// The gate is driven the way authentication drives it: the sender published
+    /// there is what a submission travels on, and clearing `submitted` is what
+    /// the peer's own `Wrong 2FA Code` does before a retry.
+    #[test]
+    fn a_second_factor_code_is_admitted_only_while_the_peer_waits_for_one() {
+        let state = writer_state();
+        let (mouse, _queue) = mpsc::channel(COMMANDS);
+        let viewer = Viewer {
+            state: state.clone(),
+            mouse,
+        };
+
+        // Before the peer asks: refused, and nothing is held for a later step.
+        assert!(matches!(
+            viewer.send_second_factor("111111".into()),
+            Err(ViewerError::SecondFactorNotAwaiting)
+        ));
+
+        // The authentication loop installs the entry point when the peer asks,
+        // and it is the channel that loop is itself reading.
+        let (codes, mut answers) = mpsc::channel(1);
+        *lock(&state.second_factor) = SecondFactorGate {
+            code: Some(codes.clone()),
+            submitted: false,
+        };
+        viewer
+            .send_second_factor("222222".into())
+            .expect("the code the peer asked for is admitted");
+        assert_eq!(
+            answers
+                .try_recv()
+                .expect("the admitted code reached the loop"),
+            "222222"
+        );
+
+        // A second code while the first is unanswered is refused, not queued
+        // into whichever attempt answers next.
+        assert!(matches!(
+            viewer.send_second_factor("333333".into()),
+            Err(ViewerError::Backpressure)
+        ));
+        assert!(answers.try_recv().is_err());
+
+        // The peer's own `Wrong 2FA Code` re-arms the step for the retry.
+        {
+            let mut gate = lock(&state.second_factor);
+            gate.submitted = false;
+        }
+        viewer
+            .send_second_factor("444444".into())
+            .expect("a retry after the peer's answer is admitted");
+        assert_eq!(
+            answers.try_recv().expect("the retry reached the loop"),
+            "444444"
+        );
+
+        // Once authentication leaves the step, the entry point is gone even
+        // though the channel is still open.
+        *lock(&state.second_factor) = SecondFactorGate::default();
+        assert!(matches!(
+            viewer.send_second_factor("555555".into()),
+            Err(ViewerError::SecondFactorNotAwaiting)
+        ));
+
+        // A viewer that is closing refuses before it looks at the gate at all.
+        *lock(&state.second_factor) = SecondFactorGate {
+            code: Some(codes),
+            submitted: false,
+        };
+        viewer.request_close();
+        assert!(matches!(
+            viewer.send_second_factor("666666".into()),
+            Err(ViewerError::Closed)
+        ));
+        assert!(answers.try_recv().is_err());
+    }
+
+    /// The actual authentication driver must not cancel an echo write when a
+    /// local code arrives. A one-byte duplex forces every write to yield.
+    #[tokio::test]
+    async fn second_factor_driver_preserves_probe_and_repeated_rejections() {
+        use crate::handshake::{self, ViewerIdentity};
+        use crate::session::ViewerSession;
+        use base::message_proto::{Hash, LoginResponse, PeerInfo, TestDelay};
+        use hbb_common::protobuf::Message as _;
+
+        async fn receive(wire: &mut FramedStream) -> Message {
+            let bytes = wire.next().await.unwrap().unwrap();
+            Message::parse_from_bytes(&bytes).unwrap()
+        }
+        async fn wait_challenge(state: &State, revision: u64) {
+            while lock(&state.inner).snapshot.second_factor_challenge != revision {
+                tokio::task::yield_now().await;
+            }
+        }
+        async fn refuse(wire: &mut FramedStream, text: &str) {
+            let mut response = LoginResponse::new();
+            response.set_error(text.into());
+            let mut message = Message::new();
+            message.set_login_response(response);
+            wire.send(&message).await.unwrap();
+        }
+
+        tokio::time::timeout(RECEIVE_LIMIT, async {
+            let address = "127.0.0.1:1".parse().unwrap();
+            let (client, peer) = tokio::io::duplex(1);
+            let mut peer = FramedStream::from(peer, address);
+            let (established, greeting) = tokio::join!(
+                handshake::viewer(
+                    FramedStream::from(client, address),
+                    ViewerIdentity::LegacyUnverified,
+                    RECEIVE_LIMIT,
+                ),
+                receive(&mut peer),
+            );
+            assert!(greeting.union.is_none());
+            let session = ViewerSession::from_established(
+                established.unwrap(), RECEIVE_LIMIT, RECEIVE_LIMIT,
+            );
+            let state = writer_state();
+            state.authenticated.store(false, super::Ordering::Release);
+            let (mouse, _) = mpsc::channel(COMMANDS);
+            let viewer = Viewer { state: state.clone(), mouse };
+            let options = super::ViewerOptions {
+                target: super::ViewerTarget::RustDesk { address: None },
+                username: "fixture".into(),
+                local_id: "controller".into(),
+                local_name: "fixture".into(),
+                password: String::new(),
+                requested_fps: 0,
+                input_policy: ViewerInputPolicy::interactive(),
+            };
+            let password = super::Password(Vec::new());
+            let (codes, answers) = mpsc::channel(1);
+            let mut answers = super::SecondFactorAnswers(answers);
+            let driver = super::authenticate_loop(
+                &state, session, &options, &password, Default::default(),
+                &codes, &mut answers.0,
+            );
+            let fixture = async {
+                let mut challenge = Message::new();
+                challenge.set_hash(Hash {
+                    salt: "fixture".into(), challenge: "challenge".into(),
+                    ..Default::default()
+                });
+                peer.send(&challenge).await.unwrap();
+                assert!(matches!(receive(&mut peer).await.union,
+                    Some(message::Union::LoginRequest(_))));
+                refuse(&mut peer, "2FA Required").await;
+                wait_challenge(&state, 1).await;
+
+                let mut probe = Message::new();
+                probe.set_test_delay(TestDelay { time: 37, ..Default::default() });
+                peer.send(&probe).await.unwrap();
+                viewer.send_second_factor("111111".into()).unwrap();
+                let mut echoed = false;
+                let mut answered = false;
+                for _ in 0..2 {
+                    match receive(&mut peer).await.union {
+                        Some(message::Union::TestDelay(probe)) => {
+                            assert!(!echoed);
+                            assert_eq!(probe.time, 37);
+                            echoed = true;
+                        }
+                        Some(message::Union::Auth2fa(factor)) => {
+                            assert!(!answered);
+                            assert_eq!(factor.code, "111111");
+                            answered = true;
+                        }
+                        _ => panic!("unexpected authentication reply"),
+                    }
+                }
+                assert!(echoed && answered);
+                for revision in 2..=3 {
+                    refuse(&mut peer, "Wrong 2FA Code").await;
+                    wait_challenge(&state, revision).await;
+                    assert_eq!(lock(&state.inner).snapshot.phase, "second_factor_rejected");
+                    viewer.send_second_factor("222222".into()).unwrap();
+                    assert_eq!(lock(&state.inner).snapshot.phase, "verifying_second_factor");
+                    assert!(matches!(receive(&mut peer).await.union,
+                        Some(message::Union::Auth2fa(_))));
+                }
+                let mut success = LoginResponse::new();
+                success.set_peer_info(PeerInfo::new());
+                let mut message = Message::new();
+                message.set_login_response(success);
+                peer.send(&message).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(driver, fixture);
+            assert!(result.is_ok());
+            assert_eq!(lock(&state.inner).snapshot.second_factor_challenge, 3);
+        }).await.expect("authentication and all replies must finish within one budget");
     }
 }

@@ -48,7 +48,7 @@ voice calls does not claim that desktop playback or recording is implemented.
   active: `native/ohos_napi/Cargo.toml` (`rd_engine_native_har`), built into
   `target/package.har` with `librd_engine_native_har.so`. Source exports live in
   `native/ohos_napi/package/index.ets`; binaries and provenance are assembled under `target/har/`.
-- This build exports 41 functions. `package/libs/index.d.ts` and
+- This build exports 42 functions. `package/libs/index.d.ts` and
   `package/index.ets` are maintained together with the Rust NAPI exports; the
   packaging build copies them rather than generating missing declarations.
   Coverage is partial, not parity: a name the client imports that is absent from
@@ -60,8 +60,8 @@ voice calls does not claim that desktop playback or recording is implemented.
   the compile-time `implemented_entry_points!` list, `pending` as the client
   import list compiled into the same function minus `implemented`/`registry_only`,
   plus the static `refused_entry_points` and `not_served` classifications. Read
-  that answer instead of inferring support from a name. The 41 exported names
-  include the explicitly refused `sessionCancelJob`; the 40 implemented names
+  that answer instead of inferring support from a name. The 42 exported names
+  include the explicitly refused `sessionCancelJob`; the 41 implemented names
   exclude it. `pending` means no implemented behavior, not necessarily no export.
   Read the paired declarations and refusal classifications together.
 
@@ -114,6 +114,7 @@ fabricated values.
 | `sessionAdd` | captures a direct target or owned v2 explicit-save ID route and initialized local ID; no dial/Config/persistence; refuses existing ids and a full 256-record registry without eviction |
 | `sessionStart` | captured ID route → existing strict `Viewer::start_rendezvous`; direct RustDesk/VNC/authenticated RDP → unchanged `Viewer::start` |
 | `sessionLogin` | records a password only on a nonterminal/nonclosing record; a live unauthenticated viewer returns `restart_required`, requiring close → final poll → ACK → new registration/start, not same-viewer reauthentication |
+| `sessionSend2fa` | admits one six-digit code only while this same RustDesk authentication is waiting; `queued:true` is not authorization. A peer challenge revision makes repeated Wrong replies observable; `trustThisDevice:true` is explicitly refused until enrollment has a real owner |
 | `sessionBindSurface` | takes the opaque `componentId` that `xcomponentAttach` returned on this UI environment (a Surface id, a node label or any other string is refused) and borrows that holder's real lease through `xcomponent::borrow_surface`; the record's single `PendingSurfaceLease` slot is published once and a second component is refused instead of redirecting a running viewer. An empty `componentId` is a give-back request that only a never-started or confirmed-reclaimed record may answer `released:true`, and a held give-back is a refusal, never a release |
 | `sessionClose` | `Promise` that resolves after native teardown, not on request acceptance: it requests close, waits for the owned reclamation verdict and answers `released`/`settle`; confirmed reclamation scrubs the registry password/Viewer but retains the final receipt, and it never removes the record or ACKs it |
 | `sessionAcknowledgeClose` | consumes a confirmed, already-constructed terminal receipt for the exact `lifecycleEpoch` and only then removes that one record; refused while closing, unconfirmed, or before a complete close/poll receipt |
@@ -576,11 +577,12 @@ available merely because `Host` exists:
 ## Not served today (explicit, not stubbed)
 
 - Clipboard, file transfer, remote directory reads, desktop audio playback, multi-display
-  switching, video pause, codec/image-quality setters, 2FA answers,
-  trusted-device toggles, and the legacy toggle/job-id bookkeeping have no
-  `Viewer` public operation to forward. The RustDesk login request disables
-  audio, clipboard and file transfer, and a 2FA requirement ends as
-  `SecondFactorUnsupported`. Names in this class must be answered as unsupported
+  switching, video pause, codec/image-quality setters, trusted-device enrollment,
+  and the legacy toggle/job-id bookkeeping have no `Viewer` public operation
+  to forward. The RustDesk login request disables audio, clipboard and file
+  transfer. Second-factor answers now use the same authentication and its
+  original absolute deadline; they do not create a new connection. The remaining
+  unsupported operations must be answered as unsupported
   — never with default state, a silently swallowed call, or a fabricated success.
 - `sessionCancelJob` has no job owner to cancel and is refused as a whole; it is
   neither a viewer close nor a terminal ACK (see the ACK contract above).

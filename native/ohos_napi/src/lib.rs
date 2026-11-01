@@ -244,6 +244,8 @@ struct Reported {
     authorized: bool,
     /// The viewer finished; the snapshot's error rides on that event.
     finished: bool,
+    /// The last peer-issued 2FA challenge shown to this consumer.
+    second_factor_challenge: u64,
 }
 
 impl Reported {
@@ -254,6 +256,26 @@ impl Reported {
     /// named in the answer's `note` instead of being turned into an event.
     fn events(&mut self, snapshot: &ViewerSnapshot) -> Vec<serde_json::Value> {
         let mut events = Vec::new();
+        if !snapshot.closed
+            && !snapshot.authenticated
+            && matches!(snapshot.phase.as_str(), "awaiting_second_factor" | "second_factor_rejected")
+            && snapshot.second_factor_challenge > self.second_factor_challenge
+        {
+            self.second_factor_challenge = snapshot.second_factor_challenge;
+            events.push(serde_json::json!({
+                "name": "msgbox",
+                "type": "input-2fa",
+                "title": "2FA",
+                "text": if snapshot.phase == "second_factor_rejected" {
+                    "Wrong 2FA Code"
+                } else {
+                    "2FA Required"
+                },
+                "challenge_revision": snapshot.second_factor_challenge.to_string(),
+                // Local enrollment capability, not the remote host's policy.
+                "trust_this_device_supported": false,
+            }));
+        }
         // Authentication is an explicit snapshot fact, not a phase inference.
         // In particular RFB is already authenticated while it waits for the
         // client to bind its Surface, so peer_info must reach ArkTS in that
@@ -1081,6 +1103,43 @@ pub fn session_login(session_id: String, payload: String) -> String {
     }
 }
 
+/// Queues one answer on the same authentication, never a password redial.
+/// Trusted-device enrollment is not implemented by this entry point; true is
+/// refused explicitly instead of silently sending an empty hwid.
+#[napi(js_name = "sessionSend2fa")]
+pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device: bool) -> String {
+    let response = with_sessions(|sessions| {
+        if trust_this_device {
+            return error_json("trusted-device enrollment is not implemented by this entry point");
+        }
+        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+            return error_json("2FA code must contain exactly six ASCII digits");
+        }
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return error_json("unknown session");
+        };
+        if let Err(error) = mutable_snapshot(record) {
+            return error_json(error);
+        }
+        let Some(viewer) = record.viewer.as_ref() else {
+            return error_json("session has no running viewer");
+        };
+        if let Err(error) = viewer.send_second_factor(std::mem::take(&mut code)) {
+            return error_json(&error.to_string());
+        }
+        let snapshot = viewer.snapshot();
+        let mut response = session_response(
+            true, "session_send_2fa", &session_id, record, Some(&snapshot),
+        );
+        response["queued"] = serde_json::json!(true);
+        response["message"] = serde_json::json!("code queued; waiting for the peer's authentication decision");
+        response.to_string()
+    });
+    // Covers every refusal before the engine takes ownership of the code.
+    scrub_password(&mut code);
+    response
+}
+
 /// Records this session's one Surface destination.
 ///
 /// The third argument is the `componentId` an `xcomponentAttach` on this UI
@@ -1545,9 +1604,6 @@ fn peer_info_event(snapshot: &ViewerSnapshot) -> serde_json::Value {
 /// inventing one.
 fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
     match (phase, error) {
-        ("closed" | "failed", Some("SecondFactorUnsupported")) => {
-            "the viewer finished after the peer answered with a 2FA requirement, which this build has no entry point to answer: the close event carries that error and the client's 2FA prompt is not used"
-        }
         ("closed" | "failed", _) => {
             "the viewer finished: the close event carries the snapshot's own error string when it has one"
         }
@@ -1562,6 +1618,12 @@ fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
         }
         ("awaiting_approval", _) => {
             "the session is waiting for the host operator to allow or deny the connection"
+        }
+        ("awaiting_second_factor" | "second_factor_rejected", _) => {
+            "the peer requested a second-factor answer; each actual challenge is reported once"
+        }
+        ("verifying_second_factor", _) => {
+            "one code was queued on this authentication; only the peer's answer can authorize it"
         }
         (
             "authenticated"
@@ -2281,6 +2343,7 @@ implemented_entry_points!(
     ("sessionAdd", session_add),
     ("sessionStart", session_start),
     ("sessionLogin", session_login),
+    ("sessionSend2fa", session_send_2fa),
     ("sessionBindSurface", session_bind_surface),
     ("sessionClose", session_close),
     ("sessionAcknowledgeClose", session_acknowledge_close),
