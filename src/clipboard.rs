@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn formats_this_client_cannot_apply_are_skipped_but_a_broken_one_is_an_error() {
         let unknown = Clipboard {
-            format: 99.into(),
+            format: protobuf::EnumOrUnknown::from_i32(99),
             ..Default::default()
         };
         assert!(
