@@ -88,6 +88,7 @@ pub(super) async fn serve(
                 policy_revision: lock(&state.credentials).revision,
                 peer_id: String::new(), name: String::new(), authorized: false,
                 disconnected: false, phase: "authenticating", keyboard: false, error: None,
+                capture: None,
             }),
             cancel: state.cancel.child_token(), commands, finished: watch::channel(None).0,
         });
@@ -214,7 +215,17 @@ async fn authenticate_epoch(
         policy: credentials.policy, ceiling: grant, password_permissions: grant,
         peer_info: peer_info(options, codecs),
         approval: Box::new(LocalApproval { state: state.clone(), epoch, grant }),
-        second_factor: Box::new(NoSecondFactor), attempts: Box::new(SharedAttempts { state: state.clone(), revision: credentials.revision }),
+        // The host's own durable record answers the second step: whether it is
+        // required at all, the TOTP check and the trusted-device skip. It is
+        // asked only while `HostAuthentication` is already at Await2Fa, i.e.
+        // after this peer passed the primary password/approval step.
+        second_factor: match &options.security {
+            Some(record) => Box::new(security::HostSecondFactor::new(Arc::clone(record))),
+            // A run with no such record (the Config-driven Windows owner, the
+            // probe binaries) has no second factor to require.
+            None => Box::new(NoSecondFactor),
+        },
+        attempts: Box::new(SharedAttempts { state: state.clone(), revision: credentials.revision }),
     };
     // Official raw direct viewers wait for Hash, not SignedId. This sequence is
     // an explicit local compatibility opt-in, never a routed/signed downgrade.

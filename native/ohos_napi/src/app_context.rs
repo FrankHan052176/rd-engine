@@ -128,6 +128,9 @@ impl AppContext {
     }
 
     fn retire(&mut self) {
+        // Revoke the listener and peers synchronously; its own service still
+        // joins teardown off this thread and reports unconfirmed reclamation.
+        super::host_bridge::close_after_lifecycle_fence();
         // A presence query is cancelled and released even when no discovery
         // owner exists: the fence, not the worker, is what makes its in-flight
         // answer unusable, and its own generation can no longer be cancelled or

@@ -169,6 +169,8 @@ fn options(endpoint: Endpoint) -> ViewerOptions {
         password: PASSWORD.into(),
         requested_fps: 30,
         input_policy: ViewerInputPolicy::interactive(),
+        mode: rd_engine::session::SessionMode::Desktop,
+        transfer_root: None,
         session_options: Default::default(),
     }
 }

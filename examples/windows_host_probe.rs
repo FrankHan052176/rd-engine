@@ -224,6 +224,7 @@ mod windows {
             display_name: cli.id.clone(),
             id: cli.id,
             credentials,
+            security: None,
             signing_key,
             // The bound display's own geometry and binding key: the host
             // publishes this output, not an ordinal that may resolve elsewhere.

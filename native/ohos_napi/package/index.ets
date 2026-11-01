@@ -52,7 +52,9 @@ export function lanPeerRemove(ownerGeneration: string, expectedScanId: string, c
 
 
 /**
- * optionsJson may carry approvedServerProfile and rustdeskIdOnly; true keeps even
+ * optionsJson may carry isFileTransfer and transferRoot (an absolute authorized
+ * local directory fixed at add). File sessions use no decoder or Surface.
+ * approvedServerProfile and rustdeskIdOnly:true keep even
  * IP-shaped LAN IDs on the approved RustDesk route. Existing ids are never
  * overwritten. At 256 registered/live/quarantined/unacknowledged records, new
  * registration is refused; consume and ACK confirmed receipts to free capacity.
@@ -68,7 +70,7 @@ export function sessionStart(sessionId: string): string {
   return native.sessionStart(sessionId);
 }
 
-/** Records credentials only before terminal/closing state; never reauthenticates a closed viewer. */
+/** Same-wire password answer; queued is not authorized. Before start, only records the initial password. */
 export function sessionLogin(sessionId: string, loginJson: string): string {
   return native.sessionLogin(sessionId, loginJson);
 }
@@ -157,12 +159,29 @@ export function sessionSetCommon(sessionId: string, key: string, value: string):
 }
 
 /**
- * Explicitly unsupported until a real transfer-job owner is wired here.
- * No actId (including 0) closes a viewer, releases a Surface or ACKs a receipt.
- * Use sessionClose/sessionAcknowledgeClose for the viewer lifecycle.
+ * Cancels one live job owned by this session. No actId (including 0) closes a
+ * viewer, releases a Surface or ACKs a receipt. ok/queued is local admission.
  */
 export function sessionCancelJob(sessionId: string, actId: number): string {
   return native.sessionCancelJob(sessionId, actId);
+}
+
+export function transferNextJobId(): number {
+  return native.transferNextJobId();
+}
+
+export function sessionReadRemoteDir(sessionId: string, path: string, includeHidden: boolean): string {
+  return native.sessionReadRemoteDir(sessionId, path, includeHidden);
+}
+
+export function sessionSendFiles(sessionId: string, actId: number, path: string, to: string,
+  fileNum: number, includeHidden: boolean, isRemote: boolean, isDir: boolean): string {
+  return native.sessionSendFiles(sessionId, actId, path, to, fileNum, includeHidden, isRemote, isDir);
+}
+
+export function sessionSetConfirmOverrideFile(sessionId: string, actId: number, fileNum: number,
+  needOverride: boolean, remember: boolean, isUpload: boolean): string {
+  return native.sessionSetConfirmOverrideFile(sessionId, actId, fileNum, needOverride, remember, isUpload);
 }
 
 /**
@@ -300,4 +319,80 @@ export function sessionGetRemoteAudioState(sessionId: string): string {
 
 export function sessionGetEnableTrustedDevices(sessionId: string): boolean {
   return native.sessionGetEnableTrustedDevices(sessionId);
+}
+
+export function controlledServerStart(optionsJson: string): Promise<string> {
+  return native.controlledServerStart(optionsJson);
+}
+
+export function controlledServerStop(runEpoch: string): Promise<string> {
+  return native.controlledServerStop(runEpoch);
+}
+
+export function controlledServerGetStatus(): string {
+  return native.controlledServerGetStatus();
+}
+
+export function controlledScreenCaptureGetStatus(): string {
+  return native.controlledScreenCaptureGetStatus();
+}
+
+export function controlledScreenCaptureStop(runEpoch: string): Promise<string> {
+  return native.controlledScreenCaptureStop(runEpoch);
+}
+
+export function controlledScreenConfigure(configJson: string): string {
+  return native.controlledScreenConfigure(configJson);
+}
+
+export function controlledIncomingPoll(limit: number): string {
+  return native.controlledIncomingPoll(limit);
+}
+
+export function controlledIncomingResolve(requestId: string, allow: boolean): string {
+  return native.controlledIncomingResolve(requestId, allow);
+}
+
+export function controlledPasswordGet(): Promise<string> {
+  return native.controlledPasswordGet();
+}
+
+export function controlledPasswordRefresh(): Promise<string> {
+  return native.controlledPasswordRefresh();
+}
+
+export function controlledPasswordSetPermanent(password: string): Promise<string> {
+  return native.controlledPasswordSetPermanent(password);
+}
+
+export function controlledPasswordSetVerificationMethod(method: string): Promise<string> {
+  return native.controlledPasswordSetVerificationMethod(method);
+}
+
+export function controlledSettingSet(key: string, value: string): Promise<string> {
+  return native.controlledSettingSet(key, value);
+}
+
+export function controlledTwoFactorBegin(): Promise<string> {
+  return native.controlledTwoFactorBegin();
+}
+
+export function controlledTwoFactorVerify(code: string): Promise<string> {
+  return native.controlledTwoFactorVerify(code);
+}
+
+export function controlledTwoFactorDisable(): Promise<string> {
+  return native.controlledTwoFactorDisable();
+}
+
+export function controlledTwoFactorGet(): Promise<string> {
+  return native.controlledTwoFactorGet();
+}
+
+export function controlledTwoFactorRemoveTrustedDevices(hwidsJson: string): Promise<string> {
+  return native.controlledTwoFactorRemoveTrustedDevices(hwidsJson);
+}
+
+export function controlledTwoFactorClearTrustedDevices(): Promise<string> {
+  return native.controlledTwoFactorClearTrustedDevices();
 }

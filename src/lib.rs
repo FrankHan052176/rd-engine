@@ -32,6 +32,7 @@ pub mod session_options;
 #[path = "platform/ohos_surface.rs"]
 pub mod surface;
 pub mod transport;
+pub mod transfer;
 // The RustDesk-wire encoded video pipeline, shared by every session that owns one.
 pub mod video;
 pub mod viewer;

@@ -167,6 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         bitrate: cli.bitrate,
         platform: std::env::consts::OS.into(),
         credentials,
+        security: None,
         publisher_backend: PublisherBackend::Auto,
         #[cfg(all(
             any(target_os = "windows", dsh_windows_typecheck),

@@ -75,11 +75,17 @@ jobs:
         with:
           workspaces: native/ohos_napi
           prefix-key: ohos-har-sdk-6.1.1.280-rust-1.95.0
-      - name: Same-wire second-factor regressions
+      - name: Session, transfer and host regressions
         shell: bash
         run: |
           cargo test --locked --lib second_factor
           cargo test --locked --lib session_options
+          cargo test --locked --lib password
+          cargo test --locked --lib transfer
+          cargo test --locked --lib host::security
+          cargo test --locked --lib host::service
+          cargo test --locked --test rendezvous
+          cargo test --locked --test direct_auth
       - name: Immutable package version
         id: version
         shell: bash

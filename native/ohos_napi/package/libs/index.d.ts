@@ -31,7 +31,9 @@ export declare function lanPeerRemove(ownerGeneration: string, expectedScanId: s
 
 
 /**
- * optionsJson may carry approvedServerProfile and rustdeskIdOnly; true requires
+ * isFileTransfer selects the real file role (no decoder/Surface); transferRoot
+ * fixes its absolute authorized local directory at add.
+ * approvedServerProfile and rustdeskIdOnly:true require
  * the approved RustDesk ID route. Existing ids are never overwritten; the registry
  * refuses registration at 256 records, including quarantine and unacknowledged terminals.
  * add/start/poll/close carry session:{sessionId,coreSessionId,lifecycleEpoch,
@@ -42,7 +44,7 @@ export declare function sessionAdd(sessionId: string, peerTarget: string, option
 
 export declare function sessionStart(sessionId: string): string
 
-/** Refuses closing/terminal records; a closed viewer cannot accept a new password. */
+/** Same-wire password answer; queued is not authorized. Before start, only records the initial password. */
 export declare function sessionLogin(sessionId: string, loginJson: string): string
 
 /** Same authentication; queued is not authorized. Trusted enrollment is explicitly refused. */
@@ -101,11 +103,20 @@ export declare function sessionSetUnverifiedInputAccepted(sessionId: string, acc
 export declare function sessionSetCommon(sessionId: string, key: string, value: string): string
 
 /**
- * Explicitly unsupported: no transfer-job owner is wired to this bridge.
+ * Cancels one live job of this session; ok/queued is local admission only.
  * No actId, including 0, closes a viewer or ACKs/removes a terminal record.
- * Whole-viewer teardown and ACK belong to sessionClose/sessionAcknowledgeClose.
  */
 export declare function sessionCancelJob(sessionId: string, actId: number): string
+
+export declare function transferNextJobId(): number
+
+export declare function sessionReadRemoteDir(sessionId: string, path: string, includeHidden: boolean): string
+
+export declare function sessionSendFiles(sessionId: string, actId: number, path: string, to: string,
+  fileNum: number, includeHidden: boolean, isRemote: boolean, isDir: boolean): string
+
+export declare function sessionSetConfirmOverrideFile(sessionId: string, actId: number, fileNum: number,
+  needOverride: boolean, remember: boolean, isUpload: boolean): string
 
 export declare function runtimeGetServerConfig(): Promise<string>
 
@@ -175,3 +186,41 @@ export declare function sessionToggleOption(sessionId: string, option: string): 
 export declare function sessionGetRemoteAudioState(sessionId: string): string
 
 export declare function sessionGetEnableTrustedDevices(sessionId: string): boolean
+
+export declare function controlledServerStart(optionsJson: string): Promise<string>
+
+export declare function controlledServerStop(runEpoch: string): Promise<string>
+
+export declare function controlledServerGetStatus(): string
+
+export declare function controlledScreenCaptureGetStatus(): string
+
+export declare function controlledScreenCaptureStop(runEpoch: string): Promise<string>
+
+export declare function controlledScreenConfigure(configJson: string): string
+
+export declare function controlledIncomingPoll(limit: number): string
+
+export declare function controlledIncomingResolve(requestId: string, allow: boolean): string
+
+export declare function controlledPasswordGet(): Promise<string>
+
+export declare function controlledPasswordRefresh(): Promise<string>
+
+export declare function controlledPasswordSetPermanent(password: string): Promise<string>
+
+export declare function controlledPasswordSetVerificationMethod(method: string): Promise<string>
+
+export declare function controlledSettingSet(key: string, value: string): Promise<string>
+
+export declare function controlledTwoFactorBegin(): Promise<string>
+
+export declare function controlledTwoFactorVerify(code: string): Promise<string>
+
+export declare function controlledTwoFactorDisable(): Promise<string>
+
+export declare function controlledTwoFactorGet(): Promise<string>
+
+export declare function controlledTwoFactorRemoveTrustedDevices(hwidsJson: string): Promise<string>
+
+export declare function controlledTwoFactorClearTrustedDevices(): Promise<string>

@@ -14,7 +14,7 @@ use crate::{
     protocol::Protocol,
     session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
     rendezvous::{RendezvousConfig, RouteKind},
-    session::{AuthenticatedParts, PeerCloseReason, ViewerEvent, ViewerSession, ViewerState},
+    session::{AuthenticatedParts, PeerCloseReason, SessionMode, ViewerEvent, ViewerSession, ViewerState},
     transport::{WireReader, WireWriter},
 };
 pub use decoder::SurfaceLease;
@@ -33,6 +33,7 @@ use ironrdp_pdu::rdp::capability_sets::InputFlags as RdpInputFlags;
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -226,6 +227,9 @@ pub struct ViewerOptions {
     /// Which wire to speak and where to dial it. `RustDesk { address: None }`
     /// is the rendezvous route; everything else dials directly.
     pub target: ViewerTarget,
+    pub mode: SessionMode,
+    /// Local filesystem authority captured for this file-transfer session.
+    pub transfer_root: Option<PathBuf>,
     pub username: String,
     pub local_id: String,
     pub local_name: String,
@@ -250,6 +254,7 @@ impl Drop for ViewerOptions {
 #[derive(Debug, Clone, Default)]
 pub struct ViewerSnapshot {
     pub phase: String,
+    pub mode: SessionMode,
     /// Which wire this session speaks: `rustdesk`, `vnc` or `rdp`. The UI needs
     /// it to label a session, and it is set from the target rather than guessed
     /// from the port or the address.
@@ -320,6 +325,22 @@ pub struct ViewerSnapshot {
     /// Advances only when the peer actually requests or rejects a second
     /// factor. Repeated Wrong replies remain observable between polls.
     pub second_factor_challenge: u64,
+    /// Advances only when the peer demands a password this attempt did not send,
+    /// or refuses the one it sent. Like the second-factor counter it is what
+    /// makes one demand one prompt: a client that already raised a form for this
+    /// value reads the same phase on every poll and asks for nothing more, and a
+    /// refusal is a new value rather than the same demand repeated.
+    pub password_challenge: u64,
+    /// The peer's last password demand or refusal, in the typed terms of
+    /// `login_failure`: `EmptyPassword` is a session that sent none,
+    /// `WrongPassword` one whose answer the peer refused.
+    ///
+    /// It describes an authentication that is still open — the session is waiting
+    /// on the same wire for the answer — so `None` is everything else, including
+    /// an answer that is already on its way to the peer (the phase says
+    /// `verifying_password` while its outcome is unknown). A login the peer has
+    /// ended keeps its category in `login_failure` instead.
+    pub password_failure: Option<LoginFailure>,
     /// Exact LoginResponse metadata; None before any peer report.
     pub enable_trusted_devices: Option<bool>,
     /// Actual authenticated connection evidence, never inferred from options.
@@ -385,6 +406,21 @@ pub enum ViewerError {
     /// closing, a code would otherwise cross into an attempt it was not typed
     /// for.
     SecondFactorNotAwaiting,
+    /// The caller offered a password this session is not waiting for.
+    ///
+    /// Refused rather than held: before the peer asks, after it has stopped
+    /// asking, on a wire with no such step, and on a viewer that is already
+    /// closing, a password would otherwise cross into an attempt it was not
+    /// typed for.
+    PasswordNotAwaiting,
+    /// An empty password cannot answer a peer's demand.
+    ///
+    /// The original wire spells "no password" as an empty
+    /// `LoginRequest.password`, which is exactly the attempt the peer refused, so
+    /// an empty string is not a retry. It is refused here — the session stays
+    /// open and the peer still waits — instead of being written as another login
+    /// that carries nothing.
+    InvalidPassword,
     SessionOption(OptionError),
     TransportFailed,
     RemoteClosed,
@@ -493,6 +529,8 @@ struct State {
     /// read back out of the snapshot's label, so an admission decision is one
     /// field read rather than a clone of the whole snapshot.
     protocol: Protocol,
+    mode: SessionMode,
+    transfer: Mutex<Option<Arc<crate::transfer::TransferHandle>>>,
     authenticated: AtomicBool,
     /// DemandActive evidence from the adapter, never the client's advertised
     /// flags. Empty before confirmation and while activation is incomplete.
@@ -517,6 +555,10 @@ struct State {
     /// this session really waits for a code on its own wire, and taken away
     /// when it leaves that step.
     second_factor: Mutex<SecondFactorGate>,
+    /// The peer's password demand, in the same shape: installed by
+    /// authentication only while this session really waits for an answer on its
+    /// own wire, and taken away when it leaves that step.
+    password: Mutex<PasswordGate>,
 }
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -547,7 +589,8 @@ impl Facts {
     fn of(state: &State) -> Self {
         Self {
             protocol: state.protocol,
-            authenticated: state.authenticated.load(Ordering::Acquire),
+            authenticated: state.mode == SessionMode::Desktop
+                && state.authenticated.load(Ordering::Acquire),
             proven: state.peer_proven.load(Ordering::Acquire),
             closed: state.cancel.is_cancelled(),
         }
@@ -822,20 +865,52 @@ struct SecondFactorGate {
     submitted: bool,
 }
 
-/// The receiving end of one viewer's second-factor channel.
+/// One viewer's password entry point, installed by authentication only while its
+/// session is really waiting for one.
 ///
-/// Authentication reads it, which is what lets an admitted code reach the
-/// session's own writer. It also clears whatever is still in the channel when
-/// that exchange ends: a code the peer never got — it authorized first, or the
+/// It has the second-factor gate's shape because it is the same kind of step: a
+/// secret the peer asked for, on the wire this session already has, answered
+/// once. `password` exists exactly between the peer demanding one that this
+/// attempt did not send (or refusing the one it sent) and this authentication
+/// leaving that step, and `submitted` says an answer admitted through it has not
+/// been written yet. A password offered with no sender installed is refused
+/// instead of kept, and a second one offered before the peer answered the first
+/// is refused rather than queued into the attempt that follows — a password
+/// typed for one attempt never becomes the answer to the next.
+#[derive(Default)]
+struct PasswordGate {
+    /// The channel the authentication loop is reading; `None` outside that step.
+    password: Option<mpsc::Sender<String>>,
+    /// Whether an admitted password is still waiting to be written.
+    submitted: bool,
+}
+
+/// The receiving ends of one viewer's pre-authentication answers.
+///
+/// Authentication reads both, which is what lets an admitted secret reach the
+/// session's own writer. Each also clears whatever is still in it when that
+/// exchange ends: a secret the peer never got — it authorized first, or the
 /// viewer was cancelled while one was queued — is single-use, and must not be
 /// left for the allocator to hand back.
-struct SecondFactorAnswers(mpsc::Receiver<String>);
+struct AuthAnswers {
+    codes: mpsc::Receiver<String>,
+    passwords: mpsc::Receiver<String>,
+}
 
-impl Drop for SecondFactorAnswers {
-    fn drop(&mut self) {
-        while let Ok(code) = self.0.try_recv() {
+impl AuthAnswers {
+    fn clear(&mut self) {
+        while let Ok(code) = self.codes.try_recv() {
             discard_code(code);
         }
+        while let Ok(password) = self.passwords.try_recv() {
+            discard_password(password);
+        }
+    }
+}
+
+impl Drop for AuthAnswers {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
@@ -960,6 +1035,10 @@ impl State {
             Err(ViewerError::LoginFailed(failure)) => Some(*failure),
             _ => None,
         };
+        // A password demand describes an authentication that is still open. Once
+        // this session is finished the terminal answer is the category above, so
+        // a mid-flight reason is not published beside a closed session.
+        inner.snapshot.password_failure = None;
         inner.snapshot.peer_close_reason = if reclamation.is_ok()
             && matches!(&result, Err(ViewerError::RemoteClosed)) {
             inner.observed_peer_close_reason
@@ -1136,7 +1215,10 @@ impl Viewer {
             || options.local_id.len() > 512
             || options.local_name.len() > 512
             || options.password.len() > 4096
-            || !(1..=240).contains(&options.requested_fps)
+            || (options.mode == SessionMode::Desktop
+                && !(1..=240).contains(&options.requested_fps))
+            || (options.mode == SessionMode::FileTransfer
+                && options.target.protocol() != Protocol::RustDesk)
         {
             return Err(ViewerError::InvalidOptions);
         }
@@ -1145,11 +1227,13 @@ impl Viewer {
         let state = Arc::new(State {
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
+            password: Mutex::new(PasswordGate::default()),
             session_options: Mutex::new(options.session_options.clone()),
             advertised_decoding: Mutex::new(None),
             inner: Mutex::new(Inner {
                 snapshot: ViewerSnapshot {
                     phase: "capability".into(),
+                    mode: options.mode,
                     protocol: options.target.protocol().as_str().into(),
                     ..Default::default()
                 },
@@ -1161,6 +1245,8 @@ impl Viewer {
             done: Notify::new(),
             result: Mutex::new(None),
             protocol: options.target.protocol(),
+            mode: options.mode,
+            transfer: Mutex::new(None),
             authenticated: AtomicBool::new(false),
             rdp_input_flags: AtomicU16::new(0),
             peer_proven: AtomicBool::new(false),
@@ -1197,6 +1283,26 @@ impl Viewer {
         self.state.snapshot()
     }
 
+    /// A session-owned mailbox retained for terminal event consumption too.
+    pub fn transfer_handle(&self) -> Option<Arc<crate::transfer::TransferHandle>> {
+        lock(&self.state.transfer).clone()
+    }
+
+    pub fn submit_transfer(
+        &self,
+        command: crate::transfer::TransferCommand,
+    ) -> Result<(), crate::transfer::TransferError> {
+        if self.state.cancel.is_cancelled() {
+            return Err(crate::transfer::TransferError::Closed);
+        }
+        if !self.state.authenticated.load(Ordering::Acquire) {
+            return Err(crate::transfer::TransferError::Closed);
+        }
+        self.transfer_handle()
+            .ok_or(crate::transfer::TransferError::Closed)?
+            .submit(command)
+    }
+
     /// Current gate epoch for a refusal report, not a successful input receipt.
     pub fn session_options_snapshot(&self) -> SessionOptions {
         lock(&self.state.session_options).clone()
@@ -1205,7 +1311,7 @@ impl Viewer {
     /// Commit requested state only after the entire change enters the one
     /// writer queue. No option here claims the peer applied its request.
     pub fn set_session_option(&self, change: SessionOptionChange) -> Result<(), ViewerError> {
-        if self.state.protocol != Protocol::RustDesk {
+        if self.state.protocol != Protocol::RustDesk || self.state.mode != SessionMode::Desktop {
             return Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol));
         }
         if self.state.cancel.is_cancelled() {
@@ -1494,6 +1600,74 @@ impl Viewer {
         }
     }
 
+    /// Answers the peer's password demand on this same, still-open session.
+    ///
+    /// The engine keeps its authentication attempt open across the peer's
+    /// `Empty Password`/`Wrong Password` answer, so this is that attempt's retry
+    /// and not a new one: the login is written on the wire this session already
+    /// opened, under the identity, session id and role (desktop or file
+    /// transfer) its first request carried, and under the original absolute
+    /// authentication deadline. No socket, no writer and no viewer is created to
+    /// ask again.
+    ///
+    /// A password is admitted only while this viewer's own RustDesk session is
+    /// waiting for one: authentication installs the entry point when the peer
+    /// demands a password this attempt did not send or refuses the one it sent,
+    /// and takes it away when the session leaves that step, so a password
+    /// offered before the peer asks, after it stopped asking, on another wire, or
+    /// after this viewer closed is refused instead of kept for a later attempt.
+    /// One answer per peer demand is admitted — a second one offered while the
+    /// first is still unwritten is `Backpressure`, never a queue.
+    ///
+    /// `Ok(())` is the receipt that the password reached the session's own
+    /// authentication loop, which writes it; it is never a claim that the peer
+    /// accepted it. Acceptance stays the snapshot's `authenticated` fact, and a
+    /// refusal is the peer's next `password_rejected` state.
+    pub fn send_password(&self, password: String) -> Result<(), ViewerError> {
+        if self.state.cancel.is_cancelled() {
+            discard_password(password);
+            return Err(ViewerError::Closed);
+        }
+        // An empty string is not an answer: the original wire spells "no
+        // password" as an empty `LoginRequest.password`, which is the attempt
+        // the peer just refused.
+        if password.is_empty() {
+            return Err(ViewerError::InvalidPassword);
+        }
+        let mut gate = lock(&self.state.password);
+        // Cloned, so the refusals below neither hold nor extend a borrow of the
+        // gate they are about to mutate.
+        let Some(sender) = gate.password.clone() else {
+            discard_password(password);
+            return Err(ViewerError::PasswordNotAwaiting);
+        };
+        if gate.submitted {
+            discard_password(password);
+            return Err(ViewerError::Backpressure);
+        }
+        match sender.try_send(password) {
+            Ok(()) => {
+                gate.submitted = true;
+                // The answer is on its way to the wire. The peer's previous
+                // reason no longer describes this attempt; what is still
+                // unknown is its outcome, and `authenticated` stays false until
+                // the peer says otherwise.
+                let mut inner = lock(&self.state.inner);
+                inner.snapshot.phase = "verifying_password".into();
+                inner.snapshot.password_failure = None;
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Full(password)) => {
+                discard_password(password);
+                Err(ViewerError::Backpressure)
+            }
+            Err(mpsc::error::TrySendError::Closed(password)) => {
+                discard_password(password);
+                Err(ViewerError::Closed)
+            }
+        }
+    }
+
     pub fn request_close(&self) {
         self.state.request_close();
     }
@@ -1535,6 +1709,17 @@ fn discard_code(mut code: String) {
     hbb_common::sodiumoxide::utils::memzero(&mut bytes);
 }
 
+/// Drops one password that was handed in and is not going to be written.
+///
+/// A password is a single-use secret in the same sense: one this viewer refused
+/// never reached the peer, so its bytes are cleared here instead of being kept
+/// until the allocation happens to be reused. The answer that *is* written is
+/// cleared by the authentication loop as soon as the login is on the wire.
+fn discard_password(mut password: String) {
+    let mut bytes = std::mem::take(&mut password).into_bytes();
+    hbb_common::sodiumoxide::utils::memzero(&mut bytes);
+}
+
 /// The official-client version whose wire behavior this engine implements.
 ///
 /// One constant, because a peer gates features on it (`get_version_number` in its
@@ -1568,7 +1753,7 @@ fn login_request(options: &ViewerOptions, supported: proto::SupportedDecoding) -
     // process-local counter as an original-peer reconnect session identifier.
     let mut session_bytes = [0u8; 8];
     hbb_common::sodiumoxide::randombytes::randombytes_into(&mut session_bytes);
-    LoginRequest {
+    let mut request = LoginRequest {
         username: options.username.clone(),
         my_id: options.local_id.clone(),
         my_name: options.local_name.clone(),
@@ -1576,22 +1761,26 @@ fn login_request(options: &ViewerOptions, supported: proto::SupportedDecoding) -
         version: CLIENT_VERSION.into(),
         session_id: u64::from_le_bytes(session_bytes).max(1),
         video_ack_required: false,
-        option: Some(OptionMessage {
+        option: (if options.mode == SessionMode::Desktop { Some(OptionMessage {
             custom_fps: options.requested_fps as i32,
             ..options.session_options.login_options(&supported)
-        })
+        }) } else { None })
         .into(),
         ..Default::default()
+    };
+    if options.mode == SessionMode::FileTransfer {
+        request.set_file_transfer(proto::FileTransfer::default());
     }
+    request
 }
 
 async fn authenticate(
     state: &State,
     mut options: ViewerOptions,
-    decoders: Decoders,
+    supported: proto::SupportedDecoding,
     connector: Connector,
 ) -> Result<AuthenticatedParts, ViewerError> {
-    let password = Password(std::mem::take(&mut options.password).into_bytes());
+    let mut password = Password(std::mem::take(&mut options.password).into_bytes());
     let mut session = match connector {
         Connector::Direct(identity) => {
             state.phase("connecting");
@@ -1610,7 +1799,7 @@ async fn authenticate(
         Connector::Rendezvous(config) => {
             state.phase("rendezvous");
             let timeout = config.connect_timeout;
-            let (established, evidence) = crate::rendezvous::connect_viewer(config)
+            let (established, evidence) = crate::rendezvous::connect_viewer_for(config, options.mode)
                 .await
                 .map_err(|_| ViewerError::RendezvousFailed)?;
             if !evidence.encrypted || !evidence.peer_verified {
@@ -1624,69 +1813,91 @@ async fn authenticate(
         }
     };
     state.phase("authenticating");
-    // The one channel a second-factor answer travels on, bounded to one
-    // outstanding code. Its sender is what makes the channel outlive every wait
-    // it arms; the copy published in `state.second_factor` exists only while the
-    // session is really waiting for a code, so nothing offered outside that step
-    // is kept for a later attempt. The receiver clears anything still in it when
-    // this exchange ends, including on cancellation.
+    // The two channels a local answer travels on, each bounded to one
+    // outstanding answer, and each whose sender is what makes the channel
+    // outlive every wait it arms. The copies published in `state.second_factor`
+    // and `state.password` exist only while the session is really waiting for
+    // that secret, so nothing offered outside the step is kept for a later
+    // attempt. The receivers clear anything still in them when this exchange
+    // ends, including on cancellation.
     let (codes, answers) = mpsc::channel::<String>(1);
-    let mut answers = SecondFactorAnswers(answers);
+    let (passwords, password_answers) = mpsc::channel::<String>(1);
+    let mut answers = AuthAnswers {
+        codes: answers,
+        passwords: password_answers,
+    };
     let result = authenticate_loop(
         state,
         session,
         &options,
-        &password,
-        decoders.supported_decoding(),
+        &mut password,
+        supported,
         &codes,
-        &mut answers.0,
+        &passwords,
+        &mut answers,
     )
     .await;
     // Whatever ended this authentication — acceptance, refusal or a broken wire
-    // — the entry point ends with it: a code offered afterwards is not this
-    // session's second factor. A cancelling viewer never reaches this line, but
-    // it is already closing, which `Viewer::send_second_factor` refuses before
-    // it looks at the gate at all.
+    // — the entry points end with it: a code or a password offered afterwards is
+    // not this session's answer. A cancelling viewer never reaches this line,
+    // but it is already closing, which the two entry points refuse before they
+    // look at their gate at all.
     *lock(&state.second_factor) = SecondFactorGate::default();
+    *lock(&state.password) = PasswordGate::default();
     result
 }
 
-/// What one authentication step is waiting on: the peer's own record, or a
-/// second-factor answer this viewer's consumer submitted.
+/// What one authentication step is waiting on: the peer's own record, or an
+/// answer this viewer's consumer submitted.
 enum AuthStep {
     Code(String),
+    Password(String),
     Event(Result<ViewerEvent, ViewerError>),
 }
 
-/// The authentication exchange, the peer's second-factor step included.
+/// The authentication exchange, the peer's password and second-factor steps
+/// included.
 ///
 /// The wire read is the same `ViewerSession::recv` the rest of authentication
 /// uses, so it inherits the original absolute deadline. `recv_for_auth` does
-/// only framed reads and synchronous dispatch; probe replies and codes are
-/// written serially outside the select. Cancelling an in-progress write still
-/// destroys that wire, never restores or retries a partial record.
+/// only framed reads and synchronous dispatch; probe replies, codes and
+/// passwords are written serially outside the select. Cancelling an in-progress
+/// write still destroys that wire, never restores or retries a partial record.
 async fn authenticate_loop(
     state: &State,
     mut session: ViewerSession,
     options: &ViewerOptions,
-    password: &Password,
+    password: &mut Password,
     supported: proto::SupportedDecoding,
     codes: &mpsc::Sender<String>,
-    answers: &mut mpsc::Receiver<String>,
+    passwords: &mpsc::Sender<String>,
+    answers: &mut AuthAnswers,
 ) -> Result<AuthenticatedParts, ViewerError> {
     loop {
-        // A code is multiplexed beside the wire only while the session really
-        // waits for one. The wire is polled first, so a record the peer already
-        // sent — including its answer to a code — is dispatched before a
-        // submission this loop is holding.
-        let step = if session.state() == ViewerState::Await2Fa {
+        // A secret is multiplexed beside the wire only while the session really
+        // waits for it: a code in the peer's second-factor step, a password while
+        // a demand this loop armed is still unanswered. The wire is polled
+        // first, so a record the peer already sent — including its answer to what
+        // this loop wrote — is dispatched before a submission it is holding.
+        let awaiting_code = session.state() == ViewerState::Await2Fa;
+        let awaiting_password = {
+            let gate = lock(&state.password);
+            // `submitted` prevents another admission, not consumption of the
+            // already queued answer after a probe won the biased read.
+            gate.password.is_some()
+        };
+        let step = if awaiting_code || awaiting_password {
             tokio::select! {
                 biased;
                 event = session.recv_for_auth() => AuthStep::Event(event.map_err(|_| ViewerError::TransportFailed)),
-                code = answers.recv() => match code {
+                code = answers.codes.recv(), if awaiting_code => match code {
                     Some(code) => AuthStep::Code(code),
-                    // The sender above outlives this loop; a closed channel is
+                    // The senders above outlive this loop; a closed channel is
                     // not a state authentication waits in.
+                    None => return Err(ViewerError::Closed),
+                },
+                password = answers.passwords.recv(), if awaiting_password => match password {
+                    Some(password) => AuthStep::Password(password),
                     None => return Err(ViewerError::Closed),
                 },
             }
@@ -1702,6 +1913,25 @@ async fn authenticate_loop(
                 .send_second_factor(code)
                 .await
                 .map_err(|_| ViewerError::TransportFailed)?,
+            // The demand this loop armed is answered on the wire the session
+            // already owns: the login the peer refused is resent with the new
+            // password, so the target, controller identity, session id and role
+            // it carried are the ones the peer reads again, and the session's
+            // own absolute authentication deadline is unchanged. The answer's
+            // bytes are cleared as soon as the write is done with them, whether
+            // it was written or refused.
+            AuthStep::Password(password) => {
+                let Some(request) = session.login_request().cloned() else {
+                    discard_password(password);
+                    return Err(ViewerError::AuthenticationFailed);
+                };
+                // The guard also scrubs if cancellation drops this future
+                // during the write; code after `.await` would not run then.
+                let answer = Password(password.into_bytes());
+                let written = session.login(request, Some(&answer.0)).await;
+                drop(answer);
+                written.map_err(|_| ViewerError::TransportFailed)?;
+            }
             AuthStep::Event(event) => match event? {
                 ViewerEvent::PreAuthProbe(probe) => {
                     session
@@ -1711,7 +1941,7 @@ async fn authenticate_loop(
                 }
                 ViewerEvent::Challenge => {
                     let request = login_request(options, supported.clone());
-                    session
+                    let written = session
                         .login(
                             request,
                             if password.0.is_empty() {
@@ -1720,7 +1950,10 @@ async fn authenticate_loop(
                                 Some(&password.0)
                             },
                         )
-                        .await
+                        .await;
+                    hbb_common::sodiumoxide::utils::memzero(&mut password.0);
+                    password.0.clear();
+                    written
                         // The login could not be sent, which is the same
                         // transport outcome and not the peer's decision about
                         // the credential.
@@ -1732,6 +1965,13 @@ async fn authenticate_loop(
                         .map_err(|_| ViewerError::AuthenticationFailed);
                 }
                 ViewerEvent::LoginError(error) if error == "No Password Access" => {
+                    // The peer's operator has to accept this request, so the
+                    // credential question this attempt asked is over: a password
+                    // typed at the form that was up can no longer settle
+                    // anything, and one offered now is refused instead of held.
+                    *lock(&state.password) = PasswordGate::default();
+                    *lock(&state.second_factor) = SecondFactorGate::default();
+                    answers.clear();
                     state.phase("awaiting_approval")
                 }
                 // The peer asked for a second factor, and the same session is
@@ -1748,6 +1988,13 @@ async fn authenticate_loop(
                     if session.state() != ViewerState::Await2Fa {
                         return Err(ViewerError::LoginFailed(LoginFailure::Refused));
                     }
+                    // A login the peer accepted far enough to ask for a code is
+                    // past the password step: the form that was up is closed, and
+                    // a password offered from here on must not be written as
+                    // another login into this step.
+                    *lock(&state.password) = PasswordGate::default();
+                    *lock(&state.second_factor) = SecondFactorGate::default();
+                    answers.clear();
                     let mut gate = lock(&state.second_factor);
                     let mut inner = lock(&state.inner);
                     inner.snapshot.second_factor_challenge = inner
@@ -1762,6 +2009,43 @@ async fn authenticate_loop(
                     }
                     .into();
                     gate.code = Some(codes.clone());
+                    gate.submitted = false;
+                }
+                // The peer's password demand on this same, still-open session:
+                // `Empty Password` is the peer wanting one this attempt did not
+                // send, `Wrong Password` its refusal of the one it sent. Either
+                // way the login this session already holds is what a retry
+                // resends, so the step is armed for exactly that answer and the
+                // attempt stays open instead of ending here — which is what lets
+                // a desktop or file-transfer session reach the step that
+                // follows. A demand that did not leave the session waiting for a
+                // login — a peer refusing before any login, where `recv`
+                // already closed the session — has no step to answer, so it
+                // keeps its failure category.
+                ViewerEvent::LoginError(error)
+                    if error == "Empty Password" || error == "Wrong Password" =>
+                {
+                    let failure = LoginFailure::of(&error);
+                    if session.state() != ViewerState::AwaitLogin {
+                        return Err(ViewerError::LoginFailed(failure));
+                    }
+                    *lock(&state.password) = PasswordGate::default();
+                    *lock(&state.second_factor) = SecondFactorGate::default();
+                    answers.clear();
+                    let mut gate = lock(&state.password);
+                    let mut inner = lock(&state.inner);
+                    inner.snapshot.password_challenge = inner
+                        .snapshot
+                        .password_challenge
+                        .checked_add(1)
+                        .ok_or(ViewerError::AuthenticationFailed)?;
+                    inner.snapshot.phase = match failure {
+                        LoginFailure::EmptyPassword => "awaiting_password",
+                        _ => "password_rejected",
+                    }
+                    .into();
+                    inner.snapshot.password_failure = Some(failure);
+                    gate.password = Some(passwords.clone());
                     gate.submitted = false;
                 }
                 // Every other refusal keeps its category: the peer's text is
@@ -1814,17 +2098,26 @@ async fn run_rustdesk(
 ) -> Result<(), ViewerError> {
     // Metadata IPC is also off the UI / network worker. Do not discard a native
     // creation JoinHandle on cancellation; the feeder always joins and closes it.
-    let caps = tokio::task::spawn_blocking(video::capabilities)
-        .await
-        .map_err(|_| ViewerError::TaskFailed)??;
-    let advertised = caps.supported_decoding();
-    options.session_options.validate_advertisement(&advertised)
-        .map_err(ViewerError::SessionOption)?;
-    *lock(&state.advertised_decoding) = Some(advertised);
+    let mode = options.mode;
+    let transfer_root = options.transfer_root.clone();
+    // A file connection does not probe a decoder or promise desktop codecs.
+    let caps = if mode == SessionMode::Desktop {
+        Some(tokio::task::spawn_blocking(video::capabilities)
+            .await
+            .map_err(|_| ViewerError::TaskFailed)??)
+    } else {
+        None
+    };
+    let advertised = caps.map(Decoders::supported_decoding).unwrap_or_default();
+    if mode == SessionMode::Desktop {
+        options.session_options.validate_advertisement(&advertised)
+            .map_err(ViewerError::SessionOption)?;
+        *lock(&state.advertised_decoding) = Some(advertised.clone());
+    }
     let parts = tokio::select! {
         biased;
         _ = state.cancel.cancelled() => return Ok(()),
-        parts = authenticate(&state, options, caps, connector) => parts?,
+        parts = authenticate(&state, options, advertised, connector) => parts?,
     };
     {
         let mut inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -1861,19 +2154,20 @@ async fn run_rustdesk(
                 .collect();
         }
     }
-    let source = Geometry::of_peer(
-        parts
-            .context
-            .peer_info
-            .as_ref()
-            .ok_or(ViewerError::InvalidPeerGeometry)?,
-    )?;
-    state.geometry(source);
+    let media = if let Some(caps) = caps {
+        let source = Geometry::of_peer(
+            parts.context.peer_info.as_ref().ok_or(ViewerError::InvalidPeerGeometry)?,
+        )?;
+        state.geometry(source);
+        Some(video::pipeline(state.clone(), caps, source))
+    } else {
+        None
+    };
     // The handshake's grant goes through the gate rather than beside it: it is
     // the same permission channel a later message changes, so it is published
     // under the lock that stamps input, and turning it off and on again cannot
     // leave input admitted under either of the older states.
-    state.input.grant(parts.context.permissions.keyboard);
+    state.input.grant(mode == SessionMode::Desktop && parts.context.permissions.keyboard);
     // The handshake's own proof, recorded before the session is authorized so
     // an admitted event can never be raced ahead of the evidence that admits it.
     // A direct dial to a peer this client has no key for reads `false` here,
@@ -1886,14 +2180,38 @@ async fn run_rustdesk(
         Ordering::Release,
     );
     state.authenticated.store(true, Ordering::Release);
-    state.phase("authenticated");
-    let (admission, feed) = video::pipeline(state.clone(), caps, source);
+    state.phase(if mode == SessionMode::FileTransfer {
+        "file_transfer_ready"
+    } else {
+        "authenticated"
+    });
+    let info = parts.context.peer_info.as_ref().ok_or(ViewerError::AuthenticationFailed)?;
+    let transfer = crate::transfer::start(
+        crate::transfer::TransferConfig::new(transfer_root, &info.platform, &info.version),
+        state.cancel.clone(),
+    );
+    let transfer_handle = Arc::new(transfer.handle);
+    transfer_handle.set_enabled(parts.context.permissions.file);
+    *lock(&state.transfer) = Some(transfer_handle);
     let (control_tx, control_rx) = mpsc::channel(COMMANDS);
     *lock(&state.control) = Some(control_tx.clone());
     let mut tasks = JoinSet::new();
-    tasks.spawn(receive(state.clone(), parts.reader, admission, control_tx));
-    tasks.spawn(write(state.clone(), parts.writer, mouse, control_rx));
-    tasks.spawn(feed.run(lease));
+    // Move the optional media pair once; the file role owns no feed or Surface.
+    let (admission, feed) = match media {
+        Some((admission, feed)) => (Some(admission), Some(feed)),
+        None => (None, None),
+    };
+    tasks.spawn(receive(state.clone(), parts.reader, admission, control_tx, transfer.inbound));
+    tasks.spawn(write(state.clone(), parts.writer, mouse, control_rx, transfer.outbound));
+    tasks.spawn(async move {
+        match transfer.owner.run().await {
+            crate::transfer::TransferExit::Cancelled => Ok(()),
+            _ => Err(ViewerError::Closed),
+        }
+    });
+    if let Some(feed) = feed {
+        tasks.spawn(feed.run(lease));
+    }
     let first = tokio::select! {
         biased;
         _ = state.cancel.cancelled() => Ok(()),
@@ -1941,8 +2259,9 @@ async fn run_rustdesk(
 async fn receive(
     state: Arc<State>,
     mut reader: WireReader,
-    mut admission: video::VideoAdmission<State>,
+    mut admission: Option<video::VideoAdmission<State>>,
     control: mpsc::Sender<Vec<Message>>,
+    transfer: mpsc::Sender<crate::transfer::Inbound>,
 ) -> Result<(), ViewerError> {
     loop {
         let message = tokio::select! {
@@ -1952,8 +2271,28 @@ async fn receive(
         };
         match message.union {
             Some(message::Union::VideoFrame(frame)) => {
-                if admission.admit(frame).await? == video::Admitted::Cancelled {
-                    return Ok(());
+                if let Some(admission) = admission.as_mut() {
+                    if admission.admit(frame).await? == video::Admitted::Cancelled {
+                        return Ok(());
+                    }
+                }
+            }
+            Some(message::Union::FileAction(action)) => {
+                tokio::select! {
+                    biased;
+                    _ = state.cancel.cancelled() => return Ok(()),
+                    sent = transfer.send(crate::transfer::Inbound::Action(action)) => {
+                        sent.map_err(|_| ViewerError::Closed)?;
+                    }
+                }
+            }
+            Some(message::Union::FileResponse(response)) => {
+                tokio::select! {
+                    biased;
+                    _ = state.cancel.cancelled() => return Ok(()),
+                    sent = transfer.send(crate::transfer::Inbound::Response(response)) => {
+                        sent.map_err(|_| ViewerError::Closed)?;
+                    }
                 }
             }
             Some(message::Union::TestDelay(probe)) => {
@@ -1974,14 +2313,23 @@ async fn receive(
                         // and emitted under the previous one. The gate wakes the
                         // writer itself when the grant moves; a writer that is
                         // busy when it does still releases on its next event.
-                        state.input.grant(permission.enabled);
+                        state.input.grant(state.mode == SessionMode::Desktop && permission.enabled);
+                    }
+                    if permission.permission.enum_value().ok() == Some(Permission::File) {
+                        if let Some(handle) = lock(&state.transfer).as_ref() {
+                            handle.set_enabled(permission.enabled);
+                        }
                     }
                 }
                 Some(misc::Union::CloseReason(reason)) => {
                     lock(&state.inner).observed_peer_close_reason = PeerCloseReason::of(&reason);
                     return Err(ViewerError::RemoteClosed);
                 }
-                Some(misc::Union::SwitchDisplay(display)) => admission.switch_display(&display)?,
+                Some(misc::Union::SwitchDisplay(display)) => {
+                    if let Some(admission) = admission.as_mut() {
+                        admission.switch_display(&display)?;
+                    }
+                }
                 _ => {}
             },
             // Audio/clipboard/file features were explicitly disabled. Cursor and
@@ -2132,9 +2480,10 @@ async fn write(
     mut writer: WireWriter,
     mut mouse: mpsc::Receiver<QueuedInput>,
     mut control: mpsc::Receiver<Vec<Message>>,
+    mut bulk: mpsc::Receiver<crate::transfer::Outbound>,
 ) -> Result<(), ViewerError> {
     let mut held = RustDeskHeld::default();
-    let outcome = write_loop(&state, &mut writer, &mut mouse, &mut control, &mut held).await;
+    let outcome = write_loop(&state, &mut writer, &mut mouse, &mut control, &mut bulk, &mut held).await;
     // The transport stops with the writer, so nothing it still held can be
     // released through it any more. Those holds are reported as releases whose
     // completion is unconfirmed: whether the peer still holds a key or button is
@@ -2150,6 +2499,7 @@ async fn write_loop(
     writer: &mut WireWriter,
     mouse: &mut mpsc::Receiver<QueuedInput>,
     control: &mut mpsc::Receiver<Vec<Message>>,
+    bulk: &mut mpsc::Receiver<crate::transfer::Outbound>,
     held: &mut RustDeskHeld,
 ) -> Result<(), ViewerError> {
     loop {
@@ -2173,6 +2523,24 @@ async fn write_loop(
             },
             value = mouse.recv() => match value {
                 Some(queued) => take_input(state, writer, held, queued).await?,
+                None => return Ok(()),
+            },
+            value = bulk.recv() => match value {
+                Some(effect) => {
+                    // The one write this effect is owed. `complete` is the
+                    // owner's own answer to "was it written": `true` only when
+                    // this writer really put it on the wire, `false` when the
+                    // effect was dropped as stale. A failed write leaves through
+                    // the `?` above and closes the same answer without a `true`,
+                    // so an unknown write is never read as a written one.
+                    let written = if effect.is_permitted() {
+                        wire_send(state, writer, effect.message()).await?
+                    } else {
+                        false
+                    };
+                    // Drop the byte permit only after this single wire effect.
+                    effect.complete(written);
+                }
                 None => return Ok(()),
             },
         }
@@ -3653,8 +4021,9 @@ fn rdp_error(error: crate::protocol::rdp::RdpError) -> ViewerError {
 mod tests {
     use super::{
         COMMANDS, DIRECT_ACCESS_PORT, Facts, GateView, Inner, InputGate, MAX_HELD_INPUTS, Protocol,
-        QueuedInput, RustDeskHeld, SecondFactorGate, State, Viewer, ViewerError, ViewerInput,
-        ViewerInputPolicy, ViewerSnapshot, WireReader, WireWriter, direct_address, lock, take_input,
+        PasswordGate, QueuedInput, RustDeskHeld, SecondFactorGate, State, Viewer, ViewerError,
+        ViewerInput, ViewerInputPolicy, ViewerSnapshot, WireReader, WireWriter, direct_address, lock,
+        take_input,
     };
     use crate::transport;
     use base::message_proto::{ControlKey, KeyEvent, Message, message};
@@ -3722,6 +4091,8 @@ mod tests {
             done: Notify::new(),
             result: Mutex::new(None),
             protocol: Protocol::RustDesk,
+            mode: crate::session::SessionMode::Desktop,
+            transfer: Mutex::new(None),
             authenticated: AtomicBool::new(true),
             rdp_input_flags: super::AtomicU16::new(0),
             peer_proven: AtomicBool::new(true),
@@ -3729,9 +4100,26 @@ mod tests {
             resources_unconfirmed: AtomicBool::new(false),
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
+            password: Mutex::new(PasswordGate::default()),
             session_options: Mutex::new(crate::session_options::SessionOptions::default()),
             advertised_decoding: Mutex::new(None),
         })
+    }
+
+    /// One parsed record from the peer's end of a test wire.
+    async fn receive(wire: &mut FramedStream) -> Message {
+        use hbb_common::protobuf::Message as _;
+        let bytes = wire.next().await.unwrap().unwrap();
+        Message::parse_from_bytes(&bytes).unwrap()
+    }
+
+    /// One peer `LoginResponse.error` on a test wire.
+    async fn refuse(wire: &mut FramedStream, text: &str) {
+        let mut response = base::message_proto::LoginResponse::new();
+        response.set_error(text.into());
+        let mut message = Message::new();
+        message.set_login_response(response);
+        wire.send(&message).await.unwrap();
     }
 
     /// One queued event, stamped the way the enqueue boundary stamps it: with
@@ -4606,26 +4994,15 @@ mod tests {
         use crate::handshake::{self, ViewerIdentity};
         use crate::session::ViewerSession;
         use base::message_proto::{Hash, LoginResponse, PeerInfo, TestDelay};
-        use hbb_common::protobuf::Message as _;
 
-        async fn receive(wire: &mut FramedStream) -> Message {
-            let bytes = wire.next().await.unwrap().unwrap();
-            Message::parse_from_bytes(&bytes).unwrap()
-        }
         async fn wait_challenge(state: &State, revision: u64) {
             while lock(&state.inner).snapshot.second_factor_challenge != revision {
                 tokio::task::yield_now().await;
             }
         }
-        async fn refuse(wire: &mut FramedStream, text: &str) {
-            let mut response = LoginResponse::new();
-            response.set_error(text.into());
-            let mut message = Message::new();
-            message.set_login_response(response);
-            wire.send(&message).await.unwrap();
-        }
 
         tokio::time::timeout(RECEIVE_LIMIT, async {
+            for mode in [crate::session::SessionMode::Desktop, crate::session::SessionMode::FileTransfer] {
             let address = "127.0.0.1:1".parse().unwrap();
             let (client, peer) = tokio::io::duplex(1);
             let mut peer = FramedStream::from(peer, address);
@@ -4647,6 +5024,8 @@ mod tests {
             let viewer = Viewer { state: state.clone(), mouse };
             let options = super::ViewerOptions {
                 target: super::ViewerTarget::RustDesk { address: None },
+                mode,
+                transfer_root: None,
                 username: "fixture".into(),
                 local_id: "controller".into(),
                 local_name: "fixture".into(),
@@ -4655,12 +5034,16 @@ mod tests {
                 input_policy: ViewerInputPolicy::interactive(),
                 session_options: Default::default(),
             };
-            let password = super::Password(Vec::new());
+            let mut password = super::Password(Vec::new());
             let (codes, answers) = mpsc::channel(1);
-            let mut answers = super::SecondFactorAnswers(answers);
+            let (passwords, password_answers) = mpsc::channel(1);
+            let mut answers = super::AuthAnswers {
+                codes: answers,
+                passwords: password_answers,
+            };
             let driver = super::authenticate_loop(
-                &state, session, &options, &password, Default::default(),
-                &codes, &mut answers.0,
+                &state, session, &options, &mut password, Default::default(),
+                &codes, &passwords, &mut answers,
             );
             let fixture = async {
                 let mut challenge = Message::new();
@@ -4669,8 +5052,11 @@ mod tests {
                     ..Default::default()
                 });
                 peer.send(&challenge).await.unwrap();
-                assert!(matches!(receive(&mut peer).await.union,
-                    Some(message::Union::LoginRequest(_))));
+                let Some(message::Union::LoginRequest(request)) = receive(&mut peer).await.union else {
+                    panic!("expected the owned login request");
+                };
+                assert_eq!(request.has_file_transfer(), mode == crate::session::SessionMode::FileTransfer);
+                assert_eq!(request.option.is_some(), mode == crate::session::SessionMode::Desktop);
                 refuse(&mut peer, "2FA Required").await;
                 wait_challenge(&state, 1).await;
 
@@ -4714,6 +5100,316 @@ mod tests {
             let (result, ()) = tokio::join!(driver, fixture);
             assert!(result.is_ok());
             assert_eq!(lock(&state.inner).snapshot.second_factor_challenge, 3);
+            }
         }).await.expect("authentication and all replies must finish within one budget");
+    }
+
+    /// The password entry point admits one answer per peer demand, only while
+    /// this session really waits for one, and never reports an admission it did
+    /// not make.
+    ///
+    /// The gate is driven the way authentication drives it: the sender published
+    /// there is what a submission travels on, and clearing `submitted` is what
+    /// the peer's own `Wrong Password` does before the retry.
+    #[test]
+    fn a_password_is_admitted_only_while_the_peer_waits_for_one() {
+        let state = writer_state();
+        state.authenticated.store(false, super::Ordering::Release);
+        let (mouse, _queue) = mpsc::channel(COMMANDS);
+        let viewer = Viewer {
+            state: state.clone(),
+            mouse,
+        };
+
+        // Before the peer asks: refused, and nothing is held for a later step.
+        assert!(matches!(
+            viewer.send_password("secret-1".into()),
+            Err(ViewerError::PasswordNotAwaiting)
+        ));
+
+        // The authentication loop installs the entry point when the peer demands
+        // one, and it is the channel that loop is itself reading.
+        let (passwords, mut answers) = mpsc::channel(1);
+        {
+            let mut gate = lock(&state.password);
+            gate.password = Some(passwords.clone());
+            gate.submitted = false;
+            let mut inner = lock(&state.inner);
+            inner.snapshot.phase = "awaiting_password".into();
+            inner.snapshot.password_failure = Some(super::LoginFailure::EmptyPassword);
+        }
+        viewer
+            .send_password("secret-2".into())
+            .expect("the password the peer demanded is admitted");
+        assert_eq!(
+            answers
+                .try_recv()
+                .expect("the admitted password reached the loop"),
+            "secret-2"
+        );
+        // Queued is not authenticated: the phase says the answer is being
+        // written and the session stays unauthorized until the peer says
+        // otherwise.
+        assert_eq!(lock(&state.inner).snapshot.phase, "verifying_password");
+        assert_eq!(lock(&state.inner).snapshot.password_failure, None);
+        assert!(!viewer.snapshot().authenticated);
+
+        // A second answer while the first is unwritten is refused, not queued
+        // into whichever attempt answers next.
+        assert!(matches!(
+            viewer.send_password("secret-3".into()),
+            Err(ViewerError::Backpressure)
+        ));
+        // An empty string is not an answer: the wire spells "no password" that
+        // way, which is the attempt the peer just refused.
+        assert!(matches!(
+            viewer.send_password(String::new()),
+            Err(ViewerError::InvalidPassword)
+        ));
+        assert!(answers.try_recv().is_err());
+
+        // The peer's own `Wrong Password` re-arms the step for the retry.
+        {
+            let mut gate = lock(&state.password);
+            gate.submitted = false;
+        }
+        viewer
+            .send_password("secret-4".into())
+            .expect("a retry after the peer's answer is admitted");
+        assert_eq!(
+            answers.try_recv().expect("the retry reached the loop"),
+            "secret-4"
+        );
+
+        // Once authentication leaves the step, the entry point is gone even
+        // though the channel is still open.
+        *lock(&state.password) = PasswordGate::default();
+        assert!(matches!(
+            viewer.send_password("secret-5".into()),
+            Err(ViewerError::PasswordNotAwaiting)
+        ));
+
+        // A viewer that is closing refuses before it looks at the gate at all.
+        {
+            let mut gate = lock(&state.password);
+            gate.password = Some(passwords);
+            gate.submitted = false;
+        }
+        viewer.request_close();
+        assert!(matches!(
+            viewer.send_password("secret-6".into()),
+            Err(ViewerError::Closed)
+        ));
+        assert!(answers.try_recv().is_err());
+    }
+
+    /// The password a peer demands is answered on the same wire.
+    ///
+    /// The refused login is resent with the answer under the identity, session
+    /// id and role it carried — one login attempt, not a second dial — and the
+    /// exchange then reaches the second-factor step instead of ending at the
+    /// password. A one-byte duplex forces every write to yield, so the probe
+    /// echo and the two logins also prove the read select never held a
+    /// half-written wire.
+    #[tokio::test]
+    async fn password_retry_reuses_the_refused_login_and_reaches_the_next_step() {
+        use crate::handshake::{self, ViewerIdentity};
+        use crate::session::ViewerSession;
+        use base::message_proto::{Hash, LoginResponse, PeerInfo, TestDelay};
+
+        async fn wait_password(state: &State, revision: u64) {
+            while lock(&state.inner).snapshot.password_challenge != revision {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        tokio::time::timeout(RECEIVE_LIMIT, async {
+            for mode in [
+                crate::session::SessionMode::Desktop,
+                crate::session::SessionMode::FileTransfer,
+            ] {
+                let address: SocketAddr = "127.0.0.1:1".parse().unwrap();
+                let (client, peer) = tokio::io::duplex(1);
+                let mut peer = FramedStream::from(peer, address);
+                let (established, greeting) = tokio::join!(
+                    handshake::viewer(
+                        FramedStream::from(client, address),
+                        ViewerIdentity::LegacyUnverified,
+                        RECEIVE_LIMIT,
+                    ),
+                    receive(&mut peer),
+                );
+                assert!(greeting.union.is_none());
+                let session = ViewerSession::from_established(
+                    established.unwrap(),
+                    RECEIVE_LIMIT,
+                    RECEIVE_LIMIT,
+                );
+                let state = writer_state();
+                state.authenticated.store(false, super::Ordering::Release);
+                let (mouse, _) = mpsc::channel(COMMANDS);
+                let viewer = Viewer {
+                    state: state.clone(),
+                    mouse,
+                };
+                let options = super::ViewerOptions {
+                    target: super::ViewerTarget::RustDesk { address: None },
+                    mode,
+                    transfer_root: None,
+                    username: "fixture".into(),
+                    local_id: "controller".into(),
+                    local_name: "fixture".into(),
+                    password: String::new(),
+                    requested_fps: 0,
+                    input_policy: ViewerInputPolicy::interactive(),
+                    session_options: Default::default(),
+                };
+                // The attempt starts without one, which is what makes the peer
+                // demand it.
+                let mut password = super::Password(Vec::new());
+                let (codes, code_answers) = mpsc::channel(1);
+                let (passwords, password_answers) = mpsc::channel(1);
+                let mut answers = super::AuthAnswers {
+                    codes: code_answers,
+                    passwords: password_answers,
+                };
+                let driver = super::authenticate_loop(
+                    &state,
+                    session,
+                    &options,
+                    &mut password,
+                    Default::default(),
+                    &codes,
+                    &passwords,
+                    &mut answers,
+                );
+                let fixture = async {
+                    let mut challenge = Message::new();
+                    challenge.set_hash(Hash {
+                        salt: "fixture".into(),
+                        challenge: "challenge".into(),
+                        ..Default::default()
+                    });
+                    peer.send(&challenge).await.unwrap();
+                    // The first login is the one a retry has to reuse.
+                    let Some(message::Union::LoginRequest(first)) =
+                        receive(&mut peer).await.union
+                    else {
+                        panic!("expected the owned login request");
+                    };
+                    assert!(first.password.is_empty());
+                    assert_eq!(
+                        first.has_file_transfer(),
+                        mode == crate::session::SessionMode::FileTransfer
+                    );
+                    assert_eq!(
+                        first.option.is_some(),
+                        mode == crate::session::SessionMode::Desktop
+                    );
+                    let (identity, session_id) = (first.my_id.clone(), first.session_id);
+
+                    // The peer wants a password this attempt did not send.
+                    refuse(&mut peer, "Empty Password").await;
+                    wait_password(&state, 1).await;
+                    {
+                        let inner = lock(&state.inner);
+                        assert_eq!(inner.snapshot.phase, "awaiting_password");
+                        assert_eq!(
+                            inner.snapshot.password_failure,
+                            Some(super::LoginFailure::EmptyPassword)
+                        );
+                    }
+                    assert!(
+                        !viewer.snapshot().authenticated,
+                        "a demanded password is not an authorization"
+                    );
+
+                    // The read select still answers probes while it waits for
+                    // the operator's answer: the echo is written outside it.
+                    let mut probe = Message::new();
+                    probe.set_test_delay(TestDelay {
+                        time: 41,
+                        ..Default::default()
+                    });
+                    peer.send(&probe).await.unwrap();
+                    // Queue the answer while the one-byte wire is still writing
+                    // the probe reply. `submitted` must not disable reception of
+                    // this already admitted answer on the next loop pass.
+                    viewer.send_password("first-try".into()).unwrap();
+                    assert_eq!(lock(&state.inner).snapshot.phase, "verifying_password");
+                    let Some(message::Union::TestDelay(echoed)) = receive(&mut peer).await.union
+                    else {
+                        panic!("expected the probe echo");
+                    };
+                    assert_eq!(echoed.time, 41);
+
+                    // The answer is the refused login again, not a new one.
+                    let Some(message::Union::LoginRequest(retried)) =
+                        receive(&mut peer).await.union
+                    else {
+                        panic!("expected the retried login request");
+                    };
+                    assert_eq!(retried.session_id, session_id, "the same login attempt");
+                    assert_eq!(retried.my_id, identity);
+                    assert_eq!(retried.username, "fixture");
+                    assert!(!retried.password.is_empty());
+                    assert_eq!(
+                        retried.has_file_transfer(),
+                        mode == crate::session::SessionMode::FileTransfer
+                    );
+
+                    // The peer refused it: the step is armed again, and the
+                    // second answer is that same login once more.
+                    refuse(&mut peer, "Wrong Password").await;
+                    wait_password(&state, 2).await;
+                    {
+                        let inner = lock(&state.inner);
+                        assert_eq!(inner.snapshot.phase, "password_rejected");
+                        assert_eq!(
+                            inner.snapshot.password_failure,
+                            Some(super::LoginFailure::WrongPassword)
+                        );
+                    }
+                    viewer.send_password("second-try".into()).unwrap();
+                    let Some(message::Union::LoginRequest(accepted)) =
+                        receive(&mut peer).await.union
+                    else {
+                        panic!("expected the second retried login request");
+                    };
+                    assert_eq!(accepted.session_id, session_id);
+                    assert!(!accepted.password.is_empty());
+
+                    // Past the password, the session reaches the next step it
+                    // owns: a code on this same wire.
+                    refuse(&mut peer, "2FA Required").await;
+                    while lock(&state.inner).snapshot.second_factor_challenge != 1 {
+                        tokio::task::yield_now().await;
+                    }
+                    viewer.send_second_factor("111111".into()).unwrap();
+                    let Some(message::Union::Auth2fa(factor)) =
+                        receive(&mut peer).await.union
+                    else {
+                        panic!("expected the second-factor answer");
+                    };
+                    assert_eq!(factor.code, "111111");
+
+                    let mut success = LoginResponse::new();
+                    success.set_peer_info(PeerInfo::new());
+                    let mut message = Message::new();
+                    message.set_login_response(success);
+                    peer.send(&message).await.unwrap();
+                };
+                let (result, ()) = tokio::join!(driver, fixture);
+                assert!(result.is_ok(), "the same wire reaches authorization");
+                let snapshot = lock(&state.inner).snapshot.clone();
+                assert_eq!(snapshot.password_challenge, 2);
+                assert_eq!(snapshot.second_factor_challenge, 1);
+                // The last answer is on the wire, so no mid-flight reason is
+                // left beside the authorized session.
+                assert_eq!(snapshot.password_failure, None);
+            }
+        })
+        .await
+        .expect("the whole exchange must finish within one budget");
     }
 }

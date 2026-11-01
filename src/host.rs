@@ -11,7 +11,10 @@ pub mod control;
 ))]
 use crate::windows_input::{InputError, InputSession, TargetBinding, bind_output_key};
 mod ingress;
+pub mod security;
+pub mod service;
 use ingress::{Ingress, authenticate, serve};
+use security::HostSecurity;
 use crate::{
     authentication::{
         Approval, ApprovalProvider, AttemptPolicy, HostAuthConfig, NoSecondFactor, Passwords,
@@ -20,7 +23,7 @@ use crate::{
     handshake::{self, HostIdentity, Security},
     publisher::{
         Codec, CodecSelection, EncodedUnit, Publisher, PublisherBackend, PublisherConfig,
-        PublisherError,
+        PublisherError, PublisherStats,
     },
     session::{AuthenticatedParts, HostEvent, HostSession},
     transport::{WireReader, WireWriter},
@@ -291,6 +294,16 @@ pub struct HostOptions {
     pub bitrate: i64,
     pub platform: String,
     pub credentials: Arc<HostCredentials>,
+    /// The host's own durable security record, when this platform has one.
+    ///
+    /// It is the single owner whose salt, permanent verifier and TOTP state this
+    /// run authenticates with, and the run keeps this exact `Arc` rather than a
+    /// copy. `None` means the run is not backed by such a record at all (the
+    /// Config-driven Windows owner and the probe binaries), so it has no second
+    /// factor to require and no permanent verifier to publish; it is never a
+    /// swallowed storage error — a record that cannot be read fails the caller
+    /// before a run starts.
+    pub security: Option<Arc<HostSecurity>>,
     pub publisher_backend: PublisherBackend,
     /// The exact desktop output this host may publish, by its stable binding key
     /// (adapter LUID plus native output index).
@@ -415,6 +428,85 @@ struct PeerRecord {
     control: Option<Arc<PeerControl>>,
 }
 
+/// One peer's real screen-capture owner, projected from the platform publisher's
+/// own stats.
+///
+/// Nothing here is inferred from a phase name, a byte counter or a requested
+/// cadence: the owner reports system consent, encoded frames and its terminal
+/// verdict itself. A peer whose platform publisher has not been created (or a
+/// platform without one) simply has no projection, which is never "granted".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostCaptureSnapshot {
+    /// The platform owner reported system consent granted for this session and
+    /// is not in a terminal state.
+    pub authorized: bool,
+    /// The owner's own consent state: `awaiting_system_consent`, `granted`,
+    /// `stopping`, `stopped` or `quarantined`.
+    pub state: &'static str,
+    /// The SDK's own screen-capture state callback code, verbatim.
+    pub sdk_state_code: i32,
+    /// Access units the encoder really produced for this session.
+    pub frames: u64,
+    pub bytes: u64,
+    pub queued_units: u32,
+    pub queued_bytes: u32,
+    pub width: i32,
+    pub height: i32,
+    /// The owner's own failure reason, retained after teardown.
+    pub error: Option<PublisherError>,
+}
+impl HostCaptureSnapshot {
+    /// Projects the publisher's own stats. `terminal` is the real close verdict;
+    /// it overrides the reported consent state so a failed or unconfirmed
+    /// teardown is never displayed as a clean stop.
+    fn of_stats(stats: &PublisherStats, terminal: Option<&PublisherError>) -> Self {
+        let state = match stats.consent_state.as_str() {
+            "granted" => "granted",
+            "closing" => "stopping",
+            "stopped" => "stopped",
+            "quarantined" => "quarantined",
+            _ => "awaiting_system_consent",
+        };
+        let (state, error) = match terminal {
+            Some(error) if error.resources_unconfirmed() => ("quarantined", Some(error.clone())),
+            Some(error) => ("stopped", Some(error.clone())),
+            None => (state, stats.error.clone()),
+        };
+        Self {
+            authorized: state == "granted",
+            state,
+            sdk_state_code: stats.capture_state_code,
+            frames: stats.encoded_frames,
+            bytes: stats.encoded_bytes,
+            queued_units: stats.queued_units.min(u32::MAX as usize) as u32,
+            queued_bytes: stats.queued_bytes.min(u32::MAX as usize) as u32,
+            width: stats.width,
+            height: stats.height,
+            error,
+        }
+    }
+    /// A publisher that never opened. The SDK reported no state at all (`-1`),
+    /// so no consent is claimed for it.
+    fn refused(error: PublisherError) -> Self {
+        Self {
+            authorized: false,
+            state: if error.resources_unconfirmed() {
+                "quarantined"
+            } else {
+                "stopped"
+            },
+            sdk_state_code: -1,
+            frames: 0,
+            bytes: 0,
+            queued_units: 0,
+            queued_bytes: 0,
+            width: 0,
+            height: 0,
+            error: Some(error),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HostPeerSnapshot {
     pub conn_id: i32,
@@ -428,6 +520,10 @@ pub struct HostPeerSnapshot {
     pub phase: &'static str,
     pub keyboard: bool,
     pub error: Option<HostError>,
+    /// This session's capture owner projection. `None` until the platform
+    /// publisher exists for this peer, and always `None` where the platform has
+    /// no publisher. It is never filled in from `phase` or `sent_units`.
+    pub capture: Option<HostCaptureSnapshot>,
 }
 
 enum PeerCommand {
@@ -998,8 +1094,13 @@ static ATTEMPTS: std::sync::LazyLock<Mutex<AttemptWindow>> = std::sync::LazyLock
     start: Instant::now(), failures: 0, total: 0, in_flight: 0,
 }));
 impl AttemptPolicy for SharedAttempts {
-    fn allow(&mut self, second_factor: bool) -> Result<(), &'static str> {
-        if second_factor { return Err("2FA verification unsupported"); }
+    /// Both steps draw on the one bucket: an incoming second-factor attempt is
+    /// rate-limited here like a primary one, never refused merely because the
+    /// host has a real provider for it. `second_factor` only tells the pinned
+    /// upstream call sites which step they are on; the host deliberately keeps
+    /// one bucket so an unauthenticated peer cannot create a fresh window by
+    /// reconnecting between steps.
+    fn allow(&mut self, _second_factor: bool) -> Result<(), &'static str> {
         let mut window = lock(&ATTEMPTS);
         if window.start.elapsed() >= Duration::from_secs(60) { window.start = Instant::now(); window.failures = 0; }
         if window.total + window.in_flight > 30 { return Err("Too many wrong attempts"); }
@@ -1597,8 +1698,71 @@ async fn send_keyboard_permission(enabled: bool, deadline: Instant, control: &mp
     }
 }
 
-fn video(unit: &EncodedUnit, codec: Codec) -> Result<Message, HostError> {
-    if unit.data.is_empty() || unit.data.len() > 32 * 1024 * 1024 || unit.pts_us < 0 {
+/// Observational cadence of the capture projection. The peer is never shown a
+/// capture fact this host has not read from the owner, and the frame path is not
+/// sampled per access unit.
+const CAPTURE_SAMPLE: Duration = Duration::from_millis(250);
+
+/// Publishes the capture owner's own facts onto the peer that owns it.
+///
+/// Only the task that really holds the publisher calls this, and only outside
+/// the frame path. A peer that is already disconnecting or quarantined keeps its
+/// terminal phase; the capture facts themselves are retained either way.
+fn project_capture(
+    state: &State,
+    record: &PeerRecord,
+    stats: &PublisherStats,
+    terminal: Option<&PublisherError>,
+) {
+    let Some(control) = record.control.as_ref() else {
+        return;
+    };
+    let capture = HostCaptureSnapshot::of_stats(stats, terminal);
+    let phase = if capture.authorized {
+        if capture.frames > 0 {
+            "streaming"
+        } else {
+            "capture_granted"
+        }
+    } else {
+        "awaiting_capture_consent"
+    };
+    let changed = {
+        let mut snapshot = lock(&control.snapshot);
+        let mut changed = snapshot.capture.as_ref() != Some(&capture);
+        if matches!(
+            snapshot.phase,
+            "authorized" | "awaiting_capture_consent" | "capture_granted" | "streaming"
+        ) {
+            changed |= snapshot.phase != phase;
+            snapshot.phase = phase;
+        }
+        snapshot.capture = Some(capture);
+        changed
+    };
+    if changed {
+        state.changed();
+    }
+}
+
+/// Records a capture owner that never opened. No consent is claimed for it.
+fn project_capture_refusal(state: &State, record: &PeerRecord, error: &PublisherError) {
+    let Some(control) = record.control.as_ref() else {
+        return;
+    };
+    let capture = HostCaptureSnapshot::refused(error.clone());
+    let changed = {
+        let mut snapshot = lock(&control.snapshot);
+        let changed = snapshot.capture.as_ref() != Some(&capture);
+        snapshot.capture = Some(capture);
+        changed
+    };
+    if changed {
+        state.changed();
+    }
+}
+
+fn video(unit: &EncodedUnit, codec: Codec) -> Result<Message, HostError> {    if unit.data.is_empty() || unit.data.len() > 32 * 1024 * 1024 || unit.pts_us < 0 {
         return Err(HostError::InvalidAccessUnit);
     }
     let frames = EncodedVideoFrames {
@@ -1643,17 +1807,29 @@ async fn publish(
     let publisher = match Publisher::open(config).await {
         Ok(value) => value,
         Err(error) => {
+            // The owner never existed; that is published as such, not as consent.
+            project_capture_refusal(&state, &record, &error);
             return match publisher_failure(error) {
                 Some(error) => Err(error),
                 None => Ok(()),
             };
         }
     };
+    // The first capture fact this peer publishes is the owner's own.
+    project_capture(&state, &record, &publisher.stats(), None);
+    let mut sample = tokio::time::interval(CAPTURE_SAMPLE);
+    sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = async {
         loop {
             let (message, unit) = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Ok(()),
+                // Observational only: reading the owner's stats never starts,
+                // stops or reconfigures capture.
+                _ = sample.tick() => {
+                    project_capture(&state, &record, &publisher.stats(), None);
+                    continue;
+                }
                 value = control.recv() => match value {
                     Some(Control::Reply(message)) => (message, None),
                     Some(Control::Permission { enabled, deadline, reply }) => {
@@ -1735,8 +1911,13 @@ async fn publish(
     // before waiting for native close; queued PermissionInfo acknowledgments
     // cannot keep the controller actor waiting behind capture retirement.
     cancel.cancel();
+    // The owner's own last facts, then its real close verdict: a close this
+    // process could not confirm is published as quarantined, never as stopped.
+    let terminal = publisher.stats();
     publisher.request_close();
-    if publisher.close().await.is_err() {
+    let closed = publisher.close().await;
+    project_capture(&state, &record, &terminal, closed.as_ref().err());
+    if closed.is_err() {
         return Err(HostError::ReclamationUnconfirmed);
     }
     result
@@ -1907,5 +2088,136 @@ mod tests {
         // the default, so it can never become a publishable cadence.
         assert_eq!(resolve_frame_rate(-1), Err(HostError::InvalidFrameRate));
         assert_eq!(resolve_frame_rate(241), Err(HostError::InvalidFrameRate));
+    }
+
+    fn capture_stats(consent: &str, frames: u64) -> PublisherStats {
+        PublisherStats {
+            consent_state: consent.into(),
+            capture_state_code: if consent == "granted" { 0 } else { -1 },
+            width: 1920,
+            height: 1080,
+            fps_limit: 60,
+            encoder_name: "video/avc".into(),
+            encoded_frames: frames,
+            encoded_bytes: frames * 1024,
+            queued_units: 0,
+            queued_bytes: 0,
+            closed: consent == "stopped",
+            quarantined: consent == "quarantined",
+            error: None,
+        }
+    }
+
+    fn projected_peer(phase: &'static str) -> (Arc<PeerRecord>, mpsc::Receiver<PeerCommand>) {
+        let (commands, receiver) = mpsc::channel(1);
+        let control = Arc::new(PeerControl {
+            snapshot: Mutex::new(HostPeerSnapshot {
+                conn_id: 1,
+                connection_token: 1,
+                approval_epoch: None,
+                policy_revision: 1,
+                peer_id: "865000001".into(),
+                name: "controller".into(),
+                authorized: true,
+                disconnected: false,
+                phase,
+                keyboard: false,
+                error: None,
+                capture: None,
+            }),
+            cancel: CancellationToken::new(),
+            commands,
+            finished: watch::channel(None).0,
+        });
+        (
+            Arc::new(PeerRecord {
+                control: Some(control),
+                ..Default::default()
+            }),
+            receiver,
+        )
+    }
+
+    #[test]
+    fn a_capture_projection_reports_only_the_owners_own_consent() {
+        // Waiting for the system prompt is not consent, whatever the counters say.
+        let waiting = HostCaptureSnapshot::of_stats(&capture_stats("awaiting_system_consent", 0), None);
+        assert!(!waiting.authorized);
+        assert_eq!(waiting.state, "awaiting_system_consent");
+        assert_eq!(waiting.sdk_state_code, -1);
+
+        // Granted consent is the owner's own verdict, and it carries its real
+        // frame count rather than a session phase.
+        let granted = HostCaptureSnapshot::of_stats(&capture_stats("granted", 12), None);
+        assert!(granted.authorized);
+        assert_eq!(granted.state, "granted");
+        assert_eq!(granted.frames, 12);
+        assert_eq!(granted.sdk_state_code, 0);
+
+        // A closing owner is not "granted" any more.
+        assert_eq!(
+            HostCaptureSnapshot::of_stats(&capture_stats("closing", 4), None).state,
+            "stopping"
+        );
+        // A clean stop and a quarantine stay distinguishable.
+        assert_eq!(
+            HostCaptureSnapshot::of_stats(&capture_stats("stopped", 4), None).state,
+            "stopped"
+        );
+        let quarantined = HostCaptureSnapshot::of_stats(&capture_stats("quarantined", 4), None);
+        assert_eq!(quarantined.state, "quarantined");
+        assert!(!quarantined.authorized);
+    }
+
+    #[test]
+    fn a_terminal_close_verdict_overrides_a_stale_granted_state() {
+        // The last sample was taken while the owner still said "granted"; the
+        // real close verdict decides what the peer keeps.
+        let stats = capture_stats("granted", 7);
+        let stopped = HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::ConsentEnded { state: 2 }));
+        assert!(!stopped.authorized);
+        assert_eq!(stopped.state, "stopped");
+        assert_eq!(stopped.error, Some(PublisherError::ConsentEnded { state: 2 }));
+
+        let unconfirmed = HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::ReclamationUnconfirmed));
+        assert!(!unconfirmed.authorized);
+        assert_eq!(unconfirmed.state, "quarantined");
+        assert_eq!(unconfirmed.frames, 7);
+    }
+
+    #[test]
+    fn a_peer_publishes_streaming_only_after_its_owner_emitted_a_frame() {
+        let state = state();
+        let (record, _commands) = projected_peer("authorized");
+
+        project_capture(&state, &record, &capture_stats("awaiting_system_consent", 0), None);
+        {
+            let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
+            assert_eq!(snapshot.phase, "awaiting_capture_consent");
+            let capture = snapshot.capture.as_ref().expect("a real projection");
+            assert!(!capture.authorized);
+        }
+
+        project_capture(&state, &record, &capture_stats("granted", 0), None);
+        {
+            let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
+            // Consent without an access unit is not a running stream.
+            assert_eq!(snapshot.phase, "capture_granted");
+        }
+
+        project_capture(&state, &record, &capture_stats("granted", 3), None);
+        {
+            let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
+            assert_eq!(snapshot.phase, "streaming");
+            assert!(snapshot.capture.as_ref().expect("projection").authorized);
+        }
+
+        // A peer that is already disconnecting keeps its terminal phase while
+        // the last capture facts are retained.
+        lock(&record.control.as_ref().expect("peer control").snapshot).phase = "disconnecting";
+        project_capture(&state, &record, &capture_stats("stopped", 3), None);
+        let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
+        assert_eq!(snapshot.phase, "disconnecting");
+        assert_eq!(snapshot.capture.as_ref().expect("projection").state, "stopped");
     }
 }

@@ -10,7 +10,7 @@ use napi_ohos::{
     Env, JsValue, Unknown,
 };
 use rd_engine::protocol::Target;
-use rd_engine::session::PeerCloseReason;
+use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
     direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
     ViewerOptions, ViewerSnapshot, ViewerTarget,
@@ -18,8 +18,9 @@ use rd_engine::viewer::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::c_void,
+    path::{Component, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 mod app_context;
@@ -27,8 +28,11 @@ mod app_directory;
 mod app_presence;
 mod app_profile;
 mod app_storage;
+mod host_bridge;
+mod host_security;
 mod server_profile;
 mod session_options;
+mod transfer;
 use rd_engine::session_options::SessionOptions;
 use session_options::{
     session_set_image_quality, session_set_custom_image_quality,
@@ -46,6 +50,18 @@ use app_directory::{
 };
 use app_presence::{peer_presence_cancel, peer_query_online};
 use app_profile::{runtime_get_server_config, runtime_set_server_config, runtime_test_server_config};
+use host_bridge::{
+    controlled_incoming_poll, controlled_incoming_resolve, controlled_password_get,
+    controlled_password_refresh, controlled_screen_capture_status, controlled_screen_capture_stop,
+    controlled_screen_configure, controlled_server_get_status, controlled_server_start,
+    controlled_server_stop,
+};
+use host_security::{
+    controlled_password_set_permanent, controlled_password_set_verification_method,
+    controlled_setting_set, controlled_two_factor_begin, controlled_two_factor_clear_trusted_devices,
+    controlled_two_factor_disable, controlled_two_factor_get,
+    controlled_two_factor_remove_trusted_devices, controlled_two_factor_verify,
+};
 use server_profile::{validate_server_profile, ApprovedRoute};
 mod capabilities;
 use capabilities::query_decoder_capabilities;
@@ -157,6 +173,10 @@ struct SessionRecord {
     lifecycle_epoch: u64,
     target: String,
     viewer_target: ViewerTarget,
+    mode: SessionMode,
+    transfer_root: Option<PathBuf>,
+    /// Retains terminal job events after the reclaimed Viewer is released.
+    transfer: Option<Arc<rd_engine::transfer::TransferHandle>>,
     /// Explicit-save profile and local identity, owned at registration. Starts
     /// never read editable server settings or import trust from the target.
     id_route: Option<IdRoute>,
@@ -249,12 +269,14 @@ fn scrub_terminal_record(record: &mut SessionRecord) {
 /// Starting a new viewer resets these one-shot facts.
 #[derive(Default)]
 struct Reported {
+    pending: VecDeque<serde_json::Value>,
     /// The engine's own evidence that the peer authorized this session.
     authorized: bool,
     /// The viewer finished; the snapshot's error rides on that event.
     finished: bool,
     /// The last peer-issued 2FA challenge shown to this consumer.
     second_factor_challenge: u64,
+    password_challenge: u64,
 }
 
 impl Reported {
@@ -265,6 +287,23 @@ impl Reported {
     /// named in the answer's `note` instead of being turned into an event.
     fn events(&mut self, snapshot: &ViewerSnapshot) -> Vec<serde_json::Value> {
         let mut events = Vec::new();
+        if !snapshot.closed
+            && !snapshot.authenticated
+            && matches!(snapshot.phase.as_str(), "awaiting_password" | "password_rejected")
+            && snapshot.password_challenge > self.password_challenge
+        {
+            self.password_challenge = snapshot.password_challenge;
+            if let Some(failure) = snapshot.password_failure {
+                let wrong = failure == LoginFailure::WrongPassword;
+                events.push(serde_json::json!({
+                    "name": "msgbox",
+                    "type": if wrong { "re-input-password" } else { "input-password" },
+                    "title": if wrong { "Wrong Password" } else { "Password Required" },
+                    "text": if wrong { "Wrong Password" } else { "Empty Password" },
+                    "challenge_revision": snapshot.password_challenge.to_string(),
+                }));
+            }
+        }
         if !snapshot.closed
             && !snapshot.authenticated
             && matches!(snapshot.phase.as_str(), "awaiting_second_factor" | "second_factor_rejected")
@@ -365,6 +404,9 @@ fn record_terminal_reclamation(
     verdict: Option<bool>,
 ) {
     if snapshot.closed {
+        if record.transfer.is_none() {
+            record.transfer = record.viewer.as_ref().and_then(|viewer| viewer.transfer_handle());
+        }
         if verdict.is_some() && record.terminal_snapshot.is_none() {
             // Preserve the actual failure, input account and telemetry BEFORE
             // clearing the lease, password or registry's last Viewer reference.
@@ -542,6 +584,8 @@ fn dial(record: &SessionRecord) -> Result<Arc<Viewer>, String> {
         .transpose()?;
     let options = ViewerOptions {
         target: record.viewer_target.clone(),
+        mode: record.mode,
+        transfer_root: record.transfer_root.clone(),
         username: record.id_route.as_ref().map_or_else(
             || record.target.clone(),
             |route| route.profile.id().to_owned(),
@@ -695,6 +739,26 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
         Ok(value) => value,
         Err(message) => return error_json(&message),
     };
+    let mode = match options.get("isFileTransfer") {
+        None | Some(serde_json::Value::Bool(false)) => SessionMode::Desktop,
+        Some(serde_json::Value::Bool(true)) => SessionMode::FileTransfer,
+        Some(_) => return error_json("isFileTransfer must be a boolean"),
+    };
+    if mode == SessionMode::FileTransfer && viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk {
+        return error_json("file transfer requires the RustDesk protocol");
+    }
+    let transfer_root = match options.get("transferRoot") {
+        None => None,
+        Some(serde_json::Value::String(value)) if mode == SessionMode::FileTransfer => {
+            let root = PathBuf::from(value);
+            if value.as_bytes().contains(&0) || !root.is_absolute()
+                || root.components().any(|part| matches!(part, Component::ParentDir)) {
+                return error_json("transferRoot must be an absolute local directory without traversal");
+            }
+            Some(root)
+        }
+        Some(_) => return error_json("transferRoot is a file-session directory string"),
+    };
     let id_route = if matches!(&viewer_target, ViewerTarget::RustDesk { address: None }) {
         let admission = match app_context::id_admission() {
             Ok(admission) => admission,
@@ -762,6 +826,9 @@ pub fn session_add(session_id: String, target: String, options: String) -> Strin
             lifecycle_epoch: allocate_native_id().map_err(str::to_owned)?,
             target,
             viewer_target,
+            mode,
+            transfer_root,
+            transfer: None,
             id_route,
             closed: false,
             closing: false,
@@ -863,7 +930,8 @@ fn session_response(
             "sessionId": session_id,
             "coreSessionId": session_id,
             "lifecycleEpoch": record.lifecycle_epoch.to_string(),
-            "kind": kind,
+            "kind": if record.mode == SessionMode::FileTransfer { "file_transfer" } else { kind },
+            "mode": if record.mode == SessionMode::FileTransfer { "file_transfer" } else { "desktop" },
             "target": record.target,
             "phase": phase,
         },
@@ -1036,7 +1104,9 @@ pub fn session_start(session_id: String) -> String {
         response["started"] = serde_json::json!(started);
         response["surface_bound"] =
             serde_json::json!(record.lease.published_surface_id() != 0);
-        response["note"] = serde_json::json!(if started {
+        response["note"] = serde_json::json!(if started && record.mode == SessionMode::FileTransfer {
+            "file-transfer viewer dialled; it authenticates without a decoder or Surface"
+        } else if started {
             "viewer dialled; it presents into the Surface the client binds, which it may bind after this call"
         } else {
             "a viewer is already running for this session: session_start did not dial again"
@@ -1053,65 +1123,71 @@ pub fn session_start(session_id: String) -> String {
     })
 }
 
-/// Records the password the client collected for this peer.
-///
-/// The engine consumes credentials when it dials. Replacing them after an
-/// unauthenticated dial therefore marks a restart as required; it never drops a
-/// live viewer and opens another one against the same Surface lease. The client
-/// must request close, poll for confirmed reclamation, ACK the terminal receipt,
-/// then register and start a fresh session with its own new password copy. The
-/// registry's copy is scrubbed at confirmed close, never a future credential store.
+/// Supplies a registered viewer's initial password, or answers the live peer's
+/// password challenge on that same authentication. No implicit redial occurs.
+/// `queued` is local admission, never authentication or credential persistence.
 #[napi]
-pub fn session_login(session_id: String, payload: String) -> String {
-    let payload: serde_json::Value = match serde_json::from_str(&payload) {
+pub fn session_login(session_id: String, mut payload: String) -> String {
+    let decoded = serde_json::from_str::<serde_json::Value>(&payload);
+    scrub_password(&mut payload);
+    let mut payload = match decoded {
         Ok(value) => value,
         Err(_) => return error_json("sessionLogin payload is not JSON"),
     };
-    let Some(password) = payload.get("password").and_then(|value| value.as_str()) else {
-        return error_json("sessionLogin payload has no password string");
+    let mut password = match payload.get_mut("password").map(serde_json::Value::take) {
+        Some(serde_json::Value::String(password)) => password,
+        _ => return error_json("sessionLogin payload has no password string"),
     };
-    let remember = match payload.get("remember") {
-        None => false,
-        Some(value) => match value.as_bool() {
-            Some(value) => value,
-            None => return error_json("sessionLogin 'remember' is not a boolean"),
-        },
-    };
-    let outcome = with_sessions(|sessions| -> Result<(bool, String, bool), String> {
-        let Some(record) = sessions.get_mut(&session_id) else {
-            return Err("unknown session".to_string());
+    let response = (|| {
+        let remember = match payload.get("remember") {
+            None => false,
+            Some(value) => match value.as_bool() {
+                Some(value) => value,
+                None => return error_json("sessionLogin 'remember' is not a boolean"),
+            },
         };
-        let snapshot = mutable_snapshot(record).map_err(str::to_owned)?;
-        scrub_password(&mut record.password);
-        record.password = password.to_owned();
-        let Some(snapshot) = snapshot else {
-            return Ok((false, "registered".to_string(), false));
-        };
-        if snapshot.authenticated {
-            return Ok((false, snapshot.phase, true));
-        }
-        Ok((true, snapshot.phase, false))
-    });
-    match outcome {
-        Ok((restart_required, phase, authenticated)) => {
-            let note = if authenticated {
-                "this session is already authenticated: the password is held for the next session_start"
-            } else if restart_required {
-                "password recorded; close this viewer and wait for confirmed surface reclamation before registering and starting a new session"
-            } else {
-                "recorded for the next session_start: the engine takes credentials when a viewer starts and keeps them in memory only"
+        with_sessions(|sessions| {
+            let Some(record) = sessions.get_mut(&session_id) else {
+                return error_json("unknown session");
             };
-            serde_json::json!({
-                "ok": true,
-                "restart_required": restart_required,
-                "phase": phase,
-                "remember": remember,
-                "note": note,
-            })
-            .to_string()
-        }
-        Err(message) => error_json(&message),
-    }
+            if let Err(error) = mutable_snapshot(record) {
+                return error_json(error);
+            }
+            let Some(viewer) = record.viewer.as_ref() else {
+                scrub_password(&mut record.password);
+                record.password = std::mem::take(&mut password);
+                let mut response = session_response(true, "session_login", &session_id, record, None);
+                response["queued"] = serde_json::json!(false);
+                response["restart_required"] = serde_json::json!(false);
+                response["remember"] = serde_json::json!(remember);
+                response["persisted"] = serde_json::json!(false);
+                response["note"] = serde_json::json!("initial password recorded in memory for sessionStart");
+                return response.to_string();
+            };
+            if let Err(error) = viewer.send_password(std::mem::take(&mut password)) {
+                let reason = match &error {
+                    rd_engine::viewer::ViewerError::PasswordNotAwaiting => "PasswordNotAwaiting",
+                    rd_engine::viewer::ViewerError::InvalidPassword => "InvalidPassword",
+                    rd_engine::viewer::ViewerError::Backpressure => "Backpressure",
+                    rd_engine::viewer::ViewerError::Closed => "Closed",
+                    _ => "PasswordRejected",
+                };
+                return serde_json::json!({
+                    "ok": false, "queued": false, "code": reason, "message": error.to_string(),
+                }).to_string();
+            }
+            let snapshot = viewer.snapshot();
+            let mut response = session_response(true, "session_login", &session_id, record, Some(&snapshot));
+            response["queued"] = serde_json::json!(true);
+            response["restart_required"] = serde_json::json!(false);
+            response["remember"] = serde_json::json!(remember);
+            response["persisted"] = serde_json::json!(false);
+            response["message"] = serde_json::json!("password queued; waiting for the peer's authentication decision");
+            response.to_string()
+        })
+    })();
+    scrub_password(&mut password);
+    response
 }
 
 /// Queues one answer on the same authentication, never a password redial.
@@ -1564,20 +1640,69 @@ pub fn session_acknowledge_close(session_id: String, lifecycle_epoch: String) ->
     })
 }
 
-/// No transfer-job owner is wired to this bridge yet. In particular actId=0 is
-/// not a terminal ACK, and no actId is permission to close an entire viewer.
-#[napi]
-pub fn session_cancel_job(_session_id: String, act_id: u32) -> String {
-    serde_json::json!({
-        "ok": false,
-        "action": "session_cancel_job",
-        "actId": act_id,
-        "unsupported": true,
-        "record_removed": false,
-        "error": "transfer-job cancellation is not implemented by this engine bridge",
-        "message": "transfer-job cancellation is not implemented; use sessionClose for a viewer and sessionAcknowledgeClose for its terminal receipt",
+/// A job command is queued to the session owner; it is not peer completion.
+fn submit_transfer(session_id: &str, action: &str, command: rd_engine::transfer::TransferCommand) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(session_id) else {
+            return transfer::error_response(action, "unknown session");
+        };
+        if let Err(message) = mutable_snapshot(record) {
+            return transfer::error_response(action, message);
+        }
+        let Some(viewer) = record.viewer.as_ref() else {
+            return transfer::error_response(action, "no running viewer");
+        };
+        match viewer.submit_transfer(command) {
+            Ok(()) => serde_json::json!({
+                "ok": true, "action": action, "queued": true,
+                "record_removed": false,
+            }).to_string(),
+            Err(error) => transfer::error_response(action, error.static_reason()),
+        }
     })
-    .to_string()
+}
+
+/// No actId, including zero, closes a viewer or acknowledges its record.
+#[napi]
+pub fn session_cancel_job(session_id: String, act_id: u32) -> String {
+    match transfer::cancel_command(i64::from(act_id)) {
+        Ok(command) => submit_transfer(&session_id, "session_cancel_job", command),
+        Err(message) => transfer::error_response("session_cancel_job", message),
+    }
+}
+
+#[napi]
+pub fn transfer_next_job_id() -> i32 {
+    transfer::next_job_id()
+}
+
+#[napi]
+pub fn session_read_remote_dir(session_id: String, path: String, include_hidden: bool) -> String {
+    submit_transfer(&session_id, "session_read_remote_dir", transfer::read_dir_command(path, include_hidden))
+}
+
+#[napi]
+pub fn session_send_files(
+    session_id: String, act_id: u32, path: String, to: String, file_num: u32,
+    include_hidden: bool, is_remote: bool, _is_dir: bool,
+) -> String {
+    // TransferJob reads the real source metadata; a caller's directory hint
+    // never substitutes for the actual file/directory it opens.
+    match transfer::send_files_command(i64::from(act_id), path, to, i64::from(file_num), include_hidden, is_remote) {
+        Ok(command) => submit_transfer(&session_id, "session_send_files", command),
+        Err(message) => transfer::error_response("session_send_files", message),
+    }
+}
+
+#[napi]
+pub fn session_set_confirm_override_file(
+    session_id: String, act_id: u32, file_num: u32, need_override: bool,
+    remember: bool, is_upload: bool,
+) -> String {
+    match transfer::confirm_command(i64::from(act_id), i64::from(file_num), need_override, remember, is_upload) {
+        Ok(command) => submit_transfer(&session_id, "session_set_confirm_override_file", command),
+        Err(message) => transfer::error_response("session_set_confirm_override_file", message),
+    }
 }
 
 /// The client's own "the channel is up" event, carrying what this snapshot
@@ -1687,13 +1812,16 @@ fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
 /// never invented as an event, and `Reported` on the record is what keeps a
 /// repeated poll from repeating what the client already acted on.
 #[napi]
-pub fn session_poll_events(session_id: String, _limit: u32) -> String {
+pub fn session_poll_events(session_id: String, limit: u32) -> String {
+    if !(1..=128).contains(&limit) {
+        return error_json("event limit must be between 1 and 128");
+    }
     with_sessions(|sessions| {
         let Some(record) = sessions.get_mut(&session_id) else {
             return lifecycle_error_json("session_poll_events", "unknown session");
         };
         let snapshot = observe_terminal_reclamation(record);
-        let events = match &snapshot {
+        let observed = match &snapshot {
             Some(snapshot) => record.reported.events(snapshot),
             None if record.closed && !record.reported.finished => {
                 record.reported.finished = true;
@@ -1701,6 +1829,16 @@ pub fn session_poll_events(session_id: String, _limit: u32) -> String {
             }
             None => Vec::new(),
         };
+        record.reported.pending.extend(observed);
+        let count = record.reported.pending.len().min(limit as usize);
+        let mut events: Vec<_> = record.reported.pending.drain(..count).collect();
+        if record.transfer.is_none() {
+            record.transfer = record.viewer.as_ref().and_then(|viewer| viewer.transfer_handle());
+        }
+        if let Some(handle) = record.transfer.as_ref() {
+            let snapshot = handle.take_snapshot_limit(limit as usize - events.len());
+            events.extend(transfer::events(&snapshot.events));
+        }
         let mut response = session_response(
             true, "session_poll_events", &session_id, record, snapshot.as_ref(),
         );
@@ -2371,6 +2509,25 @@ implemented_entry_points!(
     ("lanPeersQuery", lan_peers_query),
     ("lanScanStop", lan_scan_stop),
     ("lanPeerRemove", lan_peer_remove),
+    ("controlledServerStart", controlled_server_start),
+    ("controlledServerStop", controlled_server_stop),
+    ("controlledServerGetStatus", controlled_server_get_status),
+    ("controlledScreenCaptureGetStatus", controlled_screen_capture_status),
+    ("controlledScreenCaptureStop", controlled_screen_capture_stop),
+    ("controlledScreenConfigure", controlled_screen_configure),
+    ("controlledIncomingPoll", controlled_incoming_poll),
+    ("controlledIncomingResolve", controlled_incoming_resolve),
+    ("controlledPasswordGet", controlled_password_get),
+    ("controlledPasswordRefresh", controlled_password_refresh),
+    ("controlledPasswordSetPermanent", controlled_password_set_permanent),
+    ("controlledPasswordSetVerificationMethod", controlled_password_set_verification_method),
+    ("controlledSettingSet", controlled_setting_set),
+    ("controlledTwoFactorBegin", controlled_two_factor_begin),
+    ("controlledTwoFactorVerify", controlled_two_factor_verify),
+    ("controlledTwoFactorDisable", controlled_two_factor_disable),
+    ("controlledTwoFactorGet", controlled_two_factor_get),
+    ("controlledTwoFactorRemoveTrustedDevices", controlled_two_factor_remove_trusted_devices),
+    ("controlledTwoFactorClearTrustedDevices", controlled_two_factor_clear_trusted_devices),
     ("sessionAdd", session_add),
     ("sessionStart", session_start),
     ("sessionLogin", session_login),
@@ -2390,6 +2547,11 @@ implemented_entry_points!(
     ("sessionClose", session_close),
     ("sessionAcknowledgeClose", session_acknowledge_close),
     ("sessionPollEvents", session_poll_events),
+    ("sessionCancelJob", session_cancel_job),
+    ("sessionReadRemoteDir", session_read_remote_dir),
+    ("sessionSendFiles", session_send_files),
+    ("sessionSetConfirmOverrideFile", session_set_confirm_override_file),
+    ("transferNextJobId", transfer_next_job_id),
     ("sessionRefresh", session_refresh),
     ("sessionSetCommon", session_set_common),
     ("sessionSetCustomFps", session_set_custom_fps),
@@ -2512,12 +2674,8 @@ pub fn har_surface_manifest() -> String {
         "implemented": IMPLEMENTED,
         "registry_only": registry_only,
         "pending": pending,
-        "refused_entry_points": ["sessionCancelJob"],
+        "refused_entry_points": [],
         "not_served": {
-            "transfer_cancel": {
-                "entry_points": ["sessionCancelJob"],
-                "reason": "no transfer-job owner is wired to this bridge; cancellation is refused and never closes a viewer or ACKs its terminal receipt",
-            },
             "rgba_pull": {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
                 "reason": "the engine presents each frame into the surface sessionBindSurface recorded and has no CPU-side RGBA pull path",

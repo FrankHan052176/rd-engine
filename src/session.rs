@@ -160,6 +160,14 @@ impl From<&LoginRequest> for SessionClaims {
     }
 }
 
+/// Immutable protocol role, fixed before routing and authentication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionMode {
+    #[default]
+    Desktop,
+    FileTransfer,
+}
+
 pub enum AuthenticatedSide {
     Viewer,
     Host,
@@ -426,9 +434,14 @@ impl ViewerSession {
             .hash
             .as_ref()
             .ok_or_else(|| failure("No peer challenge"))?;
-        if request.union.is_some() || request.username.is_empty() || request.my_id.is_empty() {
+        let mode = match &request.union {
+            None => SessionMode::Desktop,
+            Some(base::message_proto::login_request::Union::FileTransfer(_)) => SessionMode::FileTransfer,
+            _ => return Err(failure("Unsupported login role")),
+        };
+        if request.username.is_empty() || request.my_id.is_empty() {
             return Err(failure(
-                "This authentication slice supports explicit desktop identity only",
+                "Login requires an explicit target and controller identity",
             ));
         }
         if !request.os_login.username.is_empty() || !request.os_login.password.is_empty() {
@@ -438,6 +451,7 @@ impl ViewerSession {
             if first.username != request.username
                 || first.my_id != request.my_id
                 || first.session_id != request.session_id
+                || first.has_file_transfer() != (mode == SessionMode::FileTransfer)
             {
                 return Err(failure("Login retry cannot change identity/scope"));
             }
@@ -474,6 +488,18 @@ impl ViewerSession {
         self.request = Some(retained);
         self.state = ViewerState::AwaitLogin;
         Ok(())
+    }
+
+    /// The login this session already sent, with the identity and role it
+    /// carries and without the password material.
+    ///
+    /// A retry the peer asks for is this login again: the same target, the same
+    /// controller identity, the same session id and the same desktop-or-file
+    /// role. Resending it is what makes a password answer a retry on the wire
+    /// that is already open, instead of a new request the peer would read as
+    /// another attempt.
+    pub(crate) fn login_request(&self) -> Option<&LoginRequest> {
+        self.request.as_ref()
     }
 
     /// Answers the peer's second-factor step on this same session and wire.

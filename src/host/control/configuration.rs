@@ -118,6 +118,7 @@ pub(super) fn host_options(id: String, signing_key: sign::SecretKey,
         allow_legacy_plain: enabled(&options, "allow-legacy-direct"), id, display_name: name,
         signing_key, width: binding.width(), height: binding.height(), bitrate: 20_000_000,
         platform: "Windows".into(), credentials, publisher_backend: PublisherBackend::Auto,
+        security: None,
         output_key: key, allow_input, codec_selection: CodecSelection::Auto,
     })
 }

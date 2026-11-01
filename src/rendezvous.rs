@@ -11,7 +11,12 @@
 //! hbbs signs IdPk (peer ID + Ed25519 PEER key); that peer then signs its
 //! ephemeral box key in SignedId. These two signing keys are not interchangeable.
 //! Missing/bad evidence terminates, never a compatibility/TOFU fallback.
+//!
+//! Every hbbs punch and every relay request of one attempt carries the same
+//! fixed protocol role (`ConnType`) chosen once from `SessionMode`; the role
+//! never changes the target ID, the dialed address or the verified identity.
 use crate::handshake::{self, Established, Security, ViewerIdentity};
+use crate::session::SessionMode;
 use hbb_common::{
     AddrMangle,
     protobuf::Message as _,
@@ -163,9 +168,35 @@ fn timed_out() -> io::Error {
     )
 }
 
+/// The one wire encoding of the fixed role. Original client passes its
+/// `ConnType` straight through to hbbs/hbbr; nothing here derives it from an
+/// address, a peer ID, a response or a fallback.
+fn conn_type(mode: SessionMode) -> i32 {
+    match mode {
+        SessionMode::Desktop => ConnType::DEFAULT_CONN,
+        SessionMode::FileTransfer => ConnType::FILE_TRANSFER,
+    }
+    .into()
+}
+
+/// Desktop-compatible entry point: the fixed role is `SessionMode::Desktop`.
+pub async fn connect_viewer(config: RendezvousConfig) -> io::Result<(Established, RouteEvidence)> {
+    connect_viewer_for(config, SessionMode::Desktop).await
+}
+
 /// Returns the exact unsplit peer stream, retaining its codec buffer and nonce
 /// counters, for ViewerSession::from_established. Never claims login succeeded.
-pub async fn connect_viewer(config: RendezvousConfig) -> io::Result<(Established, RouteEvidence)> {
+///
+/// `mode` is this attempt's immutable protocol role. It rides only the
+/// `conn_type` field of the hbbs punch, of the hbbs relay request and of the
+/// final hbbr join, so a file-transfer dial is never advertised as a desktop
+/// one and a relay fallback cannot change it. The target ID, the resolved
+/// route, the deadline, cancellation and the peer signature checks are
+/// unchanged; the role is never derived from them.
+pub async fn connect_viewer_for(
+    config: RendezvousConfig,
+    mode: SessionMode,
+) -> io::Result<(Established, RouteEvidence)> {
     if config.id.is_empty()
         || config.id.len() > 512
         || config.licence_key.is_empty()
@@ -188,7 +219,7 @@ pub async fn connect_viewer(config: RendezvousConfig) -> io::Result<(Established
     }
     sodiumoxide::init().map_err(|_| io::Error::other("Crypto initialization failed"))?;
     let deadline = Instant::now() + config.connect_timeout;
-    timeout_at(deadline, connect(config, deadline))
+    timeout_at(deadline, connect(config, mode, deadline))
         .await
         .map_err(|_| timed_out())?
 }
@@ -441,27 +472,72 @@ async fn finish(
     ))
 }
 
+/// Original hbbs punch request: the role is fixed before any route is chosen,
+/// so neither the TCP punch nor the relay fallback can change it.
+fn punch_hole_request(config: &RendezvousConfig, mode: SessionMode) -> RendezvousMessage {
+    let mut message = RendezvousMessage::new();
+    message.set_punch_hole_request(PunchHoleRequest {
+        id: config.id.clone(),
+        licence_key: config.licence_key.clone(),
+        nat_type: NatType::UNKNOWN_NAT.into(),
+        conn_type: conn_type(mode),
+        version: "1.4.9".into(),
+        ..Default::default()
+    });
+    message
+}
+
+/// hbbs relay negotiation on a fresh control socket, carrying the same fixed
+/// role as the hbbr join that follows it.
+fn relay_request(
+    config: &RendezvousConfig,
+    name: &str,
+    uuid: &str,
+    mode: SessionMode,
+) -> RendezvousMessage {
+    let mut message = RendezvousMessage::new();
+    message.set_request_relay(RequestRelay {
+        id: config.id.clone(),
+        uuid: uuid.to_owned(),
+        relay_server: name.to_owned(),
+        secure: true,
+        conn_type: conn_type(mode),
+        ..Default::default()
+    });
+    message
+}
+
+/// hbbr join record: licence_key/id/uuid/conn_type, NOT the hbbs secure flag.
+/// There is no relay ACK to consume: the next record is the PEER SignedId.
+fn relay_join_request(
+    config: &RendezvousConfig,
+    uuid: String,
+    mode: SessionMode,
+) -> RendezvousMessage {
+    let mut message = RendezvousMessage::new();
+    message.set_request_relay(RequestRelay {
+        id: config.id.clone(),
+        uuid,
+        licence_key: config.licence_key.clone(),
+        conn_type: conn_type(mode),
+        ..Default::default()
+    });
+    message
+}
+
 async fn join_relay(
     config: &RendezvousConfig,
     name: &str,
     uuid: String,
     key: sign::PublicKey,
+    mode: SessionMode,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
     if uuid.len() > 64 || Uuid::parse_str(&uuid).is_err() {
         return Err(invalid("Invalid relay pairing UUID"));
     }
     let mut wire = server_dial(name, 21117, deadline).await?;
-    let mut message = RendezvousMessage::new();
-    // hbbr receives licence_key/id/uuid/conn_type, NOT the hbbs secure flag.
-    // There is no relay ACK to consume: the next record is the PEER SignedId.
-    message.set_request_relay(RequestRelay {
-        id: config.id.clone(),
-        uuid,
-        licence_key: config.licence_key.clone(),
-        conn_type: ConnType::DEFAULT_CONN.into(),
-        ..Default::default()
-    });
+    let message = relay_join_request(config, uuid, mode);
     send(&mut wire, &message).await?;
     finish(wire, config, key, RouteKind::Relay, deadline).await
 }
@@ -481,19 +557,13 @@ async fn request_relay(
     config: &RendezvousConfig,
     name: &str,
     key: sign::PublicKey,
+    mode: SessionMode,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
     // Original hbbs requires a NEW control socket / NAT tuple for relay requests.
     let mut wire = server_dial(&config.rendezvous_server, 21116, deadline).await?;
     let uuid = Uuid::new_v4().to_string();
-    let mut message = RendezvousMessage::new();
-    message.set_request_relay(RequestRelay {
-        id: config.id.clone(),
-        uuid: uuid.clone(),
-        relay_server: name.to_owned(),
-        secure: true,
-        ..Default::default()
-    });
+    let message = relay_request(config, name, &uuid, mode);
     send(&mut wire, &message).await?;
     let response = relay_response(receive(&mut wire).await?)?;
     // Original success ACK may omit uuid/pk. Nonempty contradictory evidence
@@ -505,24 +575,17 @@ async fn request_relay(
         return Err(invalid("Relay peer key changed"));
     }
     drop(wire);
-    join_relay(config, name, uuid, key, deadline).await
+    join_relay(config, name, uuid, key, mode, deadline).await
 }
 
 async fn connect(
     config: RendezvousConfig,
+    mode: SessionMode,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
     let mut wire = server_dial(&config.rendezvous_server, 21116, deadline).await?;
     let local = wire.local_addr();
-    let mut request = RendezvousMessage::new();
-    request.set_punch_hole_request(PunchHoleRequest {
-        id: config.id.clone(),
-        licence_key: config.licence_key.clone(),
-        nat_type: NatType::UNKNOWN_NAT.into(),
-        conn_type: ConnType::DEFAULT_CONN.into(),
-        version: "1.4.9".into(),
-        ..Default::default()
-    });
+    let request = punch_hole_request(&config, mode);
     let mut response = None;
     for attempt in 1..=3 {
         send(&mut wire, &request).await?;
@@ -562,7 +625,7 @@ async fn connect(
                             "TCP hole punch failed; no relay available",
                         )
                     })?;
-                    request_relay(&config, &relay, key, deadline).await
+                    request_relay(&config, &relay, key, mode, deadline).await
                 }
             }
         }
@@ -574,8 +637,66 @@ async fn connect(
             // This UUID was paired with the advertised relay, not a configured override.
             let relay = endpoint(&response.relay_server, 21117)?;
             drop(wire);
-            join_relay(&config, &relay, response.uuid, key, deadline).await
+            join_relay(&config, &relay, response.uuid, key, mode, deadline).await
         }
         _ => Err(invalid("Unexpected rendezvous response")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> RendezvousConfig {
+        RendezvousConfig {
+            id: "123456789".into(),
+            rendezvous_server: "127.0.0.1".into(),
+            licence_key: "test-key".into(),
+            server_key: sign::PublicKey([0; 32]),
+            relay_server: None,
+            connect_timeout: Duration::from_secs(5),
+        }
+    }
+
+    fn punch_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+        match punch_hole_request(config, mode).union {
+            Some(rendezvous_message::Union::PunchHoleRequest(request)) => request.conn_type,
+            _ => panic!("punch request builder produced another message"),
+        }
+    }
+
+    fn hbbs_relay_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+        match relay_request(config, "127.0.0.1:21117", "uuid", mode).union {
+            Some(rendezvous_message::Union::RequestRelay(request)) => request.conn_type,
+            _ => panic!("hbbs relay request builder produced another message"),
+        }
+    }
+
+    fn hbbr_join_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+        match relay_join_request(config, "uuid".to_owned(), mode).union {
+            Some(rendezvous_message::Union::RequestRelay(request)) => request.conn_type,
+            _ => panic!("hbbr join builder produced another message"),
+        }
+    }
+
+    /// The role belongs to the attempt, not to the route taken: every request
+    /// hbbs/hbbr receives carries the same value, and `Desktop` keeps the
+    /// original default that a relay-only peer already sees today.
+    #[test]
+    fn fixed_role_reaches_punch_hbbs_relay_and_hbbr_join() {
+        let config = config();
+        for (mode, role) in [
+            (SessionMode::Desktop, ConnType::DEFAULT_CONN),
+            (SessionMode::FileTransfer, ConnType::FILE_TRANSFER),
+        ] {
+            let expected: i32 = role.into();
+            assert_eq!(punch_role(&config, mode), expected, "{mode:?} punch");
+            assert_eq!(
+                hbbs_relay_role(&config, mode),
+                expected,
+                "{mode:?} hbbs relay request"
+            );
+            assert_eq!(hbbr_join_role(&config, mode), expected, "{mode:?} hbbr join");
+        }
     }
 }

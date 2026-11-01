@@ -11,7 +11,7 @@ use crate::frames::FrameStore;
 use crate::keyboard::KeyboardState;
 use crate::platform;
 use anyhow::ensure;
-use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
+use base::message_proto::{ControlKey, ImageQuality, KeyEvent, KeyboardMode};
 use flutter_rust_bridge::{StreamSink, SyncReturn};
 use hbb_common::base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use hbb_common::config::{
@@ -25,11 +25,12 @@ use rd_engine::lan::{self, LanCompletion, LanNotice, LanOwner, LanSnapshot};
 use rd_engine::official_account::{self as account, CacheKind};
 use rd_engine::protocol::rect::Rect;
 use rd_engine::rendezvous::RendezvousConfig;
-use rd_engine::session::PeerCloseReason;
+use rd_engine::session::{PeerCloseReason, SessionMode};
+use rd_engine::session_options::{SessionOptionChange, SessionOptions};
 use rd_engine::surface::FrameObserver;
 use rd_engine::viewer::{
-    direct_address, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy, ViewerOptions,
-    ViewerSnapshot, ViewerTarget,
+    direct_address, LoginFailure, SurfaceLease, Viewer, ViewerError, ViewerInputPolicy,
+    ViewerOptions, ViewerSnapshot, ViewerTarget,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -134,6 +135,29 @@ const WAITING_FOR_IMAGE: &str = "Connected, waiting for image...";
 const ENGINE_AUTH_FAILED: &str = "AuthenticationFailed";
 const ENGINE_SECOND_FACTOR_UNSUPPORTED: &str = "SecondFactorUnsupported";
 const ENGINE_AWAITING_APPROVAL: &str = "awaiting_approval";
+
+/// The peer's second-factor step, in the engine's own phase spelling.
+///
+/// The challenge counter published beside the phase is what tells a first demand
+/// apart from the peer's answer to a code this session already sent, so the
+/// pump's own "already asked" state is that counter and never the phase alone.
+const ENGINE_AWAITING_SECOND_FACTOR: &str = "awaiting_second_factor";
+const ENGINE_SECOND_FACTOR_REJECTED: &str = "second_factor_rejected";
+
+/// The peer's password demand, in the engine's own phase spelling.
+///
+/// Same shape as the second-factor step above and for the same reason: the
+/// counter published beside the phase is the pump's "already asked" state, so a
+/// repeated poll raises nothing and a refusal - a *new* challenge - asks again.
+const ENGINE_AWAITING_PASSWORD: &str = "awaiting_password";
+const ENGINE_PASSWORD_REJECTED: &str = "password_rejected";
+
+/// The two titles the pinned client raises for that step, which are its own
+/// `REQUIRE_2FA` and `LOGIN_MSG_2FA_WRONG` login-error spellings. Both open the
+/// same `input-2fa` dialog, so the title is how the official client itself
+/// distinguishes a first demand from a refused code - there is no second kind.
+const SECOND_FACTOR_REQUIRED_TITLE: &str = "2FA Required";
+const SECOND_FACTOR_WRONG_TITLE: &str = "Wrong 2FA Code";
 
 const DEFAULT_FPS: i32 = 30;
 const DEFAULT_TRACKPAD_SPEED: i32 = 100;
@@ -1973,6 +1997,17 @@ fn discard_credential(password: String) {
     utils::memzero(&mut bytes);
 }
 
+/// Wipes a second-factor code this bridge refuses.
+///
+/// A code is a single-use secret like a password, and one refused here never
+/// reached the peer at all: clearing its bytes keeps it from outliving the call
+/// it was typed for. A code the viewer itself takes ownership of is wiped by the
+/// viewer on every refusal of its own, so this is only for the refusals made
+/// before the engine ever sees it.
+fn discard_code(code: String) {
+    discard_credential(code);
+}
+
 /// Everything the bridge knows about one session. Dart holds the id, the engine
 /// holds the viewer, and this is what joins the two.
 struct Session {
@@ -2015,6 +2050,14 @@ struct Session {
     /// pairing belongs to the session, and cleared whenever a new viewer starts,
     /// whose peer-side key state begins empty.
     keyboard: Mutex<KeyboardState>,
+    /// The RustDesk session options this session holds while no viewer runs.
+    ///
+    /// A quality, codec preference or toggle set before the session dials is
+    /// recorded here and travels in the next login advertisement itself, which
+    /// is the only wire effect those requests have before a session exists. Once
+    /// a viewer runs, its own requested state is the answer and this is no
+    /// longer consulted, so the two are never two opinions about one value.
+    session_options: Mutex<SessionOptions>,
 }
 
 impl Session {
@@ -2041,6 +2084,7 @@ impl Session {
             peer_platform: Mutex::new(String::new()),
             unverified_accepted: AtomicBool::new(false),
             keyboard: Mutex::new(KeyboardState::default()),
+            session_options: Mutex::new(SessionOptions::default()),
         }
     }
 
@@ -2604,7 +2648,18 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
         password,
         requested_fps,
         input_policy: session.input_policy(),
-        session_options: Default::default(),
+        // What this session asked for while it had not dialled: the login
+        // advertisement is where those values really travel, so the new viewer
+        // starts from them rather than from a default they would silently lose.
+        session_options: lock(&session.session_options).clone(),
+        // This adapter serves the official Flutter client's desktop viewer, and
+        // every role-carrying entry point (`session_add_sync`) refuses a
+        // non-desktop session before a session record exists, so the immutable
+        // role is the one this bridge really starts and not a guess.
+        mode: SessionMode::Desktop,
+        // A desktop session has no transfer target: file transfer is refused
+        // earlier rather than started without one.
+        transfer_root: None,
     };
     let lease: Arc<dyn SurfaceLease> = Arc::new(BridgeLease {
         observer: Arc::new(SessionObserver {
@@ -2645,11 +2700,72 @@ fn spawn_pump(session: &Arc<Session>, viewer: Arc<Viewer>, password_was_empty: b
     }
 }
 
+/// The official second-factor dialog one snapshot justifies, if any.
+///
+/// The engine advances `second_factor_challenge` exactly when the peer demands a
+/// code or refuses one, so a challenge this pump has already announced asks
+/// nothing more, and one it has not is either the peer's first demand or its
+/// answer to the code just sent. The phase alone cannot say that: a repeated
+/// poll of one challenge reads the same phase every time, and asking again for
+/// every poll would stack dialogs on a session waiting for one answer.
+fn second_factor_prompt(phase: &str, challenge: u64, announced: u64) -> Option<&'static str> {
+    if challenge <= announced {
+        return None;
+    }
+    match phase {
+        ENGINE_SECOND_FACTOR_REJECTED => Some(SECOND_FACTOR_WRONG_TITLE),
+        ENGINE_AWAITING_SECOND_FACTOR => Some(SECOND_FACTOR_REQUIRED_TITLE),
+        // Not the second-factor step: the counter cannot turn another phase into
+        // a demand for a code.
+        _ => None,
+    }
+}
+
+/// Which of the client's two password events one peer demand is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasswordPrompt {
+    /// The peer wants a password this attempt did not send.
+    Required,
+    /// The peer refused the password this attempt sent.
+    Refused,
+}
+
+/// The official password form one snapshot justifies, if any.
+///
+/// The engine advances `password_challenge` exactly when the peer reports
+/// `Empty Password` or `Wrong Password`, on the session it keeps open, so a
+/// challenge this pump has already announced asks nothing more and one it has
+/// not is the peer's own news: the attempt needs a password, or needs another
+/// one. The phase alone cannot say that — a repeated poll reads the same phase
+/// every time — and asking again on every poll would stack forms on a session
+/// waiting for one answer.
+fn password_prompt(phase: &str, challenge: u64, announced: u64) -> Option<PasswordPrompt> {
+    if challenge <= announced {
+        return None;
+    }
+    match phase {
+        ENGINE_PASSWORD_REJECTED => Some(PasswordPrompt::Refused),
+        ENGINE_AWAITING_PASSWORD => Some(PasswordPrompt::Required),
+        // Not the password step: the counter cannot turn another phase into a
+        // demand for a secret.
+        _ => None,
+    }
+}
+
 fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, password_was_empty: bool) {
     let mut announced_ready = false;
     let mut asked_for_password = false;
     let mut announced_approval = false;
     let mut announced_insecure = false;
+    // The last peer challenge this pump raised a dialog for. The engine advances
+    // it only when the peer demands a code or refuses one, so this counter - not
+    // the phase - is what makes one challenge one dialog.
+    let mut announced_second_factor = 0u64;
+    // The same, for the peer's password demand. The engine advances
+    // `password_challenge` only when the peer wants a password this attempt did
+    // not send or refuses the one it sent, so this counter - never the phase -
+    // is what makes one demand one form and a refusal a new one.
+    let mut announced_password = 0u64;
     let mut last_error = String::new();
     while !stop.load(Ordering::SeqCst) {
         let Some(session) = weak.upgrade() else {
@@ -2660,7 +2776,17 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, passwor
             // The official client asks for the password as soon as it logs in
             // without one - the peer's operator may still accept the request,
             // but this dialog is the only way the user can supply the secret.
-            if password_was_empty && !asked_for_password {
+            //
+            // A peer that asks for a second factor has already accepted a login,
+            // so asking for a password in that state would request a secret that
+            // step is past; the step's own dialog is raised below instead.
+            let awaiting_second_factor = matches!(
+                snapshot.phase.as_str(),
+                ENGINE_AWAITING_SECOND_FACTOR | ENGINE_SECOND_FACTOR_REJECTED
+            );
+            if snapshot.protocol != rd_engine::protocol::Protocol::RustDesk.as_str()
+                && password_was_empty && !asked_for_password && !awaiting_second_factor
+            {
                 asked_for_password = true;
                 session.password_required();
             }
@@ -2675,6 +2801,40 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, passwor
                     "",
                     false,
                 );
+            }
+            // The peer's own second-factor step, on this same still-open
+            // session: the dialog is raised once per challenge, so a wrong code
+            // asks again instead of ending the session the peer has not refused.
+            if let Some(title) = second_factor_prompt(
+                &snapshot.phase,
+                snapshot.second_factor_challenge,
+                announced_second_factor,
+            ) {
+                announced_second_factor = snapshot.second_factor_challenge;
+                session.msgbox("input-2fa", title, "", "", false);
+            }
+            // The peer's own password demand, on this same still-open session:
+            // one form per challenge, so a refused password asks again instead
+            // of ending the attempt. The prompt above already asks for the
+            // password an attempt that carried none needs, so only the peer's
+            // refusal - and a demand this pump has not acted on yet - adds one.
+            if let Some(prompt) = password_prompt(
+                &snapshot.phase,
+                snapshot.password_challenge,
+                announced_password,
+            ) {
+                announced_password = snapshot.password_challenge;
+                match prompt {
+                    PasswordPrompt::Refused => session.wrong_password(),
+                    PasswordPrompt::Required if !asked_for_password => {
+                        asked_for_password = true;
+                        session.password_required();
+                    }
+                    // The form this attempt already raised is the one the
+                    // operator is looking at: the engine is naming the same
+                    // demand, not making a new one.
+                    PasswordPrompt::Required => {}
+                }
             }
         }
         if !announced_ready && snapshot.authenticated {
@@ -2930,10 +3090,11 @@ pub fn session_start_with_displays(
     session_start(events2ui, session_id, id)
 }
 
-/// Login. The engine authenticates inside `Viewer::start` with the password it
-/// was given, so a password that arrives after a failed attempt restarts the
-/// viewer with it - the same outcome the client's own core reaches by retrying
-/// the login on the connection it kept.
+/// Login. The engine owns the authentication attempt: it keeps it open when the
+/// peer answers `Empty Password` or `Wrong Password`, so a password that arrives
+/// while it is waiting for one is written on the wire the session already has -
+/// the same login, resubmitted with the new secret. A running RustDesk viewer
+/// never falls back to a redial when it refuses the local submission.
 pub fn session_login(
     session_id: SessionID,
     os_username: String,
@@ -2941,6 +3102,8 @@ pub fn session_login(
     password: String,
     remember: bool,
 ) -> Result<()> {
+    let password = SessionCredential(password.into_bytes());
+    let os_password = SessionCredential(os_password.into_bytes());
     ensure!(
         os_username.is_empty() && os_password.is_empty(),
         "unsupported: OS-credential login is not implemented"
@@ -2951,7 +3114,22 @@ pub fn session_login(
     }
     let session = session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
     session.remember.store(false, Ordering::SeqCst);
-    lock(&session.credential).replace(password);
+    if let Some(viewer) = lock(&session.viewer).clone() {
+        match viewer.send_password(password.copy_for_viewer()) {
+            Ok(()) => {
+                *lock(&session.credential) = password;
+                return Ok(());
+            }
+            // RFB/RDP retain their explicit credential/start path. RustDesk's
+            // live challenge is answered only on the wire that issued it.
+            Err(ViewerError::PasswordNotAwaiting)
+                if viewer.snapshot().protocol != rd_engine::protocol::Protocol::RustDesk.as_str() => {}
+            Err(error) => {
+                anyhow::bail!("password refused: {error}");
+            }
+        }
+    }
+    *lock(&session.credential) = password;
     start_viewer(&session).inspect_err(|error| session.fail(&error.to_string()))
 }
 
@@ -3042,35 +3220,111 @@ pub fn session_set_custom_fps(session_id: SessionID, fps: i32) -> Result<()> {
     Ok(())
 }
 
-/// The engine's encoder decision is its own and it exposes no way to change the
-/// peer's image quality. The client shows a successful set as the new selection
-/// and reads it back, so this refuses instead of recording a value the next
-/// connection would not use.
+/// The requested session options this session holds right now.
+///
+/// A running viewer is the authority: it was started from this session's
+/// recorded values and `Viewer::set_session_option` has kept its own requested
+/// state in step with everything the engine accepted since. Without a viewer
+/// there is nothing to ask, and the values recorded for the next dial are the
+/// whole answer.
+fn requested_session_options(session: &Arc<Session>) -> SessionOptions {
+    let viewer = lock(&session.viewer).clone();
+    match viewer {
+        Some(viewer) => viewer.session_options_snapshot(),
+        None => lock(&session.session_options).clone(),
+    }
+}
+
+/// Turns one typed change into a request on this session's real wire.
+///
+/// A running viewer is the only thing that can put a change on the wire, so the
+/// change goes through `Viewer::set_session_option`: the engine prepares it
+/// against the peer's own version, the decoding this session advertised and the
+/// displays the peer reported, and queues one control record on the session's
+/// single writer. `Ok(())` is therefore "the engine accepted it and the writer
+/// has it", never "the peer applied it" - a quality level has no peer echo at
+/// all, and a resolution is the peer's to satisfy.
+///
+/// A session that has not dialled has no writer to hold anything, so the change
+/// is recorded for the next login advertisement instead
+/// (`SessionOptions::request`). A display switch or a resolution change is
+/// refused there by the engine itself, because neither exists in a login
+/// message and recording one would be a request that never reaches the wire.
+fn apply_session_option(session_id: SessionID, change: SessionOptionChange) -> Result<()> {
+    let session = session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
+    let viewer = lock(&session.viewer).clone();
+    match viewer {
+        Some(viewer) => viewer
+            .set_session_option(change)
+            .map_err(|error| anyhow::anyhow!("session option refused: {error}")),
+        None => {
+            let next = lock(&session.session_options)
+                .request(change)
+                .map_err(|error| anyhow::anyhow!("session option refused: {error}"))?;
+            *lock(&session.session_options) = next;
+            Ok(())
+        }
+    }
+}
+
+/// The named quality presets the pinned client's own config understands.
+///
+/// `custom` is not a level: it means "use the custom percentage", which this
+/// engine takes through `session_set_custom_image_quality`, so the word is
+/// answered with the call that carries a percentage instead of being sent as a
+/// level the peer would read as one. Like the pinned client's own parser,
+/// nothing else is a quality at all.
+fn named_quality(name: &str) -> Result<ImageQuality> {
+    match name.trim() {
+        "low" => Ok(ImageQuality::Low),
+        "balanced" => Ok(ImageQuality::Balanced),
+        "best" => Ok(ImageQuality::Best),
+        "custom" => anyhow::bail!(
+            "session_set_image_quality takes a named level; the custom percentage is \
+             session_set_custom_image_quality"
+        ),
+        other => anyhow::bail!(
+            "session_set_image_quality has no level {other:?}: low, balanced or best"
+        ),
+    }
+}
+
+/// The client's quality selection, as the `OptionMessage` the peer's wire takes.
+///
+/// A running session queues it for its own writer; one that has not dialled
+/// keeps it for the login advertisement. What comes back to the client from
+/// `session_get_image_quality` is what was asked for, because the peer echoes no
+/// quality back and an "applied" level would be invented.
 pub fn session_set_image_quality(session_id: SessionID, value: String) -> Result<()> {
-    ensure!(session_record(session_id).is_some(), "unknown session");
-    let _ = value;
-    unsupported_result("session_set_image_quality")
+    let quality = named_quality(&value)?;
+    apply_session_option(session_id, SessionOptionChange::ImageQuality(quality))
 }
 
-/// No quality setting is in force here: nothing was applied, so there is no
-/// value to read back. The client takes the absence as "use the default" rather
-/// than as a selection the user made.
+/// The quality this session asked for, in the pinned client's own config
+/// spelling (`low`, `balanced`, `best`, `custom`).
+///
+/// `None` means nothing was asked for, which the client reads as the peer's
+/// default and which is a fact rather than an empty selection: an empty string
+/// would look like a level that does not exist.
 pub fn session_get_image_quality(session_id: SessionID) -> Option<String> {
-    let _ = session_record(session_id)?;
-    no_state("session_get_image_quality");
-    None
+    let session = session_record(session_id)?;
+    let name = requested_session_options(&session).image_quality_name();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
+/// The custom percentage the pinned client's own slider produces, in the wire's
+/// own encoding (`value << 8`, done by the engine's option store).
 pub fn session_set_custom_image_quality(session_id: SessionID, value: i32) -> Result<()> {
-    ensure!(session_record(session_id).is_some(), "unknown session");
-    let _ = value;
-    unsupported_result("session_set_custom_image_quality")
+    apply_session_option(session_id, SessionOptionChange::CustomImageQuality(value))
 }
 
+/// The custom percentage this session asked for, in the client's own shape: the
+/// remembered value, or `None` when no custom quality was requested.
 pub fn session_get_custom_image_quality(session_id: SessionID) -> Option<Vec<i32>> {
-    let _ = session_record(session_id)?;
-    no_state("session_get_custom_image_quality");
-    None
+    let session = session_record(session_id)?;
+    requested_session_options(&session)
+        .custom_image_quality()
+        .map(|quality| vec![quality])
 }
 
 pub fn session_get_trackpad_speed(session_id: SessionID) -> Option<i32> {
@@ -3184,12 +3438,26 @@ pub fn session_get_peer_option(session_id: SessionID, name: String) -> String {
     }
 }
 
+/// The client's toggle switches, in its own vocabulary.
+///
+/// `view-only` is the local policy the engine really enforces. The other three
+/// are the pinned wire's own options, and the answer is the state this session
+/// asked for: `disable-audio` and `disable-clipboard` are the peer's opt-outs, so
+/// a switch that is on asked it to stop, and `show-remote-cursor` asked it to
+/// draw its own cursor into the video it sends. None of them is a reading of the
+/// peer's application, which the peer never echoes.
 pub fn session_get_toggle_option(session_id: SessionID, arg: String) -> Option<bool> {
     let session = session_record(session_id)?;
     if arg == "view-only" {
         return Some(session.input_policy().view_only);
     }
-    None
+    let requested = requested_session_options(&session);
+    match arg.as_str() {
+        "disable-audio" => Some(!requested.audio_enabled()),
+        "disable-clipboard" => Some(!requested.clipboard_enabled()),
+        "show-remote-cursor" => Some(requested.show_remote_cursor()),
+        _ => None,
+    }
 }
 
 pub fn session_get_toggle_option_sync(session_id: SessionID, arg: String) -> SyncReturn<bool> {
@@ -3200,23 +3468,42 @@ pub fn session_get_toggle_option_sync(session_id: SessionID, arg: String) -> Syn
 /// enforces, so flipping it here changes what the live viewer admits and writes
 /// the same decision back to the peer's stored configuration - the source the
 /// next session for this peer reads.
+///
+/// The three wire options are flipped from the state this session asked for and
+/// handed to the engine as typed changes, so each one becomes one control record
+/// on the session's writer instead of a switch that only looks flipped.
 pub fn session_toggle_option(session_id: SessionID, value: String) -> Result<()> {
-    ensure!(value == "view-only", "unsupported session toggle");
+    if value == "view-only" {
+        let session =
+            session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
+        let next = !session.input_policy().view_only;
+        lock(&session.toggles).insert("view-only".to_owned(), next);
+        let peer = &session.peer;
+        if !peer.is_empty() {
+            let mut config = PeerConfig::load(peer);
+            config.view_only.v = next;
+            config.store(peer);
+        }
+        if let Some(viewer) = lock(&session.viewer).clone() {
+            let mut policy = viewer.input_policy();
+            policy.view_only = next;
+            viewer.set_input_policy(policy);
+        }
+        return Ok(());
+    }
     let session = session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
-    let next = !session.input_policy().view_only;
-    lock(&session.toggles).insert("view-only".to_owned(), next);
-    let peer = &session.peer;
-    if !peer.is_empty() {
-        let mut config = PeerConfig::load(peer);
-        config.view_only.v = next;
-        config.store(peer);
-    }
-    if let Some(viewer) = lock(&session.viewer).clone() {
-        let mut policy = viewer.input_policy();
-        policy.view_only = next;
-        viewer.set_input_policy(policy);
-    }
-    Ok(())
+    let requested = requested_session_options(&session);
+    let change = match value.as_str() {
+        "disable-audio" => SessionOptionChange::AudioEnabled(!requested.audio_enabled()),
+        "disable-clipboard" => {
+            SessionOptionChange::ClipboardEnabled(!requested.clipboard_enabled())
+        }
+        "show-remote-cursor" => {
+            SessionOptionChange::ShowRemoteCursor(!requested.show_remote_cursor())
+        }
+        other => anyhow::bail!("unsupported session toggle {other:?}"),
+    };
+    apply_session_option(session_id, change)
 }
 
 pub fn session_get_flutter_option(session_id: SessionID, k: String) -> Option<String> {
@@ -3880,8 +4167,55 @@ pub fn session_toggle_privacy_mode(
     unsupported_result("session_toggle_privacy_mode")
 }
 
+/// Answers the peer's second-factor step on this same, still-open session.
+///
+/// This is `Viewer::send_second_factor`: the engine admits a code only while
+/// this session's own RustDesk authentication is waiting for one, one code per
+/// peer answer, and writes it on the session `Viewer::start` already owns. So
+/// `Ok(())` is the receipt that the code reached the authentication loop - never
+/// that the peer accepted it. The peer's decision is its next demand, which the
+/// pump reports as `2FA Required` or `Wrong 2FA Code`, and authority is the
+/// snapshot's `authenticated` fact, not this answer.
+///
+/// `trust_this_device` is refused rather than ignored: the pinned client sends
+/// its own `hwid` in `Auth2FA` and records `trust-this-device` only after the
+/// peer enrolls that identity. This bridge keeps no enrolled identity, so a code
+/// sent under that flag would ask the peer to trust a device this app cannot
+/// name again - and answering `Ok` would promise an enrollment that never
+/// happened.
 pub fn session_send2fa(session_id: SessionID, code: String, trust_this_device: bool) -> Result<()> {
-    unsupported_result("session_send2fa")
+    if trust_this_device {
+        discard_code(code);
+        anyhow::bail!(
+            "unsupported: trusted-device enrollment needs this device's enrolled hwid, \
+             which this bridge does not keep"
+        );
+    }
+    // The peer's own `Auth2FA.code` is the six-digit TOTP; anything else is not a
+    // code this wire can carry and is refused before it reaches the session.
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        discard_code(code);
+        anyhow::bail!("2FA code must contain exactly six ASCII digits");
+    }
+    let session = match session_record(session_id) {
+        Some(session) => session,
+        None => {
+            discard_code(code);
+            anyhow::bail!("unknown session");
+        }
+    };
+    let viewer = match lock(&session.viewer).clone() {
+        Some(viewer) => viewer,
+        None => {
+            discard_code(code);
+            anyhow::bail!("session has no running viewer");
+        }
+    };
+    // The viewer owns the code from here and wipes it on every refusal of its
+    // own, including a session that is closing.
+    viewer
+        .send_second_factor(code)
+        .map_err(|error| anyhow::anyhow!("2FA code refused: {error}"))
 }
 
 pub fn session_lock_screen(session_id: SessionID) -> Result<()> {
@@ -3892,21 +4226,53 @@ pub fn session_ctrl_alt_del(session_id: SessionID) -> Result<()> {
     unsupported_result("session_ctrl_alt_del")
 }
 
+/// The client's display switch, which is a real `SwitchDisplay` on the peer's
+/// wire: the engine repeats the resolution it remembers for that display and
+/// `(0, 0)` when it remembers none, exactly as the pinned client does.
+///
+/// This bridge presents one bound native Surface for one display, so `[0]` is
+/// the only request it can carry. The client's other form - more than one
+/// display - is a capture-all request that needs a second display owner this
+/// engine does not run, and `is_desktop` only chooses between that form and a
+/// desktop refresh this bridge does not add, so neither is silently reduced to a
+/// single-display switch.
 pub fn session_switch_display(
     is_desktop: bool,
     session_id: SessionID,
     value: Vec<i32>,
 ) -> Result<()> {
-    unsupported_result("session_switch_display")
+    let _ = is_desktop;
+    ensure!(session_record(session_id).is_some(), "unknown session");
+    ensure!(
+        value.len() == 1,
+        "unsupported: only one display is published by this bridge"
+    );
+    ensure!(value[0] == 0, "unsupported: only display 0 is published");
+    apply_session_option(session_id, SessionOptionChange::SwitchDisplay(0))
 }
 
+/// Asks the peer to change one display's resolution.
+///
+/// The message shape is the engine's: a display-qualified
+/// `change_display_resolution` for a peer whose version understands one, the
+/// legacy unqualified `change_resolution` before that, and a refusal when a peer
+/// too old to name a display is asked about one it is not showing. Nothing here
+/// claims the peer resized anything - its own next frame and display report are
+/// what would.
 pub fn session_change_resolution(
     session_id: SessionID,
     display: i32,
     width: i32,
     height: i32,
 ) -> Result<()> {
-    unsupported_result("session_change_resolution")
+    apply_session_option(
+        session_id,
+        SessionOptionChange::ChangeResolution {
+            display,
+            width,
+            height,
+        },
+    )
 }
 
 pub fn session_request_new_display_init_msgs(session_id: SessionID, display: usize) -> Result<()> {
@@ -3929,12 +4295,32 @@ pub fn session_send_selected_session_id(session_id: SessionID, sid: String) -> R
     unsupported_result("session_send_selected_session_id")
 }
 
+/// The codecs this session could switch to.
+///
+/// The pinned client answers from its own decoder abilities *intersected with
+/// the peer's advertised encoding abilities*; this bridge has neither that
+/// intersection nor a peer encoding report to read, so there is no honest list
+/// to return. An empty object would read as "no codec works", which is a
+/// capability claim this bridge cannot make.
 pub fn session_alternative_codecs(session_id: SessionID) -> Result<String> {
-    unsupported_result("session_alternative_codecs")
+    ensure!(session_record(session_id).is_some(), "unknown session");
+    unsupported_result("session_alternative_codecs: this bridge has no peer codec-ability report")
 }
 
+/// Re-advertises this session's codec preference, which is what the pinned
+/// client's own `change_prefer_codec` does: it sends `update_supported_decodings`
+/// - the decoding it advertised at login, with the preference it already holds -
+/// instead of choosing a codec of its own. The engine's `CodecPreference` change
+/// is that same message, and it refuses a preference this session never
+/// advertised, so the peer only ever hears about a codec this build decodes.
+///
+/// A session that has not dialled has nothing to re-advertise; recording the
+/// preference it already holds is a no-op that the login it is about to send
+/// carries anyway.
 pub fn session_change_prefer_codec(session_id: SessionID) -> Result<()> {
-    unsupported_result("session_change_prefer_codec")
+    let session = session_record(session_id).ok_or_else(|| anyhow::anyhow!("unknown session"))?;
+    let prefer = requested_session_options(&session).codec_preference();
+    apply_session_option(session_id, SessionOptionChange::CodecPreference(prefer))
 }
 
 pub fn session_get_audit_server_sync(
@@ -4154,4 +4540,79 @@ pub fn session_printer_response(
     printer_name: String,
 ) -> Result<()> {
     unsupported_result("session_printer_response")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The quality names are the pinned client's own config spellings. A word
+    /// this bridge has no level for is refused rather than folded into a level
+    /// the operator did not choose.
+    #[test]
+    fn named_quality_maps_only_the_pinned_levels() {
+        assert_eq!(named_quality("low").unwrap(), ImageQuality::Low);
+        assert_eq!(named_quality(" balanced ").unwrap(), ImageQuality::Balanced);
+        assert_eq!(named_quality("best").unwrap(), ImageQuality::Best);
+        // "custom" names the percentage call and the empty string is the absence
+        // of a request: neither is a level, so neither becomes one here.
+        assert!(named_quality("custom").is_err());
+        assert!(named_quality("").is_err());
+        assert!(named_quality("High").is_err());
+    }
+
+    /// One peer challenge is one dialog, and a refused code is a *new* challenge
+    /// on the same session instead of a second spelling of the same one.
+    #[test]
+    fn second_factor_prompt_is_raised_once_per_peer_challenge() {
+        // The peer's first demand.
+        assert_eq!(
+            second_factor_prompt(ENGINE_AWAITING_SECOND_FACTOR, 1, 0),
+            Some(SECOND_FACTOR_REQUIRED_TITLE)
+        );
+        // The same challenge, polled again: the dialog is already up.
+        assert_eq!(
+            second_factor_prompt(ENGINE_AWAITING_SECOND_FACTOR, 1, 1),
+            None
+        );
+        // The peer refused the code, so the engine advanced the challenge: the
+        // same waiting session is asked again rather than ended.
+        assert_eq!(
+            second_factor_prompt(ENGINE_SECOND_FACTOR_REJECTED, 2, 1),
+            Some(SECOND_FACTOR_WRONG_TITLE)
+        );
+        assert_eq!(
+            second_factor_prompt(ENGINE_SECOND_FACTOR_REJECTED, 2, 2),
+            None
+        );
+        // A phase that is not this step never becomes a demand for a code, and
+        // neither does a challenge this pump has already announced.
+        assert_eq!(second_factor_prompt("verifying_second_factor", 3, 2), None);
+        assert_eq!(second_factor_prompt(ENGINE_AWAITING_APPROVAL, 3, 2), None);
+        assert_eq!(second_factor_prompt("awaiting_surface", 3, 2), None);
+    }
+
+    /// The password form is the same contract: one demand is one form, and a
+    /// refused password is the peer's *new* challenge on the same session.
+    #[test]
+    fn password_prompt_is_raised_once_per_peer_challenge() {
+        // The peer wants a password this attempt did not send.
+        assert_eq!(
+            password_prompt(ENGINE_AWAITING_PASSWORD, 1, 0),
+            Some(PasswordPrompt::Required)
+        );
+        // The same challenge, polled again: the form is already up.
+        assert_eq!(password_prompt(ENGINE_AWAITING_PASSWORD, 1, 1), None);
+        // The peer refused the password, so the engine advanced the challenge:
+        // the same still-open session asks again instead of ending.
+        assert_eq!(
+            password_prompt(ENGINE_PASSWORD_REJECTED, 2, 1),
+            Some(PasswordPrompt::Refused)
+        );
+        assert_eq!(password_prompt(ENGINE_PASSWORD_REJECTED, 2, 2), None);
+        // A phase that is not this step never becomes a demand for a secret.
+        assert_eq!(password_prompt("verifying_password", 3, 2), None);
+        assert_eq!(password_prompt(ENGINE_AWAITING_SECOND_FACTOR, 3, 2), None);
+        assert_eq!(password_prompt("awaiting_approval", 3, 2), None);
+    }
 }
