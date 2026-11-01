@@ -178,7 +178,7 @@ pub struct HostServiceStatus {
     pub peers: Vec<HostPeerSnapshot>,
     pub peer_count: u32,
     pub authorized_peers: u32,
-    pub error: Option<HostError>,
+    pub error: Option<HostServiceError>,
     pub teardown_unconfirmed: bool,
     /// This service's real local-approval policy, empty when no run is live.
     pub approve_mode: &'static str,
@@ -209,7 +209,7 @@ fn parse_request_id(value: &str) -> Option<(u64, u64, u64, u64)> {
 struct Facts {
     epoch: u64,
     state: &'static str,
-    error: Option<HostError>,
+    error: Option<HostServiceError>,
     teardown_unconfirmed: bool,
 }
 impl Default for Facts {
@@ -485,7 +485,7 @@ impl HostService {
         }
         let mut facts = lock(&self.facts);
         facts.state = "failed";
-        facts.error = error.or(facts.error);
+        facts.error = error.map(HostServiceError::Host).or(facts.error);
     }
 
     /// The single close boundary: the run's own peers first get their terminal
@@ -510,7 +510,7 @@ impl HostService {
             UNRECLAIMED.store(true, Ordering::Release);
             facts.state = "failed";
             facts.teardown_unconfirmed = true;
-            facts.error = Some(HostError::ReclamationUnconfirmed);
+            facts.error = Some(HostServiceError::Host(HostError::ReclamationUnconfirmed));
         }
     }
 
@@ -538,7 +538,7 @@ impl HostService {
             // The Host's own terminal verdict owns the service state.
             if matches!(state, "starting" | "listening") && (snapshot.closed || snapshot.error.is_some()) {
                 state = "failed";
-                error = snapshot.error.or(error);
+                error = snapshot.error.map(HostServiceError::Host).or(error);
             }
             peers = run.host.peers();
             registration = if matches!(*lock(&run.report), HostRegistration::Failed) {

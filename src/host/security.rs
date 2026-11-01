@@ -571,7 +571,7 @@ fn commit(
     next: Stored,
 ) -> Result<(), SecurityError> {
     write_record(path, &next)?;
-    *current = next;
+    **current = next;
     Ok(())
 }
 
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn a_code_is_accepted_one_step_either_side_and_nothing_else() {
-        let step = super::TOTP_STEP_SECONDS * 1000;
+        let step = super::TOTP_STEP_SECONDS as i64 * 1000;
         let at_step_one = 30_000;
         let code = totp_code(RFC_SECRET, at_step_one);
         assert_eq!(code, "287082", "the RFC 6238 step-one code");

@@ -155,6 +155,10 @@ pub enum TransferError {
     /// The peer has not granted (or has withdrawn) file transfer for this
     /// session.
     PermissionDenied,
+    /// The peer's `FileResponse` carried a union variant this build does not
+    /// know, so it can be read neither as a job fact nor as an answer this side
+    /// owes: the owner ends rather than treating it as a peer success.
+    UnsupportedMessage,
 }
 
 impl TransferError {
@@ -179,6 +183,7 @@ impl TransferError {
                 "this session already holds the maximum number of live transfer jobs"
             }
             Self::PermissionDenied => PERMISSION_REVOKED,
+            Self::UnsupportedMessage => "the peer sent a file message this session cannot answer",
         }
     }
 }
@@ -1920,6 +1925,9 @@ async fn response_received(
             });
             Ok(())
         }
+        // A variant this build does not know is no fact of this session and has
+        // no answer here: the owner ends instead of reading it as a success.
+        Some(_) => Err(TransferError::UnsupportedMessage),
         None => Ok(()),
     }
 }
@@ -1950,6 +1958,7 @@ async fn directory_received(
         id,
         path,
         mut entries,
+        ..
     } = directory;
     if shared.config.peer_windows() {
         fs::transform_windows_path(&mut entries);
@@ -1971,7 +1980,12 @@ async fn directory_received(
                 }
             }
         },
-        None => Listing::Browsed(FileDirectory { id, path, entries }),
+        None => Listing::Browsed(FileDirectory {
+            id,
+            path,
+            entries,
+            ..Default::default()
+        }),
     };
     match listing {
         Listing::Browsed(directory) => shared.push_event(TransferEvent::Directory(directory)),
@@ -1991,6 +2005,7 @@ async fn directory_received(
                 id: job,
                 path,
                 entries: files,
+                ..Default::default()
             }));
         }
         Listing::Refused { job, error } => {
@@ -2324,6 +2339,7 @@ mod tests {
                     union: Some(file_response::Union::EmptyDirs(ReadEmptyDirsResponse {
                         path: format!("/sdcard/{index}"),
                         empty_dirs: Vec::new(),
+                        ..Default::default()
                     })),
                     ..Default::default()
                 }))
@@ -2543,6 +2559,7 @@ mod tests {
                     id: 0,
                     path: "/sdcard".to_owned(),
                     entries: vec![entry("note.txt", 5)],
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -2597,6 +2614,7 @@ mod tests {
                     id: 7,
                     path: "/sdcard".to_owned(),
                     entries: vec![entry("", 6)],
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -2633,7 +2651,7 @@ mod tests {
                 union: Some(file_response::Union::Block(FileTransferBlock {
                     id: 7,
                     file_num: 0,
-                    data: b"hello!".to_vec(),
+                    data: b"hello!".to_vec().into(),
                     ..Default::default()
                 })),
                 ..Default::default()
@@ -2662,6 +2680,7 @@ mod tests {
                 union: Some(file_response::Union::Done(FileTransferDone {
                     id: 7,
                     file_num: 1,
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -2705,6 +2724,7 @@ mod tests {
                     id: 5,
                     path: "/sdcard".to_owned(),
                     entries: vec![entry("../../../escape.txt", 4)],
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -3066,6 +3086,7 @@ mod tests {
                 union: Some(file_response::Union::Done(FileTransferDone {
                     id: 31,
                     file_num: 1,
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -3076,6 +3097,7 @@ mod tests {
                     id: 32,
                     file_num: 1,
                     error: "refused".into(),
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))
@@ -3088,6 +3110,7 @@ mod tests {
                     id: 0,
                     path: "/sdcard".to_owned(),
                     entries: Vec::new(),
+                    ..Default::default()
                 })),
                 ..Default::default()
             }))

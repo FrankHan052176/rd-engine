@@ -171,12 +171,11 @@ fn timed_out() -> io::Error {
 /// The one wire encoding of the fixed role. Original client passes its
 /// `ConnType` straight through to hbbs/hbbr; nothing here derives it from an
 /// address, a peer ID, a response or a fallback.
-fn conn_type(mode: SessionMode) -> i32 {
+fn conn_type(mode: SessionMode) -> ConnType {
     match mode {
         SessionMode::Desktop => ConnType::DEFAULT_CONN,
         SessionMode::FileTransfer => ConnType::FILE_TRANSFER,
     }
-    .into()
 }
 
 /// Desktop-compatible entry point: the fixed role is `SessionMode::Desktop`.
@@ -480,7 +479,7 @@ fn punch_hole_request(config: &RendezvousConfig, mode: SessionMode) -> Rendezvou
         id: config.id.clone(),
         licence_key: config.licence_key.clone(),
         nat_type: NatType::UNKNOWN_NAT.into(),
-        conn_type: conn_type(mode),
+        conn_type: conn_type(mode).into(),
         version: "1.4.9".into(),
         ..Default::default()
     });
@@ -501,7 +500,7 @@ fn relay_request(
         uuid: uuid.to_owned(),
         relay_server: name.to_owned(),
         secure: true,
-        conn_type: conn_type(mode),
+        conn_type: conn_type(mode).into(),
         ..Default::default()
     });
     message
@@ -519,7 +518,7 @@ fn relay_join_request(
         id: config.id.clone(),
         uuid,
         licence_key: config.licence_key.clone(),
-        conn_type: conn_type(mode),
+        conn_type: conn_type(mode).into(),
         ..Default::default()
     });
     message
@@ -658,23 +657,29 @@ mod tests {
         }
     }
 
-    fn punch_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+    fn punch_role(config: &RendezvousConfig, mode: SessionMode) -> ConnType {
         match punch_hole_request(config, mode).union {
-            Some(rendezvous_message::Union::PunchHoleRequest(request)) => request.conn_type,
+            Some(rendezvous_message::Union::PunchHoleRequest(request)) => {
+                request.conn_type.enum_value().expect("a known punch role")
+            }
             _ => panic!("punch request builder produced another message"),
         }
     }
 
-    fn hbbs_relay_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+    fn hbbs_relay_role(config: &RendezvousConfig, mode: SessionMode) -> ConnType {
         match relay_request(config, "127.0.0.1:21117", "uuid", mode).union {
-            Some(rendezvous_message::Union::RequestRelay(request)) => request.conn_type,
+            Some(rendezvous_message::Union::RequestRelay(request)) => {
+                request.conn_type.enum_value().expect("a known hbbs relay role")
+            }
             _ => panic!("hbbs relay request builder produced another message"),
         }
     }
 
-    fn hbbr_join_role(config: &RendezvousConfig, mode: SessionMode) -> i32 {
+    fn hbbr_join_role(config: &RendezvousConfig, mode: SessionMode) -> ConnType {
         match relay_join_request(config, "uuid".to_owned(), mode).union {
-            Some(rendezvous_message::Union::RequestRelay(request)) => request.conn_type,
+            Some(rendezvous_message::Union::RequestRelay(request)) => {
+                request.conn_type.enum_value().expect("a known hbbr join role")
+            }
             _ => panic!("hbbr join builder produced another message"),
         }
     }
@@ -689,14 +694,9 @@ mod tests {
             (SessionMode::Desktop, ConnType::DEFAULT_CONN),
             (SessionMode::FileTransfer, ConnType::FILE_TRANSFER),
         ] {
-            let expected: i32 = role.into();
-            assert_eq!(punch_role(&config, mode), expected, "{mode:?} punch");
-            assert_eq!(
-                hbbs_relay_role(&config, mode),
-                expected,
-                "{mode:?} hbbs relay request"
-            );
-            assert_eq!(hbbr_join_role(&config, mode), expected, "{mode:?} hbbr join");
+            assert_eq!(punch_role(&config, mode), role, "{mode:?} punch");
+            assert_eq!(hbbs_relay_role(&config, mode), role, "{mode:?} hbbs relay");
+            assert_eq!(hbbr_join_role(&config, mode), role, "{mode:?} hbbr join");
         }
     }
 }

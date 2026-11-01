@@ -91,6 +91,13 @@ fn boolean_or(value: &Value, name: &str, default: bool) -> Result<bool, String> 
     }
 }
 
+fn service_error_text(error: HostServiceError) -> String {
+    match error {
+        HostServiceError::Host(error) => host_error_text(error),
+        error => error.to_string(),
+    }
+}
+
 fn host_error_text(error: HostError) -> String {
     match error {
         HostError::InvalidOptions => "host options or connection handle are invalid".into(),
@@ -320,7 +327,7 @@ fn status_document(action: &str, status: Option<&HostServiceStatus>, my_id: &str
         None => Value::Null,
     };
     if let Some(error) = status.error {
-        let text = host_error_text(error);
+        let text = service_error_text(error);
         document["error"] = json!(text);
         document["lastError"] = json!(text);
     }
@@ -517,7 +524,7 @@ impl HostWork {
         } else {
             let text = status
                 .error
-                .map(host_error_text)
+                .map(service_error_text)
                 .unwrap_or_else(|| "the host listener never became ready".to_string());
             document["error"] = json!(text);
             document["message"] = json!(text);
