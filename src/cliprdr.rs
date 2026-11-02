@@ -1815,6 +1815,9 @@ impl CliprdrOwner {
             // The audit-only variant: a summary for a peer's own record, never
             // content this session applies.
             proto::cliprdr::Union::Files(_) => {}
+            // Generated protobuf oneofs are non-exhaustive. Unknown future
+            // extensions carry no operation this owner can apply or acknowledge.
+            _ => {}
         }
     }
 
