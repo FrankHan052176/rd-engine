@@ -6,15 +6,15 @@
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
-    Env, JsValue, Unknown,
     bindgen_prelude::{AsyncTask, Task},
+    Env, JsValue, Unknown,
 };
 use rd_engine::conn_token::ConnToken;
 use rd_engine::protocol::Target;
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
-    InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy, ViewerOptions,
-    ViewerSnapshot, ViewerTarget, direct_address,
+    direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
+    ViewerOptions, ViewerSnapshot, ViewerTarget,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -76,7 +76,7 @@ use host_security::{
     controlled_two_factor_get, controlled_two_factor_remove_trusted_devices,
     controlled_two_factor_verify,
 };
-use server_profile::{ApprovedRoute, validate_server_profile};
+use server_profile::{validate_server_profile, ApprovedRoute};
 mod capabilities;
 use capabilities::query_decoder_capabilities;
 
@@ -503,9 +503,7 @@ fn observe_terminal_reclamation(record: &mut SessionRecord) -> Option<ViewerSnap
 fn mutable_snapshot(record: &mut SessionRecord) -> Result<Option<ViewerSnapshot>, &'static str> {
     let snapshot = observe_terminal_reclamation(record);
     if record.closed {
-        return Err(
-            "session closed; poll and acknowledge its terminal receipt before registering a new session",
-        );
+        return Err("session closed; poll and acknowledge its terminal receipt before registering a new session");
     }
     if record.closing || snapshot.as_ref().is_some_and(|value| value.closed) {
         return Err("session is closing; wait for sessionPollEvents to confirm reclamation");
@@ -692,13 +690,9 @@ fn publish_input_policy(
 /// buttons the operator is holding right now.
 fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     if retired > 0 {
-        Some(
-            "this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed",
-        )
+        Some("this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed")
     } else if unreleased > 0 {
-        Some(
-            "a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it",
-        )
+        Some("a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it")
     } else {
         None
     }
@@ -1979,8 +1973,12 @@ fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
             "one code was queued on this authentication; only the peer's answer can authorize it"
         }
         (
-            "authenticated" | "awaiting_surface" | "opening_surface" | "opening_decoder"
-            | "decoding" | "streaming",
+            "authenticated"
+            | "awaiting_surface"
+            | "opening_surface"
+            | "opening_decoder"
+            | "decoding"
+            | "streaming",
             _,
         ) => {
             "the peer authorized this session; peer_info and connection_ready carry the snapshot's peer, display, handshake and route evidence while presentation advances independently"
@@ -2142,7 +2140,7 @@ pub fn session_send_mouse(session_id: String, mouse_json: String, input_generati
         Ok(Some(value)) => match u32::try_from(value) {
             Ok(value) => value,
             Err(_) => {
-                return error_json("sessionSendMouse button is outside the wire integer range");
+                return error_json("sessionSendMouse button is outside the wire integer range")
             }
         },
         Ok(None) => return error_json("sessionSendMouse payload needs integer button"),
@@ -2834,25 +2832,18 @@ pub fn har_surface_manifest() -> String {
     // RustDeskNativeApi.ets imports, plus this bridge's explicit input-policy
     // export. A refused entry point remains pending, not implemented.
     let expected = [
-        "backendSummary",
-        "buildMarker",
-        "healthcheck",
         "inputInterceptorPollEvents",
         "inputInterceptorStart",
         "inputInterceptorStop",
         "nativeVersion",
-        "runtimeGetApiServer",
         "runtimeGetDecoderCapabilities",
         "runtimeGetServerConfig",
-        "runtimeInit",
         "runtimeListFavorites",
-        "runtimeListLanPeers",
-        "runtimeListLocalDir",
         "runtimeListRecentPeers",
         "peerQueryOnline",
-        "runtimeRemoveDiscoveredPeer",
-        "runtimeScanLanPeers",
-        "runtimeSetLifecycle",
+        "runtimeRecordRecentPeer",
+        "runtimeRemoveRecentPeer",
+        "runtimeSetFavorite",
         "runtimeSetServerConfig",
         "runtimeTestServerConfig",
         "sessionAcknowledgeClose",
@@ -2862,18 +2853,18 @@ pub fn har_surface_manifest() -> String {
         "sessionChangeResolution",
         "sessionClose",
         "sessionEnterOrLeave",
+        "sessionGetClipboardFileState",
         "sessionGetConnToken",
+        "sessionHasConnToken",
         "sessionGetEnableTrustedDevices",
         "sessionGetFrameRateSnapshot",
         "sessionGetImageQuality",
         "sessionGetRemoteAudioState",
-        "sessionGetRgbaSize",
         "sessionGetToggleOption",
         "sessionHandleFlutterKeyEvent",
         "sessionInputKey",
         "sessionInputString",
         "sessionLogin",
-        "sessionNextRgba",
         "sessionOnWaitingForImageDialogShow",
         "sessionPollEvents",
         "sessionReadRemoteDir",
@@ -2895,18 +2886,17 @@ pub fn har_surface_manifest() -> String {
         "sessionSetSize",
         "sessionSetVideoPaused",
         "sessionSetViewOnly",
-        "sessionSetUnverifiedInputAccepted",
         "sessionStart",
-        "sessionSurfaceDestroyed",
         "sessionSwitchDisplay",
         "sessionTakeClipboard",
+        "sessionTakeClipboardFileEvents",
         "sessionTakeClipboardImage",
-        "sessionTakeRgbaFrame",
         "sessionToggleOption",
         "transferNextJobId",
         "xcomponentAttach",
         "xcomponentDetach",
         "xcomponentSetFrameRateRangeNative",
+        "sessionSetUnverifiedInputAccepted",
     ];
     // Kept separate on purpose: these accept the call but only touch local state.
     let registry_only: [&str; 0] = [];
@@ -2945,13 +2935,12 @@ pub fn har_surface_manifest() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovedRoute, CloseWork, InputPolicyOutcome, LoginFailure, MAX_SAFE_INPUT_GENERATION,
-        PendingSurfaceLease, Reported, SurfaceBinding, SurfaceLease, ViewerInputPolicy,
-        ViewerSnapshot, ViewerTarget, apply_terminal_reclamation, bind_surface,
-        client_mouse_button_to_wire, error_json, expected_input_generation, parse_viewer_target,
-        policy_json, record_terminal_reclamation, refusal_json, resolve_mouse_coordinates,
-        session_acknowledge_close, session_add, session_cancel_job, session_poll_events,
-        with_sessions,
+        apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
+        expected_input_generation, parse_viewer_target, policy_json, record_terminal_reclamation,
+        refusal_json, resolve_mouse_coordinates, session_acknowledge_close, session_add,
+        session_cancel_job, session_poll_events, with_sessions, ApprovedRoute, CloseWork,
+        InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported, SurfaceBinding,
+        SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
     };
     use std::sync::Arc;
 
@@ -3030,12 +3019,10 @@ mod tests {
         // One destination per session: another component may not replace it.
         let replaced = json(bind_surface(None, id.into(), 0, "99".into(), epoch.clone()));
         assert_eq!(replaced["ok"], false);
-        assert!(
-            replaced["message"]
-                .as_str()
-                .unwrap()
-                .contains("single Surface")
-        );
+        assert!(replaced["message"]
+            .as_str()
+            .unwrap()
+            .contains("single Surface"));
         for act_id in [0, 37] {
             assert_eq!(json(session_cancel_job(id.into(), act_id))["ok"], false);
         }
@@ -3224,11 +3211,9 @@ mod tests {
         snapshot.phase = "authenticated".to_owned();
         snapshot.authenticated = true;
         let events = reported.events(&snapshot);
-        assert!(
-            events
-                .iter()
-                .any(|event| event["name"] == "connection_ready")
-        );
+        assert!(events
+            .iter()
+            .any(|event| event["name"] == "connection_ready"));
         assert!(!events.iter().any(|event| event["type"] == "input-password"));
         assert!(reported.events(&snapshot).is_empty());
     }

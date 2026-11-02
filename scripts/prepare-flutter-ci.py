@@ -25,7 +25,7 @@ PATCHES = (
     "official-client-product-scope.patch", "official-client-host-control.patch",
     "official-client-scope-pruning.patch",
 )
-CLIENT_LOCK_SHA256 = "bc58506b80464e5b3f6c73669c79ef270949b3cbc85401c290aa92e4573df7f7"
+CLIENT_LOCK_SHA256 = "116d8daaa4dc387dd42bb60f644e44e3d9a7b970594cbf44c22efd7012ea32a9"
 
 
 def digest(path):
