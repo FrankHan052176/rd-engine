@@ -2441,25 +2441,29 @@ mod tests {
 
     #[test]
     fn a_local_path_must_stay_under_the_authorized_root() {
-        let root = Path::new("/storage/Users/currentUser/Download");
+        // The check accepts a name only when the host itself calls it absolute,
+        // so both sides are built from a root that is absolute on every host.
+        let root = std::env::temp_dir().join("rd-engine-transfer-root");
+        let root_text = root.to_str().expect("a utf-8 root").to_owned();
+        let inside = root.join("a.txt");
         assert_eq!(
-            validate_local_path(root, "/storage/Users/currentUser/Download/a.txt"),
-            Ok(root.join("a.txt"))
+            validate_local_path(&root, inside.to_str().expect("a utf-8 name")),
+            Ok(inside.clone())
         );
-        assert!(validate_local_path(root, "/storage/Users/currentUser/Download").is_ok());
+        assert!(validate_local_path(&root, &root_text).is_ok());
         // A sibling directory that merely starts with the root's text is not the
         // root: the check is component-wise.
         for outside in [
-            "/storage/Users/currentUser/Download-other/a.txt",
-            "/storage/Users/currentUser/Download/../secret",
-            "/storage/Users/currentUser/Download/./a.txt/../b",
-            "Download/a.txt",
-            "/etc/passwd",
-            "",
-            "/storage/Users/currentUser/Download/a\0b",
+            format!("{root_text}-other/a.txt"),
+            format!("{root_text}/../secret"),
+            format!("{root_text}/./a.txt/../b"),
+            "Download/a.txt".to_owned(),
+            "/etc/passwd".to_owned(),
+            String::new(),
+            format!("{root_text}/a\0b"),
         ] {
             assert_eq!(
-                validate_local_path(root, outside),
+                validate_local_path(&root, &outside),
                 Err(TransferError::LocalPathInvalid),
                 "{outside}"
             );
