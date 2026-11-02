@@ -412,7 +412,7 @@ impl Shared {
 
 /// Writes the stream's own silence value; `from_sample_(0.0)` is that value for
 /// every float and integer format this sink opens.
-fn fill_silence<T: FromSample<f32>>(out: &mut [T]) {
+fn fill_silence<T: FromSample<f32> + Copy>(out: &mut [T]) {
     let silence = T::from_sample_(0.0);
     for slot in out.iter_mut() {
         *slot = silence;

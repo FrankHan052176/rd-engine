@@ -674,8 +674,12 @@ impl AudioOwner {
             };
             match played {
                 Ok(Played::Queued) => {}
-                Ok(Played::Stale) => tally(&shared.stale, 1),
-                Ok(Played::Dropped) => tally(&shared.dropped, 1),
+                Ok(Played::Stale) => {
+                    tally(&shared.stale, 1);
+                }
+                Ok(Played::Dropped) => {
+                    tally(&shared.dropped, 1);
+                }
                 Err(failure) => {
                     shared.note_error(&failure);
                     tally(&shared.dropped, 1);

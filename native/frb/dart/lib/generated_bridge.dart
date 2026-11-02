@@ -1000,10 +1000,11 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionStartWithDisplaysConstMeta;
 
-  /// Login. The engine authenticates inside `Viewer::start` with the password it
-  /// was given, so a password that arrives after a failed attempt restarts the
-  /// viewer with it - the same outcome the client's own core reaches by retrying
-  /// the login on the connection it kept.
+  /// Login. The engine owns the authentication attempt: it keeps it open when the
+  /// peer answers `Empty Password` or `Wrong Password`, so a password that arrives
+  /// while it is waiting for one is written on the wire the session already has -
+  /// the same login, resubmitted with the new secret. A running RustDesk viewer
+  /// never falls back to a redial when it refuses the local submission.
   Future<void> sessionLogin(
       {required UuidValue sessionId,
       required String osUsername,
@@ -1044,28 +1045,37 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionSetCustomFpsConstMeta;
 
-  /// The engine's encoder decision is its own and it exposes no way to change the
-  /// peer's image quality. The client shows a successful set as the new selection
-  /// and reads it back, so this refuses instead of recording a value the next
-  /// connection would not use.
+  /// The client's quality selection, as the `OptionMessage` the peer's wire takes.
+  ///
+  /// A running session queues it for its own writer; one that has not dialled
+  /// keeps it for the login advertisement. What comes back to the client from
+  /// `session_get_image_quality` is what was asked for, because the peer echoes no
+  /// quality back and an "applied" level would be invented.
   Future<void> sessionSetImageQuality(
       {required UuidValue sessionId, required String value, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionSetImageQualityConstMeta;
 
-  /// No quality setting is in force here: nothing was applied, so there is no
-  /// value to read back. The client takes the absence as "use the default" rather
-  /// than as a selection the user made.
+  /// The quality this session asked for, in the pinned client's own config
+  /// spelling (`low`, `balanced`, `best`, `custom`).
+  ///
+  /// `None` means nothing was asked for, which the client reads as the peer's
+  /// default and which is a fact rather than an empty selection: an empty string
+  /// would look like a level that does not exist.
   Future<String?> sessionGetImageQuality(
       {required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionGetImageQualityConstMeta;
 
+  /// The custom percentage the pinned client's own slider produces, in the wire's
+  /// own encoding (`value << 8`, done by the engine's option store).
   Future<void> sessionSetCustomImageQuality(
       {required UuidValue sessionId, required int value, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionSetCustomImageQualityConstMeta;
 
+  /// The custom percentage this session asked for, in the client's own shape: the
+  /// remembered value, or `None` when no custom quality was requested.
   Future<Int32List?> sessionGetCustomImageQuality(
       {required UuidValue sessionId, dynamic hint});
 
@@ -1100,6 +1110,23 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionIsMultiUiSessionConstMeta;
 
+  /// The client's explicit read of the credential a running session can be
+  /// reconnected with.
+  ///
+  /// The answer comes from the viewer itself: it is the h1 the peer's own login
+  /// accepted, exported only by an authenticated, not-closing RustDesk session,
+  /// and never from anything this bridge stored. That matters twice over - the
+  /// text the client supplied at creation is not proof of what the peer accepted,
+  /// and UI state ("a password was typed") is not authorization. An
+  /// unauthenticated or stopped session therefore answers `None`, which is the
+  /// same answer the pinned client's own `get_conn_token` gives for an empty
+  /// password.
+  ///
+  /// This is deliberately a getter the client calls on purpose (the pinned
+  /// toolbar's `connectWithToken`), not a field of any event, snapshot, peer
+  /// option, history entry or log: the material is password-equivalent, and the
+  /// only thing narrower than it is the clear password a user typed, which stays
+  /// unexported here.
   String? sessionGetConnToken({required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionGetConnTokenConstMeta;
@@ -1147,6 +1174,14 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionGetPeerOptionConstMeta;
 
+  /// The client's toggle switches, in its own vocabulary.
+  ///
+  /// `view-only` is the local policy the engine really enforces. The other three
+  /// are the pinned wire's own options, and the answer is the state this session
+  /// asked for: `disable-audio` and `disable-clipboard` are the peer's opt-outs, so
+  /// a switch that is on asked it to stop, and `show-remote-cursor` asked it to
+  /// draw its own cursor into the video it sends. None of them is a reading of the
+  /// peer's application, which the peer never echoes.
   Future<bool?> sessionGetToggleOption(
       {required UuidValue sessionId, required String arg, dynamic hint});
 
@@ -1161,6 +1196,10 @@ abstract class Rustdesk {
   /// enforces, so flipping it here changes what the live viewer admits and writes
   /// the same decision back to the peer's stored configuration - the source the
   /// next session for this peer reads.
+  ///
+  /// The three wire options are flipped from the state this session asked for and
+  /// handed to the engine as typed changes, so each one becomes one control record
+  /// on the session's writer instead of a switch that only looks flipped.
   Future<void> sessionToggleOption(
       {required UuidValue sessionId, required String value, dynamic hint});
 
@@ -1454,6 +1493,22 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionTogglePrivacyModeConstMeta;
 
+  /// Answers the peer's second-factor step on this same, still-open session.
+  ///
+  /// This is `Viewer::send_second_factor`: the engine admits a code only while
+  /// this session's own RustDesk authentication is waiting for one, one code per
+  /// peer answer, and writes it on the session `Viewer::start` already owns. So
+  /// `Ok(())` is the receipt that the code reached the authentication loop - never
+  /// that the peer accepted it. The peer's decision is its next demand, which the
+  /// pump reports as `2FA Required` or `Wrong 2FA Code`, and authority is the
+  /// snapshot's `authenticated` fact, not this answer.
+  ///
+  /// `trust_this_device` is refused rather than ignored: the pinned client sends
+  /// its own `hwid` in `Auth2FA` and records `trust-this-device` only after the
+  /// peer enrolls that identity. This bridge keeps no enrolled identity, so a code
+  /// sent under that flag would ask the peer to trust a device this app cannot
+  /// name again - and answering `Ok` would promise an enrollment that never
+  /// happened.
   Future<void> sessionSend2Fa(
       {required UuidValue sessionId,
       required String code,
@@ -1470,6 +1525,16 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionCtrlAltDelConstMeta;
 
+  /// The client's display switch, which is a real `SwitchDisplay` on the peer's
+  /// wire: the engine repeats the resolution it remembers for that display and
+  /// `(0, 0)` when it remembers none, exactly as the pinned client does.
+  ///
+  /// This bridge presents one bound native Surface for one display, so `[0]` is
+  /// the only request it can carry. The client's other form - more than one
+  /// display - is a capture-all request that needs a second display owner this
+  /// engine does not run, and `is_desktop` only chooses between that form and a
+  /// desktop refresh this bridge does not add, so neither is silently reduced to a
+  /// single-display switch.
   Future<void> sessionSwitchDisplay(
       {required bool isDesktop,
       required UuidValue sessionId,
@@ -1478,6 +1543,14 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionSwitchDisplayConstMeta;
 
+  /// Asks the peer to change one display's resolution.
+  ///
+  /// The message shape is the engine's: a display-qualified
+  /// `change_display_resolution` for a peer whose version understands one, the
+  /// legacy unqualified `change_resolution` before that, and a refusal when a peer
+  /// too old to name a display is asked about one it is not showing. Nothing here
+  /// claims the peer resized anything - its own next frame and display report are
+  /// what would.
   Future<void> sessionChangeResolution(
       {required UuidValue sessionId,
       required int display,
@@ -1514,11 +1587,28 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionSendSelectedSessionIdConstMeta;
 
+  /// The codecs this session could switch to.
+  ///
+  /// The pinned client answers from its own decoder abilities *intersected with
+  /// the peer's advertised encoding abilities*; this bridge has neither that
+  /// intersection nor a peer encoding report to read, so there is no honest list
+  /// to return. An empty object would read as "no codec works", which is a
+  /// capability claim this bridge cannot make.
   Future<String> sessionAlternativeCodecs(
       {required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionAlternativeCodecsConstMeta;
 
+  /// Re-advertises this session's codec preference, which is what the pinned
+  /// client's own `change_prefer_codec` does: it sends `update_supported_decodings`
+  /// - the decoding it advertised at login, with the preference it already holds -
+  /// instead of choosing a codec of its own. The engine's `CodecPreference` change
+  /// is that same message, and it refuses a preference this session never
+  /// advertised, so the peer only ever hears about a codec this build decodes.
+  ///
+  /// A session that has not dialled has nothing to re-advertise; recording the
+  /// preference it already holds is a no-op that the login it is about to send
+  /// carries anyway.
   Future<void> sessionChangePreferCodec(
       {required UuidValue sessionId, dynamic hint});
 
