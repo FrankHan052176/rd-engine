@@ -11,7 +11,14 @@ autobins = false
 [workspace]
 resolver = "3"
 # Published dependency source, not an engine workspace or upstream test target.
-exclude = ["vendor/secret-service", "vendor/default-net"]
+exclude = [
+    "vendor/secret-service",
+    "vendor/default-net",
+    "vendor/rustdesk/libs/base",
+    "vendor/rustdesk/libs/hbb_common",
+    "vendor/libsodium-sys",
+    "vendor/ironrdp-pdu",
+]
 
 [features]
 # Both kernel outputs use the modern Windows producer on Windows targets.
