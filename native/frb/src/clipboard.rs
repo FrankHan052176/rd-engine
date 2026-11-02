@@ -528,7 +528,7 @@ mod platform {
     }
 
     /// One engine payload item as a system pasteboard format.
-    fn image_data(image: &ClipboardImage) -> Option<ImageData> {
+    fn image_data(image: &ClipboardImage) -> Option<ImageData<'static>> {
         match image.format {
             // The engine guarantees `width * height * 4` bytes with an unpadded
             // stride before an image reaches this point.
