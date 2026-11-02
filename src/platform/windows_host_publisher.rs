@@ -98,6 +98,39 @@ impl PublisherError {
     }
 }
 
+/// The owner's own account of one session, projected only from facts this
+/// adapter really holds. Nothing is inferred from a phase name or from a
+/// requested cadence: frames and bytes come from access units the native
+/// producer actually emitted, the queue counters are the FIFO credit really
+/// charged, and the terminal flags are the worker's own close and quarantine
+/// verdicts.
+#[derive(Debug, Clone)]
+pub struct PublisherStats {
+    /// The capture fact, not an OS grant. This platform has no per-session
+    /// screen-capture consent prompt, so `granted` means the bound output is
+    /// really being duplicated and `awaiting_system_consent` is never claimed.
+    pub consent_state: String,
+    /// No screen-capture state callback exists on this platform, so there is no
+    /// code to report. `-1` is the same "no state reported" value the host uses
+    /// for a publisher that never opened.
+    pub capture_state_code: i32,
+    pub width: i32,
+    pub height: i32,
+    pub fps_limit: u32,
+    /// Empty until a native open really succeeded.
+    pub encoder_name: String,
+    /// Access units the encoder really produced for this session.
+    pub encoded_frames: u64,
+    pub encoded_bytes: u64,
+    /// Includes the AU currently leased to the network writer.
+    pub queued_units: usize,
+    pub queued_bytes: usize,
+    pub closed: bool,
+    pub quarantined: bool,
+    /// The owner's own failure reason, retained after teardown.
+    pub error: Option<PublisherError>,
+}
+
 pub fn probe_display(
     backend: PublisherBackend,
     output_index: usize,
@@ -451,6 +484,17 @@ fn map_producer(error: ProducerError) -> PublisherError {
     }
 }
 
+/// The encoder this adapter really opens, named by the pipeline it constructs
+/// and the codec it was configured with. This platform has no driver-reported
+/// encoder-name query, so this is a derived identity rather than a driver
+/// string, and it is only set once a real native open succeeded.
+fn encoder_identity(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "nvenc/h264",
+        Codec::H265 => "nvenc/h265",
+    }
+}
+
 struct QueuedUnit {
     data: Bytes,
     pts_us: i64,
@@ -463,6 +507,12 @@ struct State {
     closing: bool,
     closed: bool,
     keyframe_requested: bool,
+    /// Access units the encoder really emitted, and their compressed size. Only
+    /// the worker writes them, and only after `next_unit` returned one.
+    encoded_frames: u64,
+    encoded_bytes: u64,
+    /// Identity of the encoder that was actually opened; empty until then.
+    encoder_name: String,
     failure: Option<PublisherError>,
     open_quarantine: Option<OpenQuarantine>,
     close_quarantine: Option<PipelineCloseQuarantine>,
@@ -473,6 +523,11 @@ struct Shared {
     space: Condvar,
     max_units: usize,
     max_bytes: usize,
+    /// The bound output's configured geometry and cadence, as validated for this
+    /// session.
+    width: i32,
+    height: i32,
+    fps_limit: u32,
 }
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -484,6 +539,47 @@ impl Shared {
         drop(state);
         self.space.notify_all();
         self.changed.notify_waiters();
+    }
+    /// The owner's own account, read without touching the frame path: it never
+    /// starts, stops or reconfigures capture, and it never turns a missing fact
+    /// into a favourable one.
+    fn stats(&self) -> PublisherStats {
+        let state = lock(&self.state);
+        // A retained native owner or a prior unconfirmed reclamation decides the
+        // terminal state, whatever the last consent sample said.
+        let quarantined = state.open_quarantine.is_some()
+            || state.close_quarantine.is_some()
+            || state
+                .failure
+                .as_ref()
+                .is_some_and(PublisherError::resources_unconfirmed);
+        let consent_state = if quarantined {
+            "quarantined"
+        } else if state.closed {
+            "stopped"
+        } else if state.closing {
+            "closing"
+        } else {
+            // A `Publisher` only exists after the worker reported a real open,
+            // so this is the bound output actually being duplicated, not a
+            // claimed system grant.
+            "granted"
+        };
+        PublisherStats {
+            consent_state: consent_state.into(),
+            capture_state_code: -1,
+            width: self.width,
+            height: self.height,
+            fps_limit: self.fps_limit,
+            encoder_name: state.encoder_name.clone(),
+            encoded_frames: state.encoded_frames,
+            encoded_bytes: state.encoded_bytes,
+            queued_units: state.charged_units,
+            queued_bytes: state.queued_bytes,
+            closed: state.closed,
+            quarantined,
+            error: state.failure.clone(),
+        }
     }
 }
 pub struct EncodedUnit {
@@ -519,6 +615,9 @@ impl Publisher {
                 closing: false,
                 closed: false,
                 keyframe_requested: false,
+                encoded_frames: 0,
+                encoded_bytes: 0,
+                encoder_name: String::new(),
                 failure: None,
                 open_quarantine: None,
                 close_quarantine: None,
@@ -527,6 +626,9 @@ impl Publisher {
             space: Condvar::new(),
             max_units: config.max_queued_units,
             max_bytes: config.max_queued_bytes,
+            width: config.width,
+            height: config.height,
+            fps_limit: config.fps,
         });
         let worker_shared = Arc::clone(&shared);
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
@@ -607,6 +709,9 @@ impl Publisher {
         state.keyframe_requested = true;
         Ok(())
     }
+    pub fn stats(&self) -> PublisherStats {
+        self.shared.stats()
+    }
     pub fn request_close(&self) {
         self.shared.request_close();
     }
@@ -671,8 +776,15 @@ fn worker_main(
     shared: Arc<Shared>,
     started: std::sync::mpsc::SyncSender<Result<(), PublisherError>>,
 ) {
+    // The encoder identity is claimable only once this worker really opened: a
+    // failed open leaves it empty instead of naming an encoder that never ran.
+    let encoder_name = encoder_identity(config.codec);
     let mut publisher = match open_native(config) {
         Ok(value) => {
+            {
+                let mut state = lock(&shared.state);
+                state.encoder_name = encoder_name.to_owned();
+            }
             let _ = started.send(Ok(()));
             value
         }
@@ -705,10 +817,17 @@ fn worker_main(
         match publisher.next_unit() {
             Ok(Some(unit)) => {
                 let bytes = unit.data.len();
+                let mut state = lock(&shared.state);
+                // A returned access unit is output this session really has, so it
+                // is counted before any admission decision: a unit refused as
+                // invalid or dropped by a closing session was still encoded, and
+                // a producer that emitted nothing can never reach a non-zero
+                // count.
+                state.encoded_frames += 1;
+                state.encoded_bytes = state.encoded_bytes.saturating_add(bytes as u64);
                 if bytes == 0 || bytes > shared.max_bytes {
                     break Some(PublisherError::InvalidAccessUnit);
                 }
-                let mut state = lock(&shared.state);
                 while !state.closing
                     && (state.charged_units >= shared.max_units
                         || state.queued_bytes.saturating_add(bytes) > shared.max_bytes)

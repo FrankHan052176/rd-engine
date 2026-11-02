@@ -2083,7 +2083,7 @@ impl CliprdrOwner {
     }
 
     /// One peer answer for the file contents request in flight.
-    async fn receive_contents(&mut self, response: proto::CliprdrServerFileContentsResponse) {
+    async fn receive_contents(&mut self, response: proto::CliprdrFileContentsResponse) {
         let Some(mut job) = self.receive.take() else {
             // Nothing is being fetched, so this answer belongs to no request this
             // session made. It is reported, never guessed at.
