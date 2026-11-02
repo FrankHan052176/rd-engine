@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         local_id: "rd-engine-observer-probe".to_string(),
         local_name: "rd-engine-observer-probe".to_string(),
         password,
+        conn_token: None,
         requested_fps: 60,
         // The probe presents frames and sends no input at all. Its own policy
         // is the interactive one: it dials a direct peer the engine cannot

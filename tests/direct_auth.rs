@@ -1,8 +1,14 @@
 //! Actual loopback TCP tests, with hbb_common framing/crypto as peer fixtures.
 //! These are NOT tests against a released RustDesk application binary.
-pub use rd_engine::{conn_token, transport};
+pub use rd_engine::transport;
 #[path = "../src/authentication.rs"]
 mod authentication;
+// The copied session builds its reconnect credential with the same material this
+// crate hands it, so it needs the same `pub(crate)` construction and the same
+// `cfg(test)` reader `src/` has. The dependency crate's own copy cannot lend
+// either to this one: giving it up would mean widening that boundary.
+#[path = "../src/conn_token.rs"]
+mod conn_token;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/session.rs"]
