@@ -18,7 +18,7 @@
 //!   the client without a picture.
 
 use crate::client_compat;
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{c_char, c_int, CStr, CString};
 
 /// The Windows runner's `FUNC_RUSTDESK_CORE_MAIN`: the core's own main answers
 /// with the arguments the Flutter side should also see. This engine has no core

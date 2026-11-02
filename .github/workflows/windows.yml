@@ -318,6 +318,7 @@ jobs:
             'native/frb/patches/official-client-lan-actions.patch',
             'native/frb/patches/official-client-product-scope.patch',
             'native/frb/patches/official-client-host-control.patch',
+            'native/frb/patches/official-client-scope-pruning.patch',
             'native/frb/src/localization/UPSTREAM.json',
             'native/windows-input/MAP_ADAPTER.json',
             'src/host.rs',

@@ -14,12 +14,12 @@ use anyhow::ensure;
 use base::message_proto::{ControlKey, ImageQuality, KeyEvent, KeyboardMode};
 use flutter_rust_bridge::{StreamSink, SyncReturn};
 use hbb_common::base64::{
-    Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
 };
 use hbb_common::config::{
-    BUILTIN_SETTINGS, Config, ENCRYPT_MAX_LEN, HARD_SETTINGS, LocalConfig, NEW_STORED_PEER_CONFIG,
-    PeerConfig, RS_PUB_KEY, UserDefaultConfig,
+    Config, LocalConfig, PeerConfig, UserDefaultConfig, BUILTIN_SETTINGS, ENCRYPT_MAX_LEN,
+    HARD_SETTINGS, NEW_STORED_PEER_CONFIG, RS_PUB_KEY,
 };
 use hbb_common::log;
 use hbb_common::sodiumoxide::crypto::sign;
@@ -33,8 +33,8 @@ use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::session_options::{SessionOptionChange, SessionOptions};
 use rd_engine::surface::FrameObserver;
 use rd_engine::viewer::{
-    LoginFailure, SurfaceLease, Viewer, ViewerError, ViewerInputPolicy, ViewerOptions,
-    ViewerSnapshot, ViewerTarget, direct_address,
+    direct_address, LoginFailure, SurfaceLease, Viewer, ViewerError, ViewerInputPolicy,
+    ViewerOptions, ViewerSnapshot, ViewerTarget,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -384,24 +384,22 @@ fn lan_notice(stream: Arc<()>, notice: LanNotice) {
         app.lan_query_pending = true;
         owner
     };
-    hbb_common::tokio::task::spawn_blocking(move || {
-        loop {
-            let result = owner
-                .query_blocking()
-                .map_err(anyhow::Error::msg)
-                .and_then(|snapshot| publish_lan_snapshot(&stream, &owner, snapshot));
-            if let Err(error) = &result {
-                lan_error(&stream, &owner, &error.to_string());
-                let _ = owner.request_close();
-            }
-            let mut app = lock(&APP);
-            if !lan_matches(&app, &stream, &owner) {
-                return;
-            }
-            if result.is_err() || app.lan_noticed_revision <= app.lan_published_revision {
-                app.lan_query_pending = false;
-                return;
-            }
+    hbb_common::tokio::task::spawn_blocking(move || loop {
+        let result = owner
+            .query_blocking()
+            .map_err(anyhow::Error::msg)
+            .and_then(|snapshot| publish_lan_snapshot(&stream, &owner, snapshot));
+        if let Err(error) = &result {
+            lan_error(&stream, &owner, &error.to_string());
+            let _ = owner.request_close();
+        }
+        let mut app = lock(&APP);
+        if !lan_matches(&app, &stream, &owner) {
+            return;
+        }
+        if result.is_err() || app.lan_noticed_revision <= app.lan_published_revision {
+            app.lan_query_pending = false;
+            return;
         }
     });
 }

@@ -149,6 +149,7 @@ flutter_lock_patch="$bridge_dir/patches/official-client-flutter-lock.patch"
 lan_patch="$bridge_dir/patches/official-client-lan-actions.patch"
 scope_patch="$bridge_dir/patches/official-client-product-scope.patch"
 host_patch="$bridge_dir/patches/official-client-host-control.patch"
+pruning_patch="$bridge_dir/patches/official-client-scope-pruning.patch"
 build_driver="$bridge_dir/build-windows.ps1"
 remote_host="${REMOTE_HOST:-rustdesk-windows}"
 remote_http_proxy="${REMOTE_HTTP_PROXY:-}"
@@ -230,6 +231,8 @@ done
   "missing $scope_patch: excluded camera/chat/call capabilities must not reach the client"
 [[ -f "$host_patch" ]] || die \
   "missing $host_patch: controlled-host commands require their authoritative CM consumer"
+[[ -f "$pruning_patch" ]] || die \
+  "missing $pruning_patch: retired features must be removed from the paired consumer"
 [[ -f "$build_driver" ]] || die "missing verified Windows build driver $build_driver"
 upstream_revision="$(sed -n 's/^Commit: //p' "$bridge_dir/UPSTREAM.txt")"
 [[ "$upstream_revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid FRB upstream commit pin"
@@ -294,7 +297,7 @@ cp -R "$client_dir/lib" "$client_dir/assets" "$patch_check_dir/"
 cp "$client_dir/pubspec.yaml" "$client_dir/pubspec.lock" "$patch_check_dir/"
 mkdir -p "$patch_check_dir/windows/runner"
 cp "$client_dir/windows/runner/main.cpp" "$patch_check_dir/windows/runner/"
-for patch in "$cpu_patch" "$account_patch" "$flutter_lock_patch" "$lan_patch" "$scope_patch" "$host_patch"; do
+for patch in "$cpu_patch" "$account_patch" "$flutter_lock_patch" "$lan_patch" "$scope_patch" "$host_patch" "$pruning_patch"; do
   git -c core.autocrlf=false -c core.eol=lf -C "$patch_check_dir" apply --check "$patch" || die \
     "the ordered client patch $patch does not apply to the pinned source"
   git -c core.autocrlf=false -c core.eol=lf -C "$patch_check_dir" apply "$patch" || die \
@@ -429,6 +432,7 @@ remote_flutter_lock_patch="$remote_bridge/patches/official-client-flutter-lock.p
 remote_lan_patch="$remote_bridge/patches/official-client-lan-actions.patch"
 remote_scope_patch="$remote_bridge/patches/official-client-product-scope.patch"
 remote_host_patch="$remote_bridge/patches/official-client-host-control.patch"
+remote_pruning_patch="$remote_bridge/patches/official-client-scope-pruning.patch"
 remote_engine_dll="$remote_bridge/target/x86_64-pc-windows-msvc/release/rd_engine_flutter.dll"
 remote_driver="$remote_root/build-windows.ps1"
 remote_bundle="$remote_client/build/windows/x64/runner/Release"
@@ -503,12 +507,12 @@ step "Copying the bridge to $remote_bridge"
 # generated Rust source. No cached targets or historical libraries are copied.
 scp -r "${bridge_sources[@]}" "$remote_host:$remote_bridge/"
 
-step "Applying recorded render, account, LAN, SDK-lock, product-scope and host-control patches"
+step "Applying recorded render, account, LAN, SDK-lock, scope, host and pruning patches"
 # Fresh upstream files receive every required adaptation, fail-closed. The local
 # official checkout, its original lock and its dependency declarations stay intact.
 # Preserve the checked LF bytes despite Git-for-Windows' ambient autocrlf setting.
 # This is per command, not a change to the host's Git configuration.
-for patch in "$remote_patch" "$remote_account_patch" "$remote_flutter_lock_patch" "$remote_lan_patch" "$remote_scope_patch" "$remote_host_patch"; do
+for patch in "$remote_patch" "$remote_account_patch" "$remote_flutter_lock_patch" "$remote_lan_patch" "$remote_scope_patch" "$remote_host_patch" "$remote_pruning_patch"; do
   remote "if not exist \"$patch\" exit /b 1" || die \
     "the recorded client patch did not reach $patch on $remote_host"
   remote "git -c core.autocrlf=false -c core.eol=lf -C \"$remote_client\" apply --check \"$patch\"" || die \

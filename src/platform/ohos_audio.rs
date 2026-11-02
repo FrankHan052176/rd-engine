@@ -996,7 +996,10 @@ mod tests {
         assert_eq!(&out[..4], &[0, 8_191, -8_191, 32_767]);
         assert_eq!(shared.stats().played_samples, 4);
         assert_eq!(shared.stats().starved_callbacks, 1);
-        assert_eq!(shared.stats().queued_samples, 4);
+        // `queued_samples` is `admitted - played`, so consuming everything that
+        // was admitted leaves nothing behind, even though this callback was
+        // counted as starved for not filling the whole buffer.
+        assert_eq!(shared.stats().queued_samples, 0);
         // Nothing is queued now, so a further callback is a starved one.
         assert_eq!(shared.callback_fill(&mut out), 0);
         assert_eq!(shared.stats().starved_callbacks, 2);

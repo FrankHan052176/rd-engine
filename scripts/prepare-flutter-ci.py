@@ -23,6 +23,7 @@ PATCHES = (
     "official-client-cpu-rgba.patch", "official-client-account-safety.patch",
     "official-client-flutter-lock.patch", "official-client-lan-actions.patch",
     "official-client-product-scope.patch", "official-client-host-control.patch",
+    "official-client-scope-pruning.patch",
 )
 CLIENT_LOCK_SHA256 = "bc58506b80464e5b3f6c73669c79ef270949b3cbc85401c290aa92e4573df7f7"
 

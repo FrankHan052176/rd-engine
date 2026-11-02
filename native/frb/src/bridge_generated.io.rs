@@ -504,21 +504,6 @@ pub extern "C" fn wire_main_supported_input_source() -> support::WireSyncReturn 
 }
 
 #[no_mangle]
-pub extern "C" fn wire_main_default_privacy_mode_impl() -> support::WireSyncReturn {
-    wire_main_default_privacy_mode_impl_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_supported_privacy_mode_impls() -> support::WireSyncReturn {
-    wire_main_supported_privacy_mode_impls_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_get_printer_names() -> support::WireSyncReturn {
-    wire_main_get_printer_names_impl()
-}
-
-#[no_mangle]
 pub extern "C" fn wire_main_get_trusted_devices(port_: i64) {
     wire_main_get_trusted_devices_impl(port_)
 }
@@ -541,11 +526,6 @@ pub extern "C" fn wire_main_get_login_device_info() -> support::WireSyncReturn {
 #[no_mangle]
 pub extern "C" fn wire_main_max_encrypt_len() -> support::WireSyncReturn {
     wire_main_max_encrypt_len_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_video_save_directory(root: bool) -> support::WireSyncReturn {
-    wire_main_video_save_directory_impl(root)
 }
 
 #[no_mangle]
@@ -581,11 +561,6 @@ pub extern "C" fn wire_is_disable_account() -> support::WireSyncReturn {
 #[no_mangle]
 pub extern "C" fn wire_is_disable_group_panel() -> support::WireSyncReturn {
     wire_is_disable_group_panel_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_is_disable_installation() -> support::WireSyncReturn {
-    wire_is_disable_installation_impl()
 }
 
 #[no_mangle]
@@ -666,33 +641,8 @@ pub extern "C" fn wire_query_onlines(port_: i64, ids: *mut wire_StringList) {
 }
 
 #[no_mangle]
-pub extern "C" fn wire_main_get_software_update_url(port_: i64) {
-    wire_main_get_software_update_url_impl(port_)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_get_new_version() -> support::WireSyncReturn {
-    wire_main_get_new_version_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_update_me() -> support::WireSyncReturn {
-    wire_main_update_me_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_goto_install() -> support::WireSyncReturn {
-    wire_main_goto_install_impl()
-}
-
-#[no_mangle]
 pub extern "C" fn wire_main_is_installed() -> support::WireSyncReturn {
     wire_main_is_installed_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_is_installed_lower_version() -> support::WireSyncReturn {
-    wire_main_is_installed_lower_version_impl()
 }
 
 #[no_mangle]
@@ -713,45 +663,6 @@ pub extern "C" fn wire_main_is_can_screen_recording(prompt: bool) -> support::Wi
 #[no_mangle]
 pub extern "C" fn wire_main_is_can_input_monitoring(prompt: bool) -> support::WireSyncReturn {
     wire_main_is_can_input_monitoring_impl(prompt)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_is_share_rdp() -> support::WireSyncReturn {
-    wire_main_is_share_rdp_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_set_share_rdp(port_: i64, enable: bool) {
-    wire_main_set_share_rdp_impl(port_, enable)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_install_show_run_without_install() -> support::WireSyncReturn {
-    wire_install_show_run_without_install_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_install_run_without_install(port_: i64) {
-    wire_install_run_without_install_impl(port_)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_install_install_me(
-    port_: i64,
-    options: *mut wire_uint_8_list,
-    path: *mut wire_uint_8_list,
-) {
-    wire_install_install_me_impl(port_, options, path)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_install_install_path() -> support::WireSyncReturn {
-    wire_install_install_path_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_install_install_options() -> support::WireSyncReturn {
-    wire_install_install_options_impl()
 }
 
 #[no_mangle]
@@ -810,16 +721,6 @@ pub extern "C" fn wire_main_verify2fa(port_: i64, code: *mut wire_uint_8_list) {
 #[no_mangle]
 pub extern "C" fn wire_main_has_valid_2fa_sync() -> support::WireSyncReturn {
     wire_main_has_valid_2fa_sync_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_verify_bot(port_: i64, token: *mut wire_uint_8_list) {
-    wire_main_verify_bot_impl(port_, token)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_has_valid_bot_sync() -> support::WireSyncReturn {
-    wire_main_has_valid_bot_sync_impl()
 }
 
 #[no_mangle]
@@ -908,15 +809,6 @@ pub extern "C" fn wire_main_test_if_valid_server(
     test_with_proxy: bool,
 ) {
     wire_main_test_if_valid_server_impl(port_, server, test_with_proxy)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_main_deploy_device(
-    port_: i64,
-    token: *mut wire_uint_8_list,
-    id: *mut wire_uint_8_list,
-) {
-    wire_main_deploy_device_impl(port_, token, id)
 }
 
 #[no_mangle]
@@ -1091,21 +983,6 @@ pub extern "C" fn wire_cm_switch_permission(
     enabled: bool,
 ) {
     wire_cm_switch_permission_impl(port_, conn_id, name, enabled)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_cm_can_elevate() -> support::WireSyncReturn {
-    wire_cm_can_elevate_impl()
-}
-
-#[no_mangle]
-pub extern "C" fn wire_cm_elevate_portable(port_: i64, _conn_id: i32) {
-    wire_cm_elevate_portable_impl(port_, _conn_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_cm_switch_back(port_: i64, _conn_id: i32) {
-    wire_cm_switch_back_impl(port_, _conn_id)
 }
 
 #[no_mangle]
@@ -1719,59 +1596,6 @@ pub extern "C" fn wire_session_is_keyboard_mode_supported(
 }
 
 #[no_mangle]
-pub extern "C" fn wire_session_send_note(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    note: *mut wire_uint_8_list,
-) {
-    wire_session_send_note_impl(port_, session_id, note)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_handle_screenshot(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    action: *mut wire_uint_8_list,
-) {
-    wire_session_handle_screenshot_impl(port_, session_id, action)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_take_screenshot(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    display: usize,
-) {
-    wire_session_take_screenshot_impl(port_, session_id, display)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_record_screen(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    start: bool,
-) {
-    wire_session_record_screen_impl(port_, session_id, start)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_get_is_recording(
-    session_id: *mut wire_uint_8_list,
-) -> support::WireSyncReturn {
-    wire_session_get_is_recording_impl(session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_toggle_privacy_mode(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    impl_key: *mut wire_uint_8_list,
-    on: bool,
-) {
-    wire_session_toggle_privacy_mode_impl(port_, session_id, impl_key, on)
-}
-
-#[no_mangle]
 pub extern "C" fn wire_session_send2fa(
     port_: i64,
     session_id: *mut wire_uint_8_list,
@@ -1822,29 +1646,6 @@ pub extern "C" fn wire_session_request_new_display_init_msgs(
 }
 
 #[no_mangle]
-pub extern "C" fn wire_session_toggle_virtual_display(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    index: i32,
-    on: bool,
-) {
-    wire_session_toggle_virtual_display_impl(port_, session_id, index, on)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_restart_remote_device(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-) {
-    wire_session_restart_remote_device_impl(port_, session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_switch_sides(port_: i64, session_id: *mut wire_uint_8_list) {
-    wire_session_switch_sides_impl(port_, session_id)
-}
-
-#[no_mangle]
 pub extern "C" fn wire_session_send_selected_session_id(
     port_: i64,
     session_id: *mut wire_uint_8_list,
@@ -1861,78 +1662,6 @@ pub extern "C" fn wire_session_alternative_codecs(port_: i64, session_id: *mut w
 #[no_mangle]
 pub extern "C" fn wire_session_change_prefer_codec(port_: i64, session_id: *mut wire_uint_8_list) {
     wire_session_change_prefer_codec_impl(port_, session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_get_audit_server_sync(
-    session_id: *mut wire_uint_8_list,
-    typ: *mut wire_uint_8_list,
-) -> support::WireSyncReturn {
-    wire_session_get_audit_server_sync_impl(session_id, typ)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_get_last_audit_note(
-    session_id: *mut wire_uint_8_list,
-) -> support::WireSyncReturn {
-    wire_session_get_last_audit_note_impl(session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_set_audit_guid(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    guid: *mut wire_uint_8_list,
-) {
-    wire_session_set_audit_guid_impl(port_, session_id, guid)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_get_audit_guid(
-    session_id: *mut wire_uint_8_list,
-) -> support::WireSyncReturn {
-    wire_session_get_audit_guid_impl(session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_open_terminal(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    terminal_id: i32,
-    rows: u32,
-    cols: u32,
-) {
-    wire_session_open_terminal_impl(port_, session_id, terminal_id, rows, cols)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_send_terminal_input(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    terminal_id: i32,
-    data: *mut wire_uint_8_list,
-) {
-    wire_session_send_terminal_input_impl(port_, session_id, terminal_id, data)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_resize_terminal(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    terminal_id: i32,
-    rows: u32,
-    cols: u32,
-) {
-    wire_session_resize_terminal_impl(port_, session_id, terminal_id, rows, cols)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_close_terminal(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    terminal_id: i32,
-) {
-    wire_session_close_terminal_impl(port_, session_id, terminal_id)
 }
 
 #[no_mangle]
@@ -2134,57 +1863,6 @@ pub extern "C" fn wire_session_rename_file(
     is_remote: bool,
 ) {
     wire_session_rename_file_impl(port_, session_id, act_id, path, new_name, is_remote)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_elevate_direct(port_: i64, session_id: *mut wire_uint_8_list) {
-    wire_session_elevate_direct_impl(port_, session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_elevate_with_logon(
-    port_: i64,
-    _session_id: *mut wire_uint_8_list,
-    _username: *mut wire_uint_8_list,
-    _password: *mut wire_uint_8_list,
-) {
-    wire_session_elevate_with_logon_impl(port_, _session_id, _username, _password)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_add_port_forward(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    local_port: i32,
-    remote_host: *mut wire_uint_8_list,
-    remote_port: i32,
-) {
-    wire_session_add_port_forward_impl(port_, session_id, local_port, remote_host, remote_port)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_remove_port_forward(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    local_port: i32,
-) {
-    wire_session_remove_port_forward_impl(port_, session_id, local_port)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_new_rdp(port_: i64, session_id: *mut wire_uint_8_list) {
-    wire_session_new_rdp_impl(port_, session_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wire_session_printer_response(
-    port_: i64,
-    session_id: *mut wire_uint_8_list,
-    id: i32,
-    path: *mut wire_uint_8_list,
-    printer_name: *mut wire_uint_8_list,
-) {
-    wire_session_printer_response_impl(port_, session_id, id, path, printer_name)
 }
 
 // Section: allocate functions

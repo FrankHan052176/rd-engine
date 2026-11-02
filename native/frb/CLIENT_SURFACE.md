@@ -13,8 +13,8 @@ The paired bridge omits their eight chat/call APIs and the camera argument from
 session creation/adoption. Regenerate both binding halves for this reduced ABI;
 an unmodified official client's generated bindings are not interchangeable.
 
-`patches/official-client-product-scope.patch` is the final required consumer
-adaptation, after the render, account, SDK-lock and LAN patches. It removes the
+`patches/official-client-product-scope.patch` follows the render, account,
+SDK-lock and LAN patches. It removes the
 three feature-specific consumer paths instead of leaving callable unsupported
 buttons. Old camera commands/URLs/window requests must be rejected, never
 reinterpreted as ordinary desktop access or another window type. Other window
@@ -28,6 +28,10 @@ mode, elevation and remote reboot. Their dedicated FRB APIs are removed, not
 retained as unsupported operations. The runner's
 `rustdesk_is_disable_installation` C export remains a build-capability probe,
 not an installation action.
+
+`patches/official-client-scope-pruning.patch` removes these consumer paths after
+the product-scope and host-control patches; both CI and the private Windows
+build replay the same ordered patch stack.
 
 Desktop video/audio, native RDP/VNC, clipboard, basic file transfer, the official
 Dart account/address-book owner and local device/server configuration are
