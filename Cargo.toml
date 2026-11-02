@@ -73,7 +73,8 @@ url = { version = "=2.5.8", features = ["serde"], optional = true }
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
 # OHOS uses OHAudio, never the Linux ALSA backend selected by target_os alone.
-cpal = "=0.18.1"
+# Retain official Android API 22 support through Oboe/OpenSL ES, not AAudio-only.
+cpal = "=0.15.3"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = { version = "=3.7.0", default-features = false, optional = true }
