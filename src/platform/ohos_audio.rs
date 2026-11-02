@@ -773,7 +773,7 @@ mod native {
                 }),
                 // A stream that never started is still taken down, and an
                 // unconfirmed release is the answer the caller has to see.
-                Err(cause) => Err(open_failure(self.discard(), cause)),
+                Err(cause) => Err(super::open_failure(self.discard(), cause)),
             }
         }
     }
