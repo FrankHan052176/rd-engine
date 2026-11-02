@@ -366,7 +366,7 @@ impl Shared {
 
     /// Fills `out` from the queue, or leaves it as silence when the producer is
     /// inside its bounded copy. Never blocks, never allocates.
-    fn callback_fill<T: FromSample<f32>>(&self, out: &mut [T]) {
+    fn callback_fill<T: FromSample<f32> + Copy>(&self, out: &mut [T]) {
         if self.closed.load(Ordering::Relaxed) {
             fill_silence(out);
             return;

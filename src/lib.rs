@@ -1,5 +1,6 @@
 //! Replacement RustDesk runtime. Wire definitions and cryptography retain the
 //! upstream contract; legacy Connection/VideoService/VideoHandler are not linked.
+pub mod annex_b;
 pub mod audio;
 pub mod authentication;
 pub mod clipboard;

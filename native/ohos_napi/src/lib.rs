@@ -6,15 +6,15 @@
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
-    bindgen_prelude::{AsyncTask, Task},
     Env, JsValue, Unknown,
+    bindgen_prelude::{AsyncTask, Task},
 };
-use rd_engine::protocol::Target;
 use rd_engine::conn_token::ConnToken;
+use rd_engine::protocol::Target;
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
-    direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
-    ViewerOptions, ViewerSnapshot, ViewerTarget,
+    InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy, ViewerOptions,
+    ViewerSnapshot, ViewerTarget, direct_address,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -38,10 +38,10 @@ mod session_options;
 mod transfer;
 use rd_engine::session_options::SessionOptions;
 use session_options::{
-    session_set_image_quality, session_set_custom_image_quality,
-    session_set_codec_preference, session_set_show_remote_cursor,
-    session_switch_display, session_change_resolution, session_get_image_quality,
-    session_get_toggle_option, session_toggle_option, session_get_remote_audio_state,
+    session_change_resolution, session_get_image_quality, session_get_remote_audio_state,
+    session_get_toggle_option, session_set_codec_preference, session_set_custom_image_quality,
+    session_set_image_quality, session_set_show_remote_cursor, session_switch_display,
+    session_toggle_option,
 };
 mod xcomponent;
 use app_context::{
@@ -52,7 +52,9 @@ use app_directory::{
     runtime_remove_recent_peer, runtime_set_favorite,
 };
 use app_presence::{peer_presence_cancel, peer_query_online};
-use app_profile::{runtime_get_server_config, runtime_set_server_config, runtime_test_server_config};
+use app_profile::{
+    runtime_get_server_config, runtime_set_server_config, runtime_test_server_config,
+};
 use clipboard::{
     session_send_clipboard, session_send_clipboard_image, session_take_clipboard,
     session_take_clipboard_image,
@@ -69,11 +71,12 @@ use host_bridge::{
 };
 use host_security::{
     controlled_password_set_permanent, controlled_password_set_verification_method,
-    controlled_setting_set, controlled_two_factor_begin, controlled_two_factor_clear_trusted_devices,
-    controlled_two_factor_disable, controlled_two_factor_get,
-    controlled_two_factor_remove_trusted_devices, controlled_two_factor_verify,
+    controlled_setting_set, controlled_two_factor_begin,
+    controlled_two_factor_clear_trusted_devices, controlled_two_factor_disable,
+    controlled_two_factor_get, controlled_two_factor_remove_trusted_devices,
+    controlled_two_factor_verify,
 };
-use server_profile::{validate_server_profile, ApprovedRoute};
+use server_profile::{ApprovedRoute, validate_server_profile};
 mod capabilities;
 use capabilities::query_decoder_capabilities;
 
@@ -316,7 +319,10 @@ impl Reported {
         let mut events = Vec::new();
         if !snapshot.closed
             && !snapshot.authenticated
-            && matches!(snapshot.phase.as_str(), "awaiting_password" | "password_rejected")
+            && matches!(
+                snapshot.phase.as_str(),
+                "awaiting_password" | "password_rejected"
+            )
             && snapshot.password_challenge > self.password_challenge
         {
             self.password_challenge = snapshot.password_challenge;
@@ -333,7 +339,10 @@ impl Reported {
         }
         if !snapshot.closed
             && !snapshot.authenticated
-            && matches!(snapshot.phase.as_str(), "awaiting_second_factor" | "second_factor_rejected")
+            && matches!(
+                snapshot.phase.as_str(),
+                "awaiting_second_factor" | "second_factor_rejected"
+            )
             && snapshot.second_factor_challenge > self.second_factor_challenge
         {
             self.second_factor_challenge = snapshot.second_factor_challenge;
@@ -395,7 +404,9 @@ static NEXT_NATIVE_ID: AtomicU64 = AtomicU64::new(1);
 
 fn allocate_native_id() -> Result<u64, &'static str> {
     NEXT_NATIVE_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
         .map_err(|_| "native lifecycle identity exhausted")
 }
 
@@ -446,15 +457,17 @@ fn record_terminal_reclamation(
 ) {
     if snapshot.closed {
         if record.transfer.is_none() {
-            record.transfer = record.viewer.as_ref().and_then(|viewer| viewer.transfer_handle());
+            record.transfer = record
+                .viewer
+                .as_ref()
+                .and_then(|viewer| viewer.transfer_handle());
         }
         if verdict.is_some() && record.terminal_snapshot.is_none() {
             // Preserve the actual failure, input account and telemetry BEFORE
             // clearing the lease, password or registry's last Viewer reference.
             record.terminal_snapshot = Some(snapshot.clone());
-            record.terminal_elapsed_ms = Some(
-                u64::try_from(record.started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            );
+            record.terminal_elapsed_ms =
+                Some(u64::try_from(record.started.elapsed().as_millis()).unwrap_or(u64::MAX));
         }
         apply_terminal_reclamation(
             &mut record.closed,
@@ -490,7 +503,9 @@ fn observe_terminal_reclamation(record: &mut SessionRecord) -> Option<ViewerSnap
 fn mutable_snapshot(record: &mut SessionRecord) -> Result<Option<ViewerSnapshot>, &'static str> {
     let snapshot = observe_terminal_reclamation(record);
     if record.closed {
-        return Err("session closed; poll and acknowledge its terminal receipt before registering a new session");
+        return Err(
+            "session closed; poll and acknowledge its terminal receipt before registering a new session",
+        );
     }
     if record.closing || snapshot.as_ref().is_some_and(|value| value.closed) {
         return Err("session is closing; wait for sessionPollEvents to confirm reclamation");
@@ -677,9 +692,13 @@ fn publish_input_policy(
 /// buttons the operator is holding right now.
 fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     if retired > 0 {
-        Some("this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed")
+        Some(
+            "this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed",
+        )
     } else if unreleased > 0 {
-        Some("a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it")
+        Some(
+            "a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it",
+        )
     } else {
         None
     }
@@ -800,16 +819,24 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
         Some(serde_json::Value::Bool(true)) => SessionMode::FileTransfer,
         Some(_) => return error_json("isFileTransfer must be a boolean"),
     };
-    if mode == SessionMode::FileTransfer && viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk {
+    if mode == SessionMode::FileTransfer
+        && viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk
+    {
         return error_json("file transfer requires the RustDesk protocol");
     }
     let transfer_root = match options.get("transferRoot") {
         None => None,
         Some(serde_json::Value::String(value)) if mode == SessionMode::FileTransfer => {
             let root = PathBuf::from(value);
-            if value.as_bytes().contains(&0) || !root.is_absolute()
-                || root.components().any(|part| matches!(part, Component::ParentDir)) {
-                return error_json("transferRoot must be an absolute local directory without traversal");
+            if value.as_bytes().contains(&0)
+                || !root.is_absolute()
+                || root
+                    .components()
+                    .any(|part| matches!(part, Component::ParentDir))
+            {
+                return error_json(
+                    "transferRoot must be an absolute local directory without traversal",
+                );
             }
             Some(root)
         }
@@ -916,13 +943,7 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
             common: HashMap::new(),
             reported: Reported::default(),
         };
-        let mut response = session_response(
-            true,
-            "session_add",
-            &session_id,
-            &record,
-            None,
-        );
+        let mut response = session_response(true, "session_add", &session_id, &record, None);
         response["routable"] = serde_json::json!(true);
         response["fps"] = serde_json::json!(fps);
         response["view_only"] = serde_json::json!(view_only);
@@ -1183,18 +1204,23 @@ pub fn session_start(session_id: String) -> String {
         }
         let snapshot = observe_terminal_reclamation(record);
         let mut response = session_response(
-            true, "session_start", &session_id, record, snapshot.as_ref(),
+            true,
+            "session_start",
+            &session_id,
+            record,
+            snapshot.as_ref(),
         );
         response["started"] = serde_json::json!(started);
-        response["surface_bound"] =
-            serde_json::json!(record.lease.published_surface_id() != 0);
-        response["note"] = serde_json::json!(if started && record.mode == SessionMode::FileTransfer {
-            "file-transfer viewer dialled; it authenticates without a decoder or Surface"
-        } else if started {
-            "viewer dialled; it presents into the Surface the client binds, which it may bind after this call"
-        } else {
-            "a viewer is already running for this session: session_start did not dial again"
-        });
+        response["surface_bound"] = serde_json::json!(record.lease.published_surface_id() != 0);
+        response["note"] = serde_json::json!(
+            if started && record.mode == SessionMode::FileTransfer {
+                "file-transfer viewer dialled; it authenticates without a decoder or Surface"
+            } else if started {
+                "viewer dialled; it presents into the Surface the client binds, which it may bind after this call"
+            } else {
+                "a viewer is already running for this session: session_start did not dial again"
+            }
+        );
         if let Some(message) = surface_retirement {
             // Not a failed dial: the viewer exists and is closing, so the client
             // must poll for confirmed reclamation and ACK it like any terminal.
@@ -1241,12 +1267,14 @@ pub fn session_login(session_id: String, mut payload: String) -> String {
                 scrub_password(&mut record.password);
                 record.conn_token = None;
                 record.password = std::mem::take(&mut password);
-                let mut response = session_response(true, "session_login", &session_id, record, None);
+                let mut response =
+                    session_response(true, "session_login", &session_id, record, None);
                 response["queued"] = serde_json::json!(false);
                 response["restart_required"] = serde_json::json!(false);
                 response["remember"] = serde_json::json!(remember);
                 response["persisted"] = serde_json::json!(false);
-                response["note"] = serde_json::json!("initial password recorded in memory for sessionStart");
+                response["note"] =
+                    serde_json::json!("initial password recorded in memory for sessionStart");
                 return response.to_string();
             };
             if let Err(error) = viewer.send_password(std::mem::take(&mut password)) {
@@ -1259,15 +1287,19 @@ pub fn session_login(session_id: String, mut payload: String) -> String {
                 };
                 return serde_json::json!({
                     "ok": false, "queued": false, "code": reason, "message": error.to_string(),
-                }).to_string();
+                })
+                .to_string();
             }
             let snapshot = viewer.snapshot();
-            let mut response = session_response(true, "session_login", &session_id, record, Some(&snapshot));
+            let mut response =
+                session_response(true, "session_login", &session_id, record, Some(&snapshot));
             response["queued"] = serde_json::json!(true);
             response["restart_required"] = serde_json::json!(false);
             response["remember"] = serde_json::json!(remember);
             response["persisted"] = serde_json::json!(false);
-            response["message"] = serde_json::json!("password queued; waiting for the peer's authentication decision");
+            response["message"] = serde_json::json!(
+                "password queued; waiting for the peer's authentication decision"
+            );
             response.to_string()
         })
     })();
@@ -1298,19 +1330,27 @@ pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device:
         };
         if let Err(error) = viewer.send_second_factor(std::mem::take(&mut code)) {
             let reason = match &error {
-                rd_engine::viewer::ViewerError::SecondFactorNotAwaiting => "SecondFactorNotAwaiting",
+                rd_engine::viewer::ViewerError::SecondFactorNotAwaiting => {
+                    "SecondFactorNotAwaiting"
+                }
                 rd_engine::viewer::ViewerError::Backpressure => "Backpressure",
                 rd_engine::viewer::ViewerError::Closed => "Closed",
                 _ => "SecondFactorRejected",
             };
-            return serde_json::json!({"ok":false,"code":reason,"message":error.to_string()}).to_string();
+            return serde_json::json!({"ok":false,"code":reason,"message":error.to_string()})
+                .to_string();
         }
         let snapshot = viewer.snapshot();
         let mut response = session_response(
-            true, "session_send_2fa", &session_id, record, Some(&snapshot),
+            true,
+            "session_send_2fa",
+            &session_id,
+            record,
+            Some(&snapshot),
         );
         response["queued"] = serde_json::json!(true);
-        response["message"] = serde_json::json!("code queued; waiting for the peer's authentication decision");
+        response["message"] =
+            serde_json::json!("code queued; waiting for the peer's authentication decision");
         response.to_string()
     });
     // Covers every refusal before the engine takes ownership of the code.
@@ -1323,12 +1363,19 @@ pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device:
 #[napi]
 pub fn session_get_enable_trusted_devices(session_id: String) -> napi_ohos::Result<bool> {
     with_sessions(|sessions| {
-        let record = sessions.get(&session_id)
+        let record = sessions
+            .get(&session_id)
             .ok_or_else(|| napi_ohos::Error::from_reason("unknown session"))?;
-        let snapshot = record.viewer.as_ref().map(|viewer| viewer.snapshot())
+        let snapshot = record
+            .viewer
+            .as_ref()
+            .map(|viewer| viewer.snapshot())
             .or_else(|| record.terminal_snapshot.clone());
-        snapshot.and_then(|snapshot| snapshot.enable_trusted_devices)
-            .ok_or_else(|| napi_ohos::Error::from_reason("peer has not reported trusted-device capability"))
+        snapshot
+            .and_then(|snapshot| snapshot.enable_trusted_devices)
+            .ok_or_else(|| {
+                napi_ohos::Error::from_reason("peer has not reported trusted-device capability")
+            })
     })
 }
 
@@ -1348,7 +1395,8 @@ pub fn session_get_conn_token(session_id: String) -> Option<String> {
 #[napi]
 pub fn session_has_conn_token(session_id: String) -> bool {
     with_sessions(|sessions| {
-        sessions.get(&session_id)
+        sessions
+            .get(&session_id)
             .filter(|record| !record.closed && !record.closing)
             .and_then(|record| record.viewer.as_ref())
             .is_some_and(|viewer| viewer.has_conn_token())
@@ -1382,11 +1430,15 @@ fn bind_surface(
             }
             let snapshot = observe_terminal_reclamation(record);
             let mut response = session_response(
-                true, "session_bind_surface", &session_id, record, snapshot.as_ref(),
+                true,
+                "session_bind_surface",
+                &session_id,
+                record,
+                snapshot.as_ref(),
             );
             if component_id.is_empty() {
-                let released = record.reclaimed == Some(true)
-                    || (record.dials == 0 && !record.closing);
+                let released =
+                    record.reclaimed == Some(true) || (record.dials == 0 && !record.closing);
                 response["released"] = serde_json::json!(released);
                 response["held"] = serde_json::json!(!released);
                 response["surfaces"] = serde_json::json!(surface_receipts(record, released));
@@ -1409,8 +1461,7 @@ fn bind_surface(
                         "cannot clear a held Surface; close the viewer and wait for confirmed reclamation"
                     );
                 }
-                response["bound"] =
-                    serde_json::json!(record.lease.published_surface_id() != 0);
+                response["bound"] = serde_json::json!(record.lease.published_surface_id() != 0);
                 response["display"] = serde_json::json!(display);
                 return response.to_string();
             }
@@ -1489,7 +1540,11 @@ fn bind_surface(
                 record.closing = true;
                 let snapshot = observe_terminal_reclamation(record);
                 response = session_response(
-                    false, "session_bind_surface", &session_id, record, snapshot.as_ref(),
+                    false,
+                    "session_bind_surface",
+                    &session_id,
+                    record,
+                    snapshot.as_ref(),
                 );
                 response["surface_retirement_error"] = serde_json::json!(message);
                 response["message"] = serde_json::json!(
@@ -1505,11 +1560,7 @@ fn bind_surface(
 /// The answer a successful bind returns: the destination facts this record now
 /// holds. `released` is false because a binding is not a release, and `bound` is
 /// read from the published slot, never assumed.
-fn bound_receipt(
-    record: &SessionRecord,
-    response: &mut serde_json::Value,
-    display: u32,
-) -> String {
+fn bound_receipt(record: &SessionRecord, response: &mut serde_json::Value, display: u32) -> String {
     response["surfaces"] = serde_json::json!(surface_receipts(record, false));
     response["bound"] = serde_json::json!(record.lease.published_surface_id() != 0);
     response["display"] = serde_json::json!(display);
@@ -1609,7 +1660,8 @@ impl CloseWork {
         let request = with_sessions(|sessions| {
             let Some(record) = sessions.get_mut(&session_id) else {
                 return CloseRequest::Complete(lifecycle_error_json(
-                    "session_close", "unknown session",
+                    "session_close",
+                    "unknown session",
                 ));
             };
             observe_terminal_reclamation(record);
@@ -1660,13 +1712,15 @@ impl CloseWork {
                 let snapshot = viewer.snapshot();
                 let verdict = viewer.reclamation_confirmed();
                 with_sessions(|sessions| {
-                    let Some(record) = sessions.get_mut(session_id)
+                    let Some(record) = sessions
+                        .get_mut(session_id)
                         .filter(|record| record.lifecycle_epoch == *lifecycle_epoch)
                     else {
                         // A poll may have completed/ACKed this exact epoch while
                         // the worker ran. Never commit into a reused id.
                         return lifecycle_error_json(
-                            "session_close", "close completed for a retired lifecycle epoch",
+                            "session_close",
+                            "close completed for a retired lifecycle epoch",
                         );
                     };
                     record_terminal_reclamation(record, &snapshot, verdict);
@@ -1738,7 +1792,10 @@ pub fn session_acknowledge_close(session_id: String, lifecycle_epoch: String) ->
             );
         }
         let mut response = session_response(
-            true, "session_acknowledge_close", &session_id, record,
+            true,
+            "session_acknowledge_close",
+            &session_id,
+            record,
             record.terminal_snapshot.as_ref(),
         );
         response["record_removed"] = serde_json::json!(true);
@@ -1749,7 +1806,11 @@ pub fn session_acknowledge_close(session_id: String, lifecycle_epoch: String) ->
 }
 
 /// A job command is queued to the session owner; it is not peer completion.
-fn submit_transfer(session_id: &str, action: &str, command: rd_engine::transfer::TransferCommand) -> String {
+fn submit_transfer(
+    session_id: &str,
+    action: &str,
+    command: rd_engine::transfer::TransferCommand,
+) -> String {
     with_sessions(|sessions| {
         let Some(record) = sessions.get_mut(session_id) else {
             return transfer::error_response(action, "unknown session");
@@ -1764,7 +1825,8 @@ fn submit_transfer(session_id: &str, action: &str, command: rd_engine::transfer:
             Ok(()) => serde_json::json!({
                 "ok": true, "action": action, "queued": true,
                 "record_removed": false,
-            }).to_string(),
+            })
+            .to_string(),
             Err(error) => transfer::error_response(action, error.static_reason()),
         }
     })
@@ -1786,17 +1848,34 @@ pub fn transfer_next_job_id() -> i32 {
 
 #[napi]
 pub fn session_read_remote_dir(session_id: String, path: String, include_hidden: bool) -> String {
-    submit_transfer(&session_id, "session_read_remote_dir", transfer::read_dir_command(path, include_hidden))
+    submit_transfer(
+        &session_id,
+        "session_read_remote_dir",
+        transfer::read_dir_command(path, include_hidden),
+    )
 }
 
 #[napi]
 pub fn session_send_files(
-    session_id: String, act_id: u32, path: String, to: String, file_num: u32,
-    include_hidden: bool, is_remote: bool, _is_dir: bool,
+    session_id: String,
+    act_id: u32,
+    path: String,
+    to: String,
+    file_num: u32,
+    include_hidden: bool,
+    is_remote: bool,
+    _is_dir: bool,
 ) -> String {
     // TransferJob reads the real source metadata; a caller's directory hint
     // never substitutes for the actual file/directory it opens.
-    match transfer::send_files_command(i64::from(act_id), path, to, i64::from(file_num), include_hidden, is_remote) {
+    match transfer::send_files_command(
+        i64::from(act_id),
+        path,
+        to,
+        i64::from(file_num),
+        include_hidden,
+        is_remote,
+    ) {
         Ok(command) => submit_transfer(&session_id, "session_send_files", command),
         Err(message) => transfer::error_response("session_send_files", message),
     }
@@ -1804,10 +1883,20 @@ pub fn session_send_files(
 
 #[napi]
 pub fn session_set_confirm_override_file(
-    session_id: String, act_id: u32, file_num: u32, need_override: bool,
-    remember: bool, is_upload: bool,
+    session_id: String,
+    act_id: u32,
+    file_num: u32,
+    need_override: bool,
+    remember: bool,
+    is_upload: bool,
 ) -> String {
-    match transfer::confirm_command(i64::from(act_id), i64::from(file_num), need_override, remember, is_upload) {
+    match transfer::confirm_command(
+        i64::from(act_id),
+        i64::from(file_num),
+        need_override,
+        remember,
+        is_upload,
+    ) {
         Ok(command) => submit_transfer(&session_id, "session_set_confirm_override_file", command),
         Err(message) => transfer::error_response("session_set_confirm_override_file", message),
     }
@@ -1890,12 +1979,8 @@ fn poll_note(phase: &str, error: Option<&str>) -> &'static str {
             "one code was queued on this authentication; only the peer's answer can authorize it"
         }
         (
-            "authenticated"
-            | "awaiting_surface"
-            | "opening_surface"
-            | "opening_decoder"
-            | "decoding"
-            | "streaming",
+            "authenticated" | "awaiting_surface" | "opening_surface" | "opening_decoder"
+            | "decoding" | "streaming",
             _,
         ) => {
             "the peer authorized this session; peer_info and connection_ready carry the snapshot's peer, display, handshake and route evidence while presentation advances independently"
@@ -1941,14 +2026,21 @@ pub fn session_poll_events(session_id: String, limit: u32) -> String {
         let count = record.reported.pending.len().min(limit as usize);
         let mut events: Vec<_> = record.reported.pending.drain(..count).collect();
         if record.transfer.is_none() {
-            record.transfer = record.viewer.as_ref().and_then(|viewer| viewer.transfer_handle());
+            record.transfer = record
+                .viewer
+                .as_ref()
+                .and_then(|viewer| viewer.transfer_handle());
         }
         if let Some(handle) = record.transfer.as_ref() {
             let snapshot = handle.take_snapshot_limit(limit as usize - events.len());
             events.extend(transfer::events(&snapshot.events));
         }
         let mut response = session_response(
-            true, "session_poll_events", &session_id, record, snapshot.as_ref(),
+            true,
+            "session_poll_events",
+            &session_id,
+            record,
+            snapshot.as_ref(),
         );
         response["events"] = serde_json::json!(events);
         if snapshot.is_none() && !record.closed {
@@ -2050,7 +2142,7 @@ pub fn session_send_mouse(session_id: String, mouse_json: String, input_generati
         Ok(Some(value)) => match u32::try_from(value) {
             Ok(value) => value,
             Err(_) => {
-                return error_json("sessionSendMouse button is outside the wire integer range")
+                return error_json("sessionSendMouse button is outside the wire integer range");
             }
         },
         Ok(None) => return error_json("sessionSendMouse payload needs integer button"),
@@ -2599,7 +2691,10 @@ implemented_entry_points!(
     ("nativeVersion", native_version),
     ("harSurfaceManifest", har_surface_manifest),
     ("queryDecoderCapabilities", query_decoder_capabilities),
-    ("runtimeGetDecoderCapabilities", runtime_get_decoder_capabilities),
+    (
+        "runtimeGetDecoderCapabilities",
+        runtime_get_decoder_capabilities
+    ),
     ("appSetLifecycle", app_set_lifecycle),
     ("appInit", app_init),
     ("validateServerProfile", validate_server_profile),
@@ -2620,28 +2715,49 @@ implemented_entry_points!(
     ("controlledServerStart", controlled_server_start),
     ("controlledServerStop", controlled_server_stop),
     ("controlledServerGetStatus", controlled_server_get_status),
-    ("controlledScreenCaptureGetStatus", controlled_screen_capture_status),
-    ("controlledScreenCaptureStop", controlled_screen_capture_stop),
+    (
+        "controlledScreenCaptureGetStatus",
+        controlled_screen_capture_status
+    ),
+    (
+        "controlledScreenCaptureStop",
+        controlled_screen_capture_stop
+    ),
     ("controlledScreenConfigure", controlled_screen_configure),
     ("controlledIncomingPoll", controlled_incoming_poll),
     ("controlledIncomingResolve", controlled_incoming_resolve),
     ("controlledPasswordGet", controlled_password_get),
     ("controlledPasswordRefresh", controlled_password_refresh),
-    ("controlledPasswordSetPermanent", controlled_password_set_permanent),
-    ("controlledPasswordSetVerificationMethod", controlled_password_set_verification_method),
+    (
+        "controlledPasswordSetPermanent",
+        controlled_password_set_permanent
+    ),
+    (
+        "controlledPasswordSetVerificationMethod",
+        controlled_password_set_verification_method
+    ),
     ("controlledSettingSet", controlled_setting_set),
     ("controlledTwoFactorBegin", controlled_two_factor_begin),
     ("controlledTwoFactorVerify", controlled_two_factor_verify),
     ("controlledTwoFactorDisable", controlled_two_factor_disable),
     ("controlledTwoFactorGet", controlled_two_factor_get),
-    ("controlledTwoFactorRemoveTrustedDevices", controlled_two_factor_remove_trusted_devices),
-    ("controlledTwoFactorClearTrustedDevices", controlled_two_factor_clear_trusted_devices),
+    (
+        "controlledTwoFactorRemoveTrustedDevices",
+        controlled_two_factor_remove_trusted_devices
+    ),
+    (
+        "controlledTwoFactorClearTrustedDevices",
+        controlled_two_factor_clear_trusted_devices
+    ),
     ("sessionAdd", session_add),
     ("sessionStart", session_start),
     ("sessionLogin", session_login),
     ("sessionSend2fa", session_send_2fa),
     ("sessionSetImageQuality", session_set_image_quality),
-    ("sessionSetCustomImageQuality", session_set_custom_image_quality),
+    (
+        "sessionSetCustomImageQuality",
+        session_set_custom_image_quality
+    ),
     ("sessionSetCodecPreference", session_set_codec_preference),
     ("sessionSetShowRemoteCursor", session_set_show_remote_cursor),
     ("sessionSwitchDisplay", session_switch_display),
@@ -2650,7 +2766,10 @@ implemented_entry_points!(
     ("sessionGetToggleOption", session_get_toggle_option),
     ("sessionToggleOption", session_toggle_option),
     ("sessionGetRemoteAudioState", session_get_remote_audio_state),
-    ("sessionGetEnableTrustedDevices", session_get_enable_trusted_devices),
+    (
+        "sessionGetEnableTrustedDevices",
+        session_get_enable_trusted_devices
+    ),
     ("sessionGetConnToken", session_get_conn_token),
     ("sessionHasConnToken", session_has_conn_token),
     ("sessionBindSurface", session_bind_surface),
@@ -2660,7 +2779,10 @@ implemented_entry_points!(
     ("sessionCancelJob", session_cancel_job),
     ("sessionReadRemoteDir", session_read_remote_dir),
     ("sessionSendFiles", session_send_files),
-    ("sessionSetConfirmOverrideFile", session_set_confirm_override_file),
+    (
+        "sessionSetConfirmOverrideFile",
+        session_set_confirm_override_file
+    ),
     ("transferNextJobId", transfer_next_job_id),
     ("sessionRefresh", session_refresh),
     ("sessionSetCommon", session_set_common),
@@ -2678,9 +2800,18 @@ implemented_entry_points!(
     ("sessionTakeClipboard", session_take_clipboard),
     ("sessionTakeClipboardImage", session_take_clipboard_image),
     ("sessionSendClipboardFiles", session_send_clipboard_files),
-    ("sessionSetClipboardFileRoot", session_set_clipboard_file_root),
-    ("sessionGetClipboardFileState", session_get_clipboard_file_state),
-    ("sessionTakeClipboardFileEvents", session_take_clipboard_file_events),
+    (
+        "sessionSetClipboardFileRoot",
+        session_set_clipboard_file_root
+    ),
+    (
+        "sessionGetClipboardFileState",
+        session_get_clipboard_file_state
+    ),
+    (
+        "sessionTakeClipboardFileEvents",
+        session_take_clipboard_file_events
+    ),
     (
         "sessionGetFrameRateSnapshot",
         session_get_frame_rate_snapshot
@@ -2722,7 +2853,6 @@ pub fn har_surface_manifest() -> String {
         "runtimeRemoveDiscoveredPeer",
         "runtimeScanLanPeers",
         "runtimeSetLifecycle",
-        "runtimeSetRecordingDirectory",
         "runtimeSetServerConfig",
         "runtimeTestServerConfig",
         "sessionAcknowledgeClose",
@@ -2736,7 +2866,6 @@ pub fn har_surface_manifest() -> String {
         "sessionGetEnableTrustedDevices",
         "sessionGetFrameRateSnapshot",
         "sessionGetImageQuality",
-        "sessionGetIsRecording",
         "sessionGetRemoteAudioState",
         "sessionGetRgbaSize",
         "sessionGetToggleOption",
@@ -2748,7 +2877,6 @@ pub fn har_surface_manifest() -> String {
         "sessionOnWaitingForImageDialogShow",
         "sessionPollEvents",
         "sessionReadRemoteDir",
-        "sessionRecordScreen",
         "sessionRefresh",
         "sessionSend2fa",
         "sessionSendClipboard",
@@ -2817,13 +2945,13 @@ pub fn har_surface_manifest() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
-        expected_input_generation, parse_viewer_target, policy_json, refusal_json,
-        record_terminal_reclamation, resolve_mouse_coordinates, session_acknowledge_close,
-        session_add, session_cancel_job, session_poll_events, with_sessions, ApprovedRoute,
-        CloseWork, InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported,
-        SurfaceBinding, SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget,
-        MAX_SAFE_INPUT_GENERATION,
+        ApprovedRoute, CloseWork, InputPolicyOutcome, LoginFailure, MAX_SAFE_INPUT_GENERATION,
+        PendingSurfaceLease, Reported, SurfaceBinding, SurfaceLease, ViewerInputPolicy,
+        ViewerSnapshot, ViewerTarget, apply_terminal_reclamation, bind_surface,
+        client_mouse_button_to_wire, error_json, expected_input_generation, parse_viewer_target,
+        policy_json, record_terminal_reclamation, refusal_json, resolve_mouse_coordinates,
+        session_acknowledge_close, session_add, session_cancel_job, session_poll_events,
+        with_sessions,
     };
     use std::sync::Arc;
 
@@ -2902,15 +3030,20 @@ mod tests {
         // One destination per session: another component may not replace it.
         let replaced = json(bind_surface(None, id.into(), 0, "99".into(), epoch.clone()));
         assert_eq!(replaced["ok"], false);
-        assert!(replaced["message"]
-            .as_str()
-            .unwrap()
-            .contains("single Surface"));
+        assert!(
+            replaced["message"]
+                .as_str()
+                .unwrap()
+                .contains("single Surface")
+        );
         for act_id in [0, 37] {
             assert_eq!(json(session_cancel_job(id.into(), act_id))["ok"], false);
         }
         assert_eq!(json(session_poll_events(id.into(), 10))["closed"], false);
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch.clone()))["ok"],
+            false
+        );
 
         let close = json(CloseWork::prepare(id.into()).run());
         assert_eq!(close["ok"], true);
@@ -2931,19 +3064,34 @@ mod tests {
         assert_eq!(cleared["released"], true);
         assert_eq!(cleared["held"], false);
         assert_eq!(cleared["surfaces"][0]["surfaceId"], "42");
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["record_removed"], true);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch.clone()))["record_removed"],
+            true
+        );
 
         let next_epoch = register_lifecycle_test(id);
         assert_ne!(next_epoch, epoch);
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
-        assert_eq!(json(bind_surface(None, id.into(), 0, "43".into(), epoch))["ok"], false);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch.clone()))["ok"],
+            false
+        );
+        assert_eq!(
+            json(bind_surface(None, id.into(), 0, "43".into(), epoch))["ok"],
+            false
+        );
         let next_close = json(CloseWork::prepare(id.into()).run());
         assert_eq!(next_close["session"]["lifecycleEpoch"], next_epoch);
         assert_eq!(next_close["surfaces"], serde_json::json!([]));
-        assert_eq!(json(session_acknowledge_close(id.into(), next_epoch))["ok"], true);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), next_epoch))["ok"],
+            true
+        );
         let unknown = json(CloseWork::prepare(id.into()).run());
         assert_eq!(unknown["ok"], false);
-        assert_eq!(unknown["released"], false, "empty surfaces is not release proof");
+        assert_eq!(
+            unknown["released"], false,
+            "empty surfaces is not release proof"
+        );
         assert_eq!(unknown["settle"], "unconfirmed");
     }
 
@@ -2974,7 +3122,10 @@ mod tests {
             assert_eq!(record.lease.published_surface_id(), 0);
             assert!(!record.terminal_receipt_constructed);
         });
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch.clone()))["ok"],
+            false
+        );
         let poll = json(session_poll_events(id.into(), 10));
         assert_eq!(poll["events"][0]["name"], "close");
         assert_eq!(poll["released"], true);
@@ -2985,7 +3136,10 @@ mod tests {
         assert_eq!(poll["releases_unreleased"], 2);
         assert_eq!(poll["render_submissions"], 15);
         let close = json(CloseWork::prepare(id.into()).run());
-        assert_eq!(close["ok"], true, "remote failure is not reclamation failure");
+        assert_eq!(
+            close["ok"], true,
+            "remote failure is not reclamation failure"
+        );
         assert_eq!(close["error"], "AuthenticationFailed");
         assert_eq!(close["login_failure"], "wrong_password");
         assert_eq!(close["releases_unreleased"], 2);
@@ -2994,7 +3148,10 @@ mod tests {
         assert_eq!(repeated["events"], serde_json::json!([]));
         assert_eq!(repeated["error"], poll["error"]);
         assert_eq!(repeated["received_units"], 17);
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], true);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch))["ok"],
+            true
+        );
     }
 
     #[test]
@@ -3014,14 +3171,20 @@ mod tests {
             let record = sessions.get_mut(id).unwrap();
             record.dials = 1;
             record_terminal_reclamation(record, &snapshot, None);
-            assert!(record.terminal_snapshot.is_none(), "unknown is observed again later");
+            assert!(
+                record.terminal_snapshot.is_none(),
+                "unknown is observed again later"
+            );
             assert!(record.reclaimed.is_none());
         });
         let held = json(bind_surface(None, id.into(), 0, "".into(), epoch.clone()));
         assert_eq!(held["ok"], false);
         assert_eq!(held["held"], true);
         assert_eq!(held["released"], false);
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch.clone()))["ok"], false);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch.clone()))["ok"],
+            false
+        );
 
         with_sessions(|sessions| {
             record_terminal_reclamation(sessions.get_mut(id).unwrap(), &snapshot, Some(false));
@@ -3035,7 +3198,10 @@ mod tests {
         assert_eq!(poll["surfaces"][0]["surfaceId"], "44");
         assert_eq!(poll["releases_unreleased"], 1);
         assert_eq!(json(session_cancel_job(id.into(), 37))["ok"], false);
-        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], false);
+        assert_eq!(
+            json(session_acknowledge_close(id.into(), epoch))["ok"],
+            false
+        );
         with_sessions(|sessions| {
             let record = sessions.get(id).unwrap();
             assert_eq!(record.lease.published_surface_id(), 44);
@@ -3058,9 +3224,11 @@ mod tests {
         snapshot.phase = "authenticated".to_owned();
         snapshot.authenticated = true;
         let events = reported.events(&snapshot);
-        assert!(events
-            .iter()
-            .any(|event| event["name"] == "connection_ready"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event["name"] == "connection_ready")
+        );
         assert!(!events.iter().any(|event| event["type"] == "input-password"));
         assert!(reported.events(&snapshot).is_empty());
     }

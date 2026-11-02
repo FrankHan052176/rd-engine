@@ -18,7 +18,7 @@
 //!   the client without a picture.
 
 use crate::client_compat;
-use std::ffi::{c_char, c_int, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_int};
 
 /// The Windows runner's `FUNC_RUSTDESK_CORE_MAIN`: the core's own main answers
 /// with the arguments the Flutter side should also see. This engine has no core
@@ -79,11 +79,11 @@ pub unsafe extern "C" fn free_c_args(pointer: *mut *mut c_char, len: c_int) {
 }
 
 /// The Windows runner removes its injected `--install` when this is non-zero.
-/// Share the FRB viewer-only capability: this artifact has no installer even
-/// when the upstream store's independent hard option is unset.
+/// This artifact has no installer, independently of the upstream option store.
+/// Keep this runner ABI even though installation is absent from the FRB API.
 #[no_mangle]
 pub extern "C" fn rustdesk_is_disable_installation() -> c_int {
-    c_int::from(client_compat::is_disable_installation().0)
+    c_int::from(true)
 }
 
 /// The Windows runner's `FUNC_RUSTDESK_GET_APP_NAME`: writes the application

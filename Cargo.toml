@@ -82,8 +82,6 @@ url = { version = "=2.5.8", features = ["serde"], optional = true }
 # OHOS uses OHAudio, never the Linux ALSA backend selected by target_os alone.
 # Retain official Android API 22 support through Oboe/OpenSL ES, not AAudio-only.
 cpal = "=0.15.3"
-# Same libwebm source as the pinned official client; no new video encoder.
-webm = { git = "https://github.com/rustdesk-org/rust-webm", rev = "d2c4d3ac133c7b0e4c0f656da710b48391981e64" }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = { version = "=3.7.0", default-features = false, optional = true }

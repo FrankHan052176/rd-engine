@@ -47,10 +47,24 @@ consumers. They are not missing parity work. Keep their public APIs, UI actions,
 session modes and feature-specific event consumers removed together; reject old
 camera connection requests rather than treating them as ordinary desktop access.
 Upstream protocol definitions and ignored control packets may remain for wire
-compatibility, but must not activate a communication feature. Desktop video,
-desktop audio playback and recording are distinct and must not be cut under
-this rule. Do not alter protected capture/codec/presentation/input paths or the
-separate HarmonyOS Flutter product to implement this exclusion.
+compatibility, but must not activate a communication feature. Desktop video and
+desktop audio playback remain core capabilities. Do not alter protected
+capture/codec/presentation/input paths or the separate HarmonyOS Flutter product
+to implement this exclusion.
+
+The user's later accepted pruning decision also excludes recording/automatic
+recording and MP4/WebM saving, in-app installation/update/deployment, enterprise
+audit and bot verification, remote terminals, TCP port forwarding, RustDesk RDP
+tunnels, remote printing, virtual displays, side switching, session notes and
+screenshots, privacy mode, elevation and remote reboot. Remove their dedicated
+APIs, consumer actions, models and dependencies together; they are not a parity
+backlog. Native RDP/VNC, desktop audio, text/image/file clipboard, basic file
+transfer, official Dart accounts/address books, LAN/recent/favorite devices and
+server configuration remain in scope. Resk uses Native Surface presentation,
+not the obsolete CPU RGBA pull consumer; the official Flutter CPU frame path is
+separate and must remain. Local file browsing and platform input acquisition
+belong to the ArkTS application, not invented HAR services. Keep close ACKs,
+input generations and native resource-reclamation guarantees intact.
 
 ## Legacy material
 

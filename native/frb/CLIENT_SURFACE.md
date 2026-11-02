@@ -5,7 +5,7 @@ application. It adapts the official RustDesk Flutter client's ABI to the shared
 `rd-engine` library. HarmonyOS builds use `native/ohos_napi` instead; the separate
 `R_RustDesk-Flutter` HarmonyOS port keeps its own kernel and release chain.
 
-## Deliberately excluded communication features
+## Deliberately excluded features
 
 Camera viewing/streaming, text chat and voice calls are outside this product by
 the user's 2026-09-24 decision, not missing parity features to implement later.
@@ -20,11 +20,20 @@ buttons. Old camera commands/URLs/window requests must be rejected, never
 reinterpreted as ordinary desktop access or another window type. Other window
 types keep their existing serialized identities.
 
-This boundary does not cut desktop video, desktop audio playback, screen
-recording or local QR scanning, and does not imply those unavailable features
-have been implemented. Upstream protocol/source snapshots may still name the
-excluded messages; their presence is not a product service or permission to
-restore one. The separate HarmonyOS Flutter product is unchanged.
+The later accepted pruning decision also removes recording/automatic recording
+and MP4/WebM saving, in-app installation/update/deployment, enterprise audit and
+bot verification, remote terminals, TCP forwarding, RustDesk RDP tunnels, remote
+printing, virtual displays, side switching, session notes/screenshots, privacy
+mode, elevation and remote reboot. Their dedicated FRB APIs are removed, not
+retained as unsupported operations. The runner's
+`rustdesk_is_disable_installation` C export remains a build-capability probe,
+not an installation action.
+
+Desktop video/audio, native RDP/VNC, clipboard, basic file transfer, the official
+Dart account/address-book owner and local device/server configuration are
+retained. Local QR scanning is not part of this cut. Upstream protocol/source
+snapshots may still name excluded messages; their presence is not permission to
+restore a service. The separate HarmonyOS Flutter product is unchanged.
 
 ## Authoritative consumer and generation
 
@@ -315,8 +324,8 @@ serialized peer records and never included in list hashes. Passwords and OS/RDP
 credentials are not exposed or persisted through general option accessors;
 remembered-password login is explicitly refused. Account tokens use only the
 protected account boundary above, not LocalConfig's plaintext option store.
-Recording and other unavailable features remain explicit refusals, including
-synchronous errors where the official API has a synchronous getter.
+Deliberately excluded features have no public FRB operation; retained but
+unimplemented operations continue to report explicit refusals.
 
 The engine's `include/rd_engine_windows_texture.h` token/loan ABI is **not** the
 same interface as the official client's renderer-pointer registration API.

@@ -335,7 +335,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 const MAX_EVENTS: usize = 64;
-const MAX_HEADER: usize = 256 * 1024;
 struct Packet {
     data: Bytes,
     pts_us: i64,
@@ -1147,90 +1146,25 @@ mod native {
         })
     }
 
-    struct Parameters {
-        sets: [Option<Vec<u8>>; 3],
-        // Preserve standalone CSD/SEI/AUD until a real picture arrives; metadata
-        // is attached to that AU, never emitted/countable as a synthetic frame.
-        pending: Vec<u8>,
+    /// The shared Annex-B module speaks in the engine's codec vocabulary; this
+    /// path only ever produces the two hardware categories.
+    fn annex_codec(codec: Codec) -> crate::viewer::decoder::VideoCodec {
+        match codec {
+            Codec::H264 => crate::viewer::decoder::VideoCodec::H264,
+            Codec::H265 => crate::viewer::decoder::VideoCodec::H265,
+        }
     }
-    impl Parameters {
-        fn inspect(&mut self, codec: Codec, data: &[u8]) -> Result<(bool, bool), PublisherError> {
-            fn start(data: &[u8], i: usize) -> usize {
-                if data.get(i..i + 4) == Some(&[0, 0, 0, 1]) {
-                    4
-                } else if data.get(i..i + 3) == Some(&[0, 0, 1]) {
-                    3
-                } else {
-                    0
-                }
+    /// The publisher's own answers for the shared parser's refusals, unchanged:
+    /// a bad access unit is `InvalidAnnexB`, an over-large one is `OutputTooLarge`,
+    /// and an incomplete configuration is `MissingParameterSets`.
+    fn annex_b(error: crate::annex_b::AnnexBError) -> PublisherError {
+        use crate::annex_b::AnnexBError;
+        match error {
+            AnnexBError::Invalid | AnnexBError::NotAnnexB => PublisherError::InvalidAnnexB,
+            AnnexBError::ParameterSetTooLarge | AnnexBError::PendingTooLarge => {
+                PublisherError::OutputTooLarge
             }
-            if start(data, 0) == 0 {
-                return Err(PublisherError::InvalidAnnexB);
-            }
-            let (mut offset, mut vcl, mut key) = (0, false, false);
-            while offset < data.len() {
-                let prefix = start(data, offset);
-                if prefix == 0 || offset + prefix >= data.len() {
-                    return Err(PublisherError::InvalidAnnexB);
-                }
-                let header = offset + prefix;
-                let mut end = header + 1;
-                while end < data.len() && start(data, end) == 0 {
-                    end += 1;
-                }
-                let kind = match codec {
-                    Codec::H264 => data[header] & 31,
-                    Codec::H265 => (data[header] >> 1) & 63,
-                };
-                if data[header] & 0x80 != 0
-                    || (codec == Codec::H264 && kind == 0)
-                    || (codec == Codec::H265 && (header + 1 >= end || data[header + 1] & 7 == 0))
-                {
-                    return Err(PublisherError::InvalidAnnexB);
-                }
-                let parameter = match codec {
-                    Codec::H264 => {
-                        vcl |= (1..=5).contains(&kind);
-                        key |= kind == 5;
-                        match kind {
-                            7 => Some(1),
-                            8 => Some(2),
-                            _ => None,
-                        }
-                    }
-                    Codec::H265 => {
-                        vcl |= kind <= 31;
-                        key |= (16..=23).contains(&kind);
-                        match kind {
-                            32 => Some(0),
-                            33 => Some(1),
-                            34 => Some(2),
-                            _ => None,
-                        }
-                    }
-                };
-                if let Some(slot) = parameter {
-                    if end - offset > MAX_HEADER / 3 {
-                        return Err(PublisherError::OutputTooLarge);
-                    }
-                    self.sets[slot] = Some(data[offset..end].to_vec());
-                }
-                offset = end;
-            }
-            Ok((vcl, key))
-        }
-        fn length(&self, codec: Codec) -> Result<usize, PublisherError> {
-            let start = if codec == Codec::H264 { 1 } else { 0 };
-            self.sets[start..].iter().try_fold(0usize, |n, set| {
-                set.as_ref()
-                    .map(|v| n + v.len())
-                    .ok_or(PublisherError::MissingParameterSets)
-            })
-        }
-        fn prepend(&self, out: &mut Vec<u8>) {
-            for set in self.sets.iter().flatten() {
-                out.extend_from_slice(set);
-            }
+            AnnexBError::MissingParameterSets => PublisherError::MissingParameterSets,
         }
     }
     fn free(a: &Allocation, shared: &Shared, index: u32) -> Result<(), PublisherError> {
@@ -1260,10 +1194,8 @@ mod native {
     }
     fn pump(owner: &Owner, shared: &Shared, config: PublisherConfig) -> Result<(), PublisherError> {
         let a = owner.0.as_ref().unwrap();
-        let mut parameters = Parameters {
-            sets: [None, None, None],
-            pending: Vec::new(),
-        };
+        let mut parameters = crate::annex_b::ParameterSets::default();
+        let annex = annex_codec(config.codec);
         loop {
             let buffer = {
                 let mut s = lock(&shared.state);
@@ -1345,13 +1277,10 @@ mod native {
             }
             let data =
                 unsafe { std::slice::from_raw_parts(address.add(attr.offset as usize), size) };
-            let (vcl, key) = parameters.inspect(config.codec, data)?;
-            if !vcl {
+            let inspected = parameters.inspect(annex, data).map_err(annex_b)?;
+            if !inspected.picture {
                 if attr.flags & 1 == 0 {
-                    if size > MAX_HEADER.saturating_sub(parameters.pending.len()) {
-                        return Err(PublisherError::OutputTooLarge);
-                    }
-                    parameters.pending.extend_from_slice(data);
+                    parameters.push_pending(data).map_err(annex_b)?;
                 }
                 free(a, shared, buffer.index)?; // codec config/SEI/EOS is not a frame.
                 if attr.flags & 1 != 0 {
@@ -1362,13 +1291,13 @@ mod native {
             if attr.flags & (4 | 16) != 0 {
                 return Err(PublisherError::UnexpectedDiscard);
             }
-            let header = if key {
-                parameters.length(config.codec)?
+            let header = if inspected.key {
+                parameters.length(annex).map_err(annex_b)?
             } else {
                 0
             };
             let length = size
-                .checked_add(header + parameters.pending.len())
+                .checked_add(header + parameters.pending().len())
                 .ok_or(PublisherError::OutputTooLarge)?;
             if length > config.max_queued_bytes {
                 return Err(PublisherError::OutputTooLarge);
@@ -1399,8 +1328,8 @@ mod native {
                 s.bytes += length; // includes copy/Free in progress
             }
             let mut owned = Vec::with_capacity(length);
-            owned.extend_from_slice(&parameters.pending);
-            if key {
+            owned.extend_from_slice(parameters.pending());
+            if inspected.key {
                 parameters.prepend(&mut owned);
             }
             owned.extend_from_slice(data);
@@ -1415,9 +1344,9 @@ mod native {
             s.queue.push_back(Packet {
                 data: Bytes::from(owned),
                 pts_us: attr.pts,
-                key,
+                key: inspected.key,
             });
-            parameters.pending.clear();
+            parameters.clear_pending();
             s.encoded_frames += 1;
             s.encoded_bytes += length as u64;
             shared.changed.notify_waiters();

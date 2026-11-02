@@ -44,7 +44,7 @@ VNC commit: 9b54b1ec32731bd23158ca014dc18014db4194c3
 Vendored crate: ironrdp-pdu 0.9.0
 Trees: native/vnc native/windows-input native/windows-decoder native/frb vendor/ironrdp-pdu vendor/rustdesk vendor/libsodium-sys src/official_account vendor/secret-service src/lan vendor/default-net src/host src/host.rs src/authentication.rs src/session.rs src/platform/windows_input.rs
 Files: 1169
-032fff3b167322647dd06684ac7b78a37d462c158925bacd09fbbb6ac07d5b54  native/frb/CLIENT_SURFACE.md
+174fef35665410f7d6019527cc9c8c90c32f380c80d029a4401b480218f66a5d  native/frb/CLIENT_SURFACE.md
 3e9eea6c38f2ca624e551779cd7de48def787e3d2f6aed6d68d4f64502fc1546  native/frb/Cargo.lock
 2d2028e20ef29f37cb269139a5b8bf43b3e92fbedc7719bd98f6a9d6169b2a05  native/frb/Cargo.toml
 625c3c695bf8b20b9333d19d3ea878a79f333d4a3810ceb4be5808eba5e6fa3d  native/frb/UPSTREAM.txt
@@ -72,8 +72,8 @@ a753eaf399db8456a755c4f7b6feb23a88c3f5fadbf474e56e53b177a3c1a56f  native/frb/pat
 0f08599982b628c5c3797f974c4b12c472b90ad5d199711819b4715791451e46  native/frb/src/android.rs
 6ab9a4de90b6717afd0fe4b9ad91fffe568ae547c6d7f027f2dab8b794b287b3  native/frb/src/bridge_generated.io.rs
 054f7dab7bbc4dd91dd63c8fd3267a1edb5eb478ab92fe1d72f111654f46d727  native/frb/src/bridge_generated.rs
-6948bef57642b2bc0f5fac85d035fec1a01e0b0b7c63a2c4fcfec2b17a3e3df2  native/frb/src/c_entry_points.rs
-f44285682603fb032ccb877ff9679dc6d64c4b90ce5f42f46ccd1b73b11543c6  native/frb/src/client_compat.rs
+7f62daf83cd094115ee4348712e389f1b7b513a1030600a140e1b7d919897562  native/frb/src/c_entry_points.rs
+c90f18ae10142c7f75c26be0226d8f59d97f0952289df58ca8e8bc786f4749ab  native/frb/src/client_compat.rs
 9d800f5876156d08cbe396f929989ccc5e0fcbaf159ba31c261fc3539bdfe300  native/frb/src/clipboard.rs
 7965e5d326c3830510bd2e64cdbcf1f4da0e9cf80c04d0a3599bfa4747a83e48  native/frb/src/configuration.rs
 f68a1b6d6f62d03de8fc092111c67d519ffacb6eed71bc2b644c6e93c9ab0861  native/frb/src/frames.rs
