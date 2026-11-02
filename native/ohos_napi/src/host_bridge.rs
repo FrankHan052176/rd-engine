@@ -91,13 +91,6 @@ fn boolean_or(value: &Value, name: &str, default: bool) -> Result<bool, String> 
     }
 }
 
-fn service_error_text(error: HostServiceError) -> String {
-    match error {
-        HostServiceError::Host(error) => host_error_text(error),
-        error => error.to_string(),
-    }
-}
-
 fn host_error_text(error: HostError) -> String {
     match error {
         HostError::InvalidOptions => "host options or connection handle are invalid".into(),
