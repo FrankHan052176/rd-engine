@@ -45,6 +45,8 @@ ring = "0.17"
 bytes = "1"
 # Clipboard decompression is bounded by its format, not the shared 256 MiB cap.
 zstd = "0.13"
+# Decode the official peer audio stream using the same frozen libopus wrapper.
+magnum-opus = { git = "https://github.com/rustdesk-org/magnum-opus", rev = "588c6e1f9ed50c3a01fa64f3bd3e7cdb0378a114" }
 # Wakeable native VNC worker; protocol parsing remains in LibVNCClient.
 mio = { version = "1", features = ["net", "os-poll"] }
 # Official shared configuration/transport and client protocol types use one
@@ -68,6 +70,10 @@ serde_json = { version = "1", optional = true }
 serde_repr = { version = "=0.1.19", optional = true }
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "socks", "json", "native-tls", "rustls-tls", "rustls-tls-native-roots", "gzip", "zstd"], optional = true }
 url = { version = "=2.5.8", features = ["serde"], optional = true }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+# OHOS uses OHAudio, never the Linux ALSA backend selected by target_os alone.
+cpal = "=0.18.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = { version = "=3.7.0", default-features = false, optional = true }

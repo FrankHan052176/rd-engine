@@ -43,6 +43,10 @@ serde_json = "1"
 # Typed, bounded host/CM messages; the version is already selected by the lock.
 serde = { version = "=1.0.229", features = ["derive"] }
 
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+# The official fork supplies the complete multi-format clipboard contract.
+arboard = { git = "https://github.com/rustdesk-org/arboard", rev = "c7d5781f563176df9efd8df6287e823fb1b9bed5", features = ["wayland-data-control"] }
+
 [target.'cfg(windows)'.dependencies]
 winreg = "=0.11.0"
 # Authenticated local named pipes; no additional Windows service or injector.
