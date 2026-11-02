@@ -13,8 +13,6 @@ use crate::windows_input::{InputError, InputSession, TargetBinding, bind_output_
 mod ingress;
 pub mod security;
 pub mod service;
-use ingress::{Ingress, authenticate, serve};
-use security::HostSecurity;
 use crate::{
     authentication::{
         Approval, ApprovalProvider, AttemptPolicy, HostAuthConfig, NoSecondFactor, Passwords,
@@ -25,16 +23,22 @@ use crate::{
         Codec, CodecSelection, EncodedUnit, Publisher, PublisherBackend, PublisherConfig,
         PublisherError, PublisherStats,
     },
+    rendezvous::IncomingHostRoute,
     session::{AuthenticatedParts, HostEvent, HostSession},
     transport::{WireReader, WireWriter},
-    rendezvous::IncomingHostRoute,
 };
 use base::message_proto::{
     self as proto, DisplayInfo, EncodedVideoFrame, EncodedVideoFrames, KeyEvent, LoginRequest,
     Message, MouseEvent, PeerInfo, SupportedEncoding, VideoFrame, message, misc,
     supported_decoding::PreferCodec,
 };
-use hbb_common::{futures::future::join_all, sodiumoxide::{self, crypto::sign}, tcp::FramedStream};
+use hbb_common::{
+    futures::future::join_all,
+    sodiumoxide::{self, crypto::sign},
+    tcp::FramedStream,
+};
+use ingress::{Ingress, authenticate, serve};
+use security::HostSecurity;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
@@ -47,7 +51,7 @@ use std::{
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot, watch, Semaphore},
+    sync::{Semaphore, mpsc, oneshot, watch},
     task::{Id, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -259,18 +263,46 @@ pub struct HostCredentials {
     automatic_rotation: bool,
 }
 #[derive(Default)]
-struct TemporaryPasswordState { failures: u8, rotation_requested: bool }
+struct TemporaryPasswordState {
+    failures: u8,
+    rotation_requested: bool,
+}
 impl HostCredentials {
     pub fn new(revision: u64, salt: String, passwords: Passwords, policy: PrimaryPolicy) -> Self {
-        Self { revision, salt, passwords, policy, temporary: Arc::new(Mutex::new(TemporaryPasswordState::default())), automatic_rotation: false }
+        Self {
+            revision,
+            salt,
+            passwords,
+            policy,
+            temporary: Arc::new(Mutex::new(TemporaryPasswordState::default())),
+            automatic_rotation: false,
+        }
     }
-    pub(crate) fn managed(revision: u64, salt: String, passwords: Passwords, policy: PrimaryPolicy) -> Self {
+    pub(crate) fn managed(
+        revision: u64,
+        salt: String,
+        passwords: Passwords,
+        policy: PrimaryPolicy,
+    ) -> Self {
         let mut credentials = Self::new(revision, salt, passwords, policy);
         credentials.automatic_rotation = true;
         credentials
     }
-    pub(crate) fn revised(revision: u64, salt: String, passwords: Passwords, policy: PrimaryPolicy, previous: &Self) -> Self {
-        Self { revision, salt, passwords, policy, temporary: previous.temporary.clone(), automatic_rotation: previous.automatic_rotation }
+    pub(crate) fn revised(
+        revision: u64,
+        salt: String,
+        passwords: Passwords,
+        policy: PrimaryPolicy,
+        previous: &Self,
+    ) -> Self {
+        Self {
+            revision,
+            salt,
+            passwords,
+            policy,
+            temporary: previous.temporary.clone(),
+            automatic_rotation: previous.automatic_rotation,
+        }
     }
     pub(crate) fn take_temporary_rotation(&self) -> bool {
         std::mem::take(&mut lock(&self.temporary).rotation_requested)
@@ -527,8 +559,15 @@ pub struct HostPeerSnapshot {
 }
 
 enum PeerCommand {
-    Keyboard { enabled: bool, deadline: Instant, reply: oneshot::Sender<Result<(), HostError>> },
-    Disconnect { deadline: tokio::time::Instant, reply: oneshot::Sender<Result<(), HostError>> },
+    Keyboard {
+        enabled: bool,
+        deadline: Instant,
+        reply: oneshot::Sender<Result<(), HostError>>,
+    },
+    Disconnect {
+        deadline: tokio::time::Instant,
+        reply: oneshot::Sender<Result<(), HostError>>,
+    },
 }
 
 struct PeerControl {
@@ -543,13 +582,22 @@ impl PeerControl {
         let mut finished = self.finished.subscribe();
         self.cancel.cancel();
         loop {
-            if let Some(result) = *finished.borrow() { return result; }
-            finished.changed().await.map_err(|_| HostError::ReclamationUnconfirmed)?;
+            if let Some(result) = *finished.borrow() {
+                return result;
+            }
+            finished
+                .changed()
+                .await
+                .map_err(|_| HostError::ReclamationUnconfirmed)?;
         }
     }
 }
 
-struct ApprovalGuard { state: Arc<State>, epoch: u64, record: Arc<PeerRecord> }
+struct ApprovalGuard {
+    state: Arc<State>,
+    epoch: u64,
+    record: Arc<PeerRecord>,
+}
 impl Drop for ApprovalGuard {
     fn drop(&mut self) {
         self.state.clear_approval(self.epoch);
@@ -589,29 +637,43 @@ impl State {
     fn close_auth_admission(&self) {
         self.auth_admission.store(false, Ordering::Release);
         for peer in lock(&self.controls).values() {
-            if !lock(&peer.snapshot).authorized { peer.cancel.cancel(); }
+            if !lock(&peer.snapshot).authorized {
+                peer.cancel.cancel();
+            }
         }
     }
     fn request_temporary_rotation(&self) {
         let credentials = lock(&self.credentials);
-        if !credentials.automatic_rotation { return; }
+        if !credentials.automatic_rotation {
+            return;
+        }
         lock(&credentials.temporary).rotation_requested = true;
         self.close_auth_admission();
         self.changed();
     }
     fn temporary_password_outcome(&self, revision: u64, matched: bool) {
         let credentials = lock(&self.credentials);
-        if credentials.revision != revision || !self.auth_admission.load(Ordering::Acquire) { return; }
+        if credentials.revision != revision || !self.auth_admission.load(Ordering::Acquire) {
+            return;
+        }
         let mut temporary = lock(&credentials.temporary);
-        if matched { temporary.failures = 0; return; }
+        if matched {
+            temporary.failures = 0;
+            return;
+        }
         temporary.failures = temporary.failures.saturating_add(1);
-        if temporary.failures < 10 { return; }
+        if temporary.failures < 10 {
+            return;
+        }
         temporary.rotation_requested = true;
         drop(temporary);
         self.close_auth_admission();
         self.changed();
     }
-    fn changed(&self) { self.changes.send_modify(|revision| *revision = revision.wrapping_add(1)); }
+    fn changed(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
     fn update(&self, change: impl FnOnce(&mut HostSnapshot)) {
         change(&mut lock(&self.snapshot));
         self.changed();
@@ -659,12 +721,16 @@ impl State {
         let edge = {
             let mut snapshot = lock(&self.snapshot);
             let edge = !snapshot.is_final() && snapshot.phase != "streaming";
-            if edge { snapshot.phase = "streaming"; }
+            if edge {
+                snapshot.phase = "streaming";
+            }
             snapshot.sent_units = snapshot.sent_units.saturating_add(1);
             snapshot.sent_bytes = snapshot.sent_bytes.saturating_add(bytes as u64);
             edge
         };
-        if edge { self.changed(); }
+        if edge {
+            self.changed();
+        }
     }
 
     /// Registers this epoch's request, keeping the entry and any decision
@@ -801,7 +867,10 @@ pub struct Host {
     join: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl Host {
-    pub fn start(options: HostOptions, routes: Option<mpsc::Receiver<IncomingHostRoute>>) -> Result<Self, HostError> {
+    pub fn start(
+        options: HostOptions,
+        routes: Option<mpsc::Receiver<IncomingHostRoute>>,
+    ) -> Result<Self, HostError> {
         if options.id.is_empty()
             || options.id.len() > 512
             || options.display_name.is_empty()
@@ -911,7 +980,9 @@ impl Host {
         } else {
             let mut changes = self.subscribe_changes();
             while !self.state.finished.load(Ordering::Acquire) {
-                if changes.changed().await.is_err() { break; }
+                if changes.changed().await.is_err() {
+                    break;
+                }
             }
         }
         if self.state.unreclaimed.load(Ordering::Acquire) || !self.snapshot().closed {
@@ -920,31 +991,54 @@ impl Host {
             Ok(())
         }
     }
-    pub fn subscribe_changes(&self) -> watch::Receiver<u64> { self.state.changes.subscribe() }
+    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.state.changes.subscribe()
+    }
     pub async fn wait_ready(&self) -> Result<(), HostError> {
         let mut changes = self.subscribe_changes();
         loop {
             let snapshot = self.snapshot();
-            if snapshot.ready { return Ok(()); }
+            if snapshot.ready {
+                return Ok(());
+            }
             if self.state.finished.load(Ordering::Acquire) {
                 return Err(snapshot.error.unwrap_or(HostError::TransportFailed));
             }
-            changes.changed().await.map_err(|_| HostError::TransportFailed)?;
+            changes
+                .changed()
+                .await
+                .map_err(|_| HostError::TransportFailed)?;
         }
     }
     pub fn peers(&self) -> Vec<HostPeerSnapshot> {
-        lock(&self.state.controls).values().map(|peer| lock(&peer.snapshot).clone()).collect()
+        lock(&self.state.controls)
+            .values()
+            .map(|peer| lock(&peer.snapshot).clone())
+            .collect()
     }
     fn peer_control(&self, conn_id: i32) -> Result<Arc<PeerControl>, HostError> {
-        lock(&self.state.controls).get(&conn_id).cloned().ok_or(HostError::InvalidOptions)
+        lock(&self.state.controls)
+            .get(&conn_id)
+            .cloned()
+            .ok_or(HostError::InvalidOptions)
     }
-    pub fn approve_peer(&self, conn_id: i32, epoch: u64, revision: u64, allow: bool) -> Result<(), HostError> {
+    pub fn approve_peer(
+        &self,
+        conn_id: i32,
+        epoch: u64,
+        revision: u64,
+        allow: bool,
+    ) -> Result<(), HostError> {
         let peer = self.peer_control(conn_id)?;
         let credentials = lock(&self.state.credentials);
         let snapshot = lock(&peer.snapshot);
-        if snapshot.disconnected || peer.cancel.is_cancelled() || snapshot.approval_epoch != Some(epoch)
-            || snapshot.policy_revision != revision || credentials.revision != revision
-            || !self.approve(&epoch.to_string(), allow) {
+        if snapshot.disconnected
+            || peer.cancel.is_cancelled()
+            || snapshot.approval_epoch != Some(epoch)
+            || snapshot.policy_revision != revision
+            || credentials.revision != revision
+            || !self.approve(&epoch.to_string(), allow)
+        {
             return Err(HostError::ApprovalDenied);
         }
         Ok(())
@@ -963,7 +1057,11 @@ impl Host {
     }
     // This stage observes only the sole writer's completed send. It deliberately
     // does not wait for native retirement, which the owning run joins on stop.
-    async fn notify_manual_close(&self, peer: &PeerControl, deadline: tokio::time::Instant) -> Result<bool, HostError> {
+    async fn notify_manual_close(
+        &self,
+        peer: &PeerControl,
+        deadline: tokio::time::Instant,
+    ) -> Result<bool, HostError> {
         let notify = {
             let mut snapshot = lock(&peer.snapshot);
             if snapshot.authorized && !snapshot.disconnected && !peer.cancel.is_cancelled() {
@@ -974,10 +1072,16 @@ impl Host {
                 false
             }
         };
-        if !notify { return Ok(false); }
+        if !notify {
+            return Ok(false);
+        }
         self.state.changed();
         let (reply, result) = oneshot::channel();
-        if peer.commands.try_send(PeerCommand::Disconnect { deadline, reply }).is_err() {
+        if peer
+            .commands
+            .try_send(PeerCommand::Disconnect { deadline, reply })
+            .is_err()
+        {
             return Err(HostError::TransportFailed);
         }
         tokio::select! {
@@ -991,21 +1095,38 @@ impl Host {
 
     /// Owner-only StopService notification, before the run cancels registration
     /// or ingress. The original run remains responsible for every native join.
-    pub(crate) async fn notify_stop_service(&self, command_deadline: Option<Instant>) -> Result<(), HostError> {
+    pub(crate) async fn notify_stop_service(
+        &self,
+        command_deadline: Option<Instant>,
+    ) -> Result<(), HostError> {
         self.invalidate_authentication();
-        let targets: Vec<_> = lock(&self.state.controls).values().filter(|peer| {
-            let snapshot = lock(&peer.snapshot);
-            snapshot.authorized && !snapshot.disconnected
-        }).cloned().collect();
-        if targets.is_empty() { return Ok(()); }
+        let targets: Vec<_> = lock(&self.state.controls)
+            .values()
+            .filter(|peer| {
+                let snapshot = lock(&peer.snapshot);
+                snapshot.authorized && !snapshot.disconnected
+            })
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return Ok(());
+        }
         let deadline = tokio::time::Instant::now() + MANUAL_CLOSE_TIMEOUT;
-        let deadline = command_deadline.map_or(deadline, |original| deadline.min(tokio::time::Instant::from_std(original)));
+        let deadline = command_deadline.map_or(deadline, |original| {
+            deadline.min(tokio::time::Instant::from_std(original))
+        });
         // Collect every result, not fail-fast: one broken writer cannot prevent
         // another live peer from receiving its own terminal reason. The single
         // absolute deadline bounds only sends; stop() always joins the cleanup.
-        let receipts = tokio::time::timeout_at(deadline, join_all(targets.iter().map(|peer| {
-            self.notify_manual_close(peer, deadline)
-        }))).await;
+        let receipts = tokio::time::timeout_at(
+            deadline,
+            join_all(
+                targets
+                    .iter()
+                    .map(|peer| self.notify_manual_close(peer, deadline)),
+            ),
+        )
+        .await;
         match receipts {
             Ok(receipts) if receipts.iter().all(|result| *result == Ok(true)) => Ok(()),
             _ => Err(HostError::TransportFailed),
@@ -1016,22 +1137,40 @@ impl Host {
     pub async fn cancel_peer(&self, conn_id: i32) -> Result<(), HostError> {
         self.peer_control(conn_id)?.cancel_and_wait().await
     }
-    pub async fn set_keyboard(&self, conn_id: i32, enabled: bool, deadline: Instant) -> Result<(), HostError> {
+    pub async fn set_keyboard(
+        &self,
+        conn_id: i32,
+        enabled: bool,
+        deadline: Instant,
+    ) -> Result<(), HostError> {
         let peer = self.peer_control(conn_id)?;
         {
             let snapshot = lock(&peer.snapshot);
-            if !snapshot.authorized || snapshot.phase == "disconnecting" || peer.cancel.is_cancelled()
-                || (enabled && Instant::now() >= deadline) { return Err(HostError::InputUnavailable); }
+            if !snapshot.authorized
+                || snapshot.phase == "disconnecting"
+                || peer.cancel.is_cancelled()
+                || (enabled && Instant::now() >= deadline)
+            {
+                return Err(HostError::InputUnavailable);
+            }
         }
         let (reply, result) = oneshot::channel();
-        peer.commands.try_send(PeerCommand::Keyboard { enabled, deadline, reply }).map_err(|_| HostError::InputUnavailable)?;
+        peer.commands
+            .try_send(PeerCommand::Keyboard {
+                enabled,
+                deadline,
+                reply,
+            })
+            .map_err(|_| HostError::InputUnavailable)?;
         result.await.map_err(|_| HostError::InputFailed)?
     }
     pub fn remove_disconnected(&self, conn_id: i32) -> Result<(), HostError> {
         let mut peers = lock(&self.state.controls);
         let peer = peers.get(&conn_id).ok_or(HostError::InvalidOptions)?;
         let snapshot = lock(&peer.snapshot);
-        if !snapshot.disconnected || snapshot.error == Some(HostError::ReclamationUnconfirmed) { return Err(HostError::ReclamationUnconfirmed); }
+        if !snapshot.disconnected || snapshot.error == Some(HostError::ReclamationUnconfirmed) {
+            return Err(HostError::ReclamationUnconfirmed);
+        }
         drop(snapshot);
         peers.remove(&conn_id);
         drop(peers);
@@ -1042,9 +1181,14 @@ impl Host {
         let mut current = lock(&self.state.credentials);
         *current = credentials;
         for peer in lock(&self.state.controls).values() {
-            if !lock(&peer.snapshot).authorized { peer.cancel.cancel(); }
+            if !lock(&peer.snapshot).authorized {
+                peer.cancel.cancel();
+            }
         }
-        self.state.auth_admission.store(!lock(&current.temporary).rotation_requested, Ordering::Release);
+        self.state.auth_admission.store(
+            !lock(&current.temporary).rotation_requested,
+            Ordering::Release,
+        );
         drop(current);
         self.state.changed();
     }
@@ -1088,11 +1232,24 @@ impl ApprovalProvider for LocalApproval {
 // clearing on authentication success. This host conservatively shares ONE
 // bucket: unauthenticated relay metadata/claims cannot create fresh IP buckets.
 // In-flight reservations close the cross-thread check/outcome race.
-struct AttemptWindow { start: Instant, failures: u32, total: u32, in_flight: u32 }
-struct SharedAttempts { state: Arc<State>, revision: u64 }
-static ATTEMPTS: std::sync::LazyLock<Mutex<AttemptWindow>> = std::sync::LazyLock::new(|| Mutex::new(AttemptWindow {
-    start: Instant::now(), failures: 0, total: 0, in_flight: 0,
-}));
+struct AttemptWindow {
+    start: Instant,
+    failures: u32,
+    total: u32,
+    in_flight: u32,
+}
+struct SharedAttempts {
+    state: Arc<State>,
+    revision: u64,
+}
+static ATTEMPTS: std::sync::LazyLock<Mutex<AttemptWindow>> = std::sync::LazyLock::new(|| {
+    Mutex::new(AttemptWindow {
+        start: Instant::now(),
+        failures: 0,
+        total: 0,
+        in_flight: 0,
+    })
+});
 impl AttemptPolicy for SharedAttempts {
     /// Both steps draw on the one bucket: an incoming second-factor attempt is
     /// rate-limited here like a primary one, never refused merely because the
@@ -1102,20 +1259,33 @@ impl AttemptPolicy for SharedAttempts {
     /// reconnecting between steps.
     fn allow(&mut self, _second_factor: bool) -> Result<(), &'static str> {
         let mut window = lock(&ATTEMPTS);
-        if window.start.elapsed() >= Duration::from_secs(60) { window.start = Instant::now(); window.failures = 0; }
-        if window.total + window.in_flight > 30 { return Err("Too many wrong attempts"); }
-        if window.failures + window.in_flight > 6 { return Err("Please try 1 minute later"); }
+        if window.start.elapsed() >= Duration::from_secs(60) {
+            window.start = Instant::now();
+            window.failures = 0;
+        }
+        if window.total + window.in_flight > 30 {
+            return Err("Too many wrong attempts");
+        }
+        if window.failures + window.in_flight > 6 {
+            return Err("Please try 1 minute later");
+        }
         window.in_flight += 1;
         Ok(())
     }
     fn outcome(&mut self, _: bool, accepted: bool) {
         let mut window = lock(&ATTEMPTS);
         window.in_flight = window.in_flight.saturating_sub(1);
-        if accepted { window.failures = 0; window.total = 0; }
-        else { window.failures = window.failures.saturating_add(1); window.total = window.total.saturating_add(1); }
+        if accepted {
+            window.failures = 0;
+            window.total = 0;
+        } else {
+            window.failures = window.failures.saturating_add(1);
+            window.total = window.total.saturating_add(1);
+        }
     }
     fn temporary_password_outcome(&mut self, matched: bool) {
-        self.state.temporary_password_outcome(self.revision, matched);
+        self.state
+            .temporary_password_outcome(self.revision, matched);
     }
 }
 fn authentication_succeeded() {
@@ -1284,12 +1454,18 @@ fn peer_info(options: &HostOptions, codecs: Encoders) -> PeerInfo {
     }
 }
 
-
 enum Control {
     Reply(Message),
     Keyframe,
-    Permission { enabled: bool, deadline: Instant, reply: oneshot::Sender<Result<(), HostError>> },
-    Disconnect { deadline: tokio::time::Instant, reply: oneshot::Sender<Result<(), HostError>> },
+    Permission {
+        enabled: bool,
+        deadline: Instant,
+        reply: oneshot::Sender<Result<(), HostError>>,
+    },
+    Disconnect {
+        deadline: tokio::time::Instant,
+        reply: oneshot::Sender<Result<(), HostError>>,
+    },
 }
 async fn peer(
     state: Arc<State>,
@@ -1301,7 +1477,11 @@ async fn peer(
     commands: mpsc::Receiver<PeerCommand>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<(), HostError> {
-    let control = record.control.as_ref().ok_or(HostError::InvalidOptions)?.clone();
+    let control = record
+        .control
+        .as_ref()
+        .ok_or(HostError::InvalidOptions)?
+        .clone();
     let cancel = control.cancel.clone();
     let parts = tokio::select! {
         biased;
@@ -1346,8 +1526,14 @@ async fn peer(
     // Native ownership starts here: a task that panics from this point on cannot
     // be reported as a clean teardown.
     let granted = parts.context.permissions.keyboard;
-    let remote_disabled = parts.context.claims.options.as_ref().is_some_and(|options|
-        options.disable_keyboard.enum_value() == Ok(proto::option_message::BoolOption::Yes));
+    let remote_disabled = parts
+        .context
+        .claims
+        .options
+        .as_ref()
+        .is_some_and(|options| {
+            options.disable_keyboard.enum_value() == Ok(proto::option_message::BoolOption::Yes)
+        });
     if granted {
         record.native.store(true, Ordering::Release);
     }
@@ -1371,8 +1557,13 @@ async fn peer(
     // is an additional veto, never a new authority or an irreversible ceiling.
     let lease = {
         let snapshot = lock(&control.snapshot);
-        PeerLease::open(granted && !remote_disabled && snapshot.phase != "disconnecting"
-            && !cancel.is_cancelled(), &display)?
+        PeerLease::open(
+            granted
+                && !remote_disabled
+                && snapshot.phase != "disconnecting"
+                && !cancel.is_cancelled(),
+            &display,
+        )?
     };
     let (tx, rx) = mpsc::channel(16);
     let config = publisher_config(&options, &display, codec, request.target_fps);
@@ -1384,7 +1575,12 @@ async fn peer(
         options.width,
         options.height,
         lease,
-        commands, state.clone(), control, display, granted, remote_disabled,
+        commands,
+        state.clone(),
+        control,
+        display,
+        granted,
+        remote_disabled,
     );
     let publishing = publish(state.clone(), writer, rx, cancel.clone(), config, record);
     // Both halves are this task's own futures: every path below waits for each
@@ -1433,8 +1629,21 @@ async fn read_peer(
     ceiling: bool,
     remote_disabled: bool,
 ) -> Result<(), HostError> {
-    let result = read_loop(reader, &control, &cancel, width, height, &mut lease,
-        &mut commands, &state, &peer, &display, ceiling, remote_disabled).await;
+    let result = read_loop(
+        reader,
+        &control,
+        &cancel,
+        width,
+        height,
+        &mut lease,
+        &mut commands,
+        &state,
+        &peer,
+        &display,
+        ceiling,
+        remote_disabled,
+    )
+    .await;
     // Every exit path — a remote close, a transport error, cancellation or a
     // refused event — gives up this session's injected buttons and keys through
     // the checked boundary. Drop is only a last-defense best effort and is never
@@ -1553,19 +1762,25 @@ async fn read_loop(
             }
             Some(message::Union::MouseEvent(event)) => {
                 let snapshot = lock(&peer.snapshot);
-                if snapshot.phase != "disconnecting" && local_enabled && !remote_disabled { lease.apply_mouse(&event)?; }
+                if snapshot.phase != "disconnecting" && local_enabled && !remote_disabled {
+                    lease.apply_mouse(&event)?;
+                }
                 None
             }
             Some(message::Union::KeyEvent(event)) => {
                 let snapshot = lock(&peer.snapshot);
-                if snapshot.phase != "disconnecting" && local_enabled && !remote_disabled { lease.apply_key(&event)?; }
+                if snapshot.phase != "disconnecting" && local_enabled && !remote_disabled {
+                    lease.apply_key(&event)?;
+                }
                 None
             }
             Some(message::Union::Misc(m)) => match m.union {
                 Some(misc::Union::CloseReason(_)) => return Ok(()),
                 Some(misc::Union::Option(options)) => {
                     let snapshot = lock(&peer.snapshot);
-                    if snapshot.phase == "disconnecting" { continue; }
+                    if snapshot.phase == "disconnecting" {
+                        continue;
+                    }
                     let disabled = match options.disable_keyboard.enum_value() {
                         Ok(proto::option_message::BoolOption::Yes) => true,
                         Ok(proto::option_message::BoolOption::No) => false,
@@ -1633,12 +1848,24 @@ async fn read_loop(
     }
 }
 
-async fn change_keyboard(enabled: bool, remote_disabled: bool, lease: &mut PeerLease,
-    display: &DisplayBinding, control: &mpsc::Sender<Control>, cancel: &CancellationToken,
-    peer: &PeerControl, state: &State, receive_deadline: tokio::time::Instant,
-    deadline: Instant) -> Result<bool, HostError> {
-    if cancel.is_cancelled() || (enabled && (Instant::now() >= deadline
-        || lock(&peer.snapshot).phase == "disconnecting")) { return Ok(false); }
+async fn change_keyboard(
+    enabled: bool,
+    remote_disabled: bool,
+    lease: &mut PeerLease,
+    display: &DisplayBinding,
+    control: &mpsc::Sender<Control>,
+    cancel: &CancellationToken,
+    peer: &PeerControl,
+    state: &State,
+    receive_deadline: tokio::time::Instant,
+    deadline: Instant,
+) -> Result<bool, HostError> {
+    if cancel.is_cancelled()
+        || (enabled
+            && (Instant::now() >= deadline || lock(&peer.snapshot).phase == "disconnecting"))
+    {
+        return Ok(false);
+    }
     // This is the sole read/injection owner: no queued remote input can be
     // processed during revoke or while its release is unconfirmed.
     lease.release()?;
@@ -1649,17 +1876,25 @@ async fn change_keyboard(enabled: bool, remote_disabled: bool, lease: &mut PeerL
         // Release may block in native cleanup. Recheck the original deadline and
         // admission immediately before open, under the manual-disconnect gate.
         let snapshot = lock(&peer.snapshot);
-        if cancel.is_cancelled() || snapshot.phase == "disconnecting" || Instant::now() >= deadline {
+        if cancel.is_cancelled() || snapshot.phase == "disconnecting" || Instant::now() >= deadline
+        {
             false
         } else {
-            if !remote_disabled { *lease = PeerLease::open(true, display)?; }
+            if !remote_disabled {
+                *lease = PeerLease::open(true, display)?;
+            }
             true
         }
     } else {
         true
     };
-    if enabled && (cancel.is_cancelled() || lock(&peer.snapshot).phase == "disconnecting"
-        || Instant::now() >= deadline) { accepted = false; }
+    if enabled
+        && (cancel.is_cancelled()
+            || lock(&peer.snapshot).phase == "disconnecting"
+            || Instant::now() >= deadline)
+    {
+        accepted = false;
+    }
     if accepted {
         match send_keyboard_permission(enabled, deadline, control, cancel, receive_deadline).await {
             Err(HostError::InputUnavailable) if enabled => accepted = false,
@@ -1668,7 +1903,11 @@ async fn change_keyboard(enabled: bool, remote_disabled: bool, lease: &mut PeerL
     }
     if accepted {
         let mut snapshot = lock(&peer.snapshot);
-        if enabled && (cancel.is_cancelled() || snapshot.phase == "disconnecting" || Instant::now() >= deadline) {
+        if enabled
+            && (cancel.is_cancelled()
+                || snapshot.phase == "disconnecting"
+                || Instant::now() >= deadline)
+        {
             accepted = false;
         } else {
             snapshot.keyboard = enabled;
@@ -1686,10 +1925,21 @@ async fn change_keyboard(enabled: bool, remote_disabled: bool, lease: &mut PeerL
     Ok(accepted)
 }
 
-async fn send_keyboard_permission(enabled: bool, deadline: Instant, control: &mpsc::Sender<Control>,
-    cancel: &CancellationToken, receive_deadline: tokio::time::Instant) -> Result<(), HostError> {
+async fn send_keyboard_permission(
+    enabled: bool,
+    deadline: Instant,
+    control: &mpsc::Sender<Control>,
+    cancel: &CancellationToken,
+    receive_deadline: tokio::time::Instant,
+) -> Result<(), HostError> {
     let (reply, result) = oneshot::channel();
-    control.try_send(Control::Permission { enabled, deadline, reply }).map_err(|_| HostError::TransportFailed)?;
+    control
+        .try_send(Control::Permission {
+            enabled,
+            deadline,
+            reply,
+        })
+        .map_err(|_| HostError::TransportFailed)?;
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(HostError::TransportFailed),
@@ -1762,7 +2012,8 @@ fn project_capture_refusal(state: &State, record: &PeerRecord, error: &Publisher
     }
 }
 
-fn video(unit: &EncodedUnit, codec: Codec) -> Result<Message, HostError> {    if unit.data.is_empty() || unit.data.len() > 32 * 1024 * 1024 || unit.pts_us < 0 {
+fn video(unit: &EncodedUnit, codec: Codec) -> Result<Message, HostError> {
+    if unit.data.is_empty() || unit.data.len() > 32 * 1024 * 1024 || unit.pts_us < 0 {
         return Err(HostError::InvalidAccessUnit);
     }
     let frames = EncodedVideoFrames {
@@ -1934,8 +2185,12 @@ mod tests {
             peers: Mutex::new(HashMap::new()),
             unreclaimed: AtomicBool::new(false),
             controls: Mutex::new(BTreeMap::new()),
-            credentials: Mutex::new(Arc::new(HostCredentials::new(1, "test-salt".into(),
-                Passwords::from_salted(Vec::new()), PrimaryPolicy::ClickOnly))),
+            credentials: Mutex::new(Arc::new(HostCredentials::new(
+                1,
+                "test-salt".into(),
+                Passwords::from_salted(Vec::new()),
+                PrimaryPolicy::ClickOnly,
+            ))),
             changes: watch::channel(0).0,
             finished: AtomicBool::new(false),
             allow_remote_cm: AtomicBool::new(false),
@@ -2141,7 +2396,8 @@ mod tests {
     #[test]
     fn a_capture_projection_reports_only_the_owners_own_consent() {
         // Waiting for the system prompt is not consent, whatever the counters say.
-        let waiting = HostCaptureSnapshot::of_stats(&capture_stats("awaiting_system_consent", 0), None);
+        let waiting =
+            HostCaptureSnapshot::of_stats(&capture_stats("awaiting_system_consent", 0), None);
         assert!(!waiting.authorized);
         assert_eq!(waiting.state, "awaiting_system_consent");
         assert_eq!(waiting.sdk_state_code, -1);
@@ -2174,12 +2430,13 @@ mod tests {
         // The last sample was taken while the owner still said "granted"; the
         // real close verdict decides what the peer keeps.
         let stats = capture_stats("granted", 7);
-        let stopped = HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::ConsentEnded { state: 2 }));
+        let stopped = HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::Closed));
         assert!(!stopped.authorized);
         assert_eq!(stopped.state, "stopped");
-        assert_eq!(stopped.error, Some(PublisherError::ConsentEnded { state: 2 }));
+        assert_eq!(stopped.error, Some(PublisherError::Closed));
 
-        let unconfirmed = HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::ReclamationUnconfirmed));
+        let unconfirmed =
+            HostCaptureSnapshot::of_stats(&stats, Some(&PublisherError::ReclamationUnconfirmed));
         assert!(!unconfirmed.authorized);
         assert_eq!(unconfirmed.state, "quarantined");
         assert_eq!(unconfirmed.frames, 7);
@@ -2190,7 +2447,12 @@ mod tests {
         let state = state();
         let (record, _commands) = projected_peer("authorized");
 
-        project_capture(&state, &record, &capture_stats("awaiting_system_consent", 0), None);
+        project_capture(
+            &state,
+            &record,
+            &capture_stats("awaiting_system_consent", 0),
+            None,
+        );
         {
             let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
             assert_eq!(snapshot.phase, "awaiting_capture_consent");
@@ -2218,6 +2480,9 @@ mod tests {
         project_capture(&state, &record, &capture_stats("stopped", 3), None);
         let snapshot = lock(&record.control.as_ref().expect("peer control").snapshot);
         assert_eq!(snapshot.phase, "disconnecting");
-        assert_eq!(snapshot.capture.as_ref().expect("projection").state, "stopped");
+        assert_eq!(
+            snapshot.capture.as_ref().expect("projection").state,
+            "stopped"
+        );
     }
 }

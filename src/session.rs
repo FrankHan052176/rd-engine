@@ -6,7 +6,7 @@ use crate::{
     authentication::{
         self, AuthAction, HostAuthConfig, HostAuthState, HostAuthentication, Permissions,
     },
-    conn_token::{ConnToken, PasswordSource, H1_BYTES},
+    conn_token::{ConnToken, H1_BYTES, PasswordSource},
     handshake::{self, Established, HostIdentity, Security, ViewerIdentity},
     transport::{WireReader, WireWriter},
 };
@@ -40,7 +40,9 @@ fn close_message() -> Message {
     message
 }
 fn close_reason(message: &Message) -> Option<&str> {
-    let Some(message::Union::Misc(m)) = &message.union else { return None; };
+    let Some(message::Union::Misc(m)) = &message.union else {
+        return None;
+    };
     match &m.union {
         Some(misc::Union::CloseReason(reason)) => Some(reason.as_str()),
         _ => None,
@@ -518,7 +520,9 @@ impl ViewerSession {
         }
         let mode = match &request.union {
             None => SessionMode::Desktop,
-            Some(base::message_proto::login_request::Union::FileTransfer(_)) => SessionMode::FileTransfer,
+            Some(base::message_proto::login_request::Union::FileTransfer(_)) => {
+                SessionMode::FileTransfer
+            }
             _ => return Err(failure("Unsupported login role")),
         };
         if request.username.is_empty() || request.my_id.is_empty() {
@@ -1181,7 +1185,7 @@ mod tests {
     use super::{LoginCredential, ViewerEvent, ViewerSession, ViewerState};
     use crate::{
         authentication,
-        conn_token::{ConnToken, PasswordSource, PasswordSourceKind, H1_BYTES},
+        conn_token::{ConnToken, H1_BYTES, PasswordSource, PasswordSourceKind},
         handshake::{self, ViewerIdentity},
     };
     use base::message_proto::{Hash, LoginRequest, LoginResponse, Message, PeerInfo, message};
@@ -1317,7 +1321,10 @@ mod tests {
             .login_with(request(7), LoginCredential::Password(clear))
             .await
             .expect("the typed login is written");
-        assert_eq!(written_login(&mut typed_fixture).await.password, sent.password);
+        assert_eq!(
+            written_login(&mut typed_fixture).await.password,
+            sent.password
+        );
     }
 
     /// The credential is exported only after the peer's own success, carrying the
@@ -1337,7 +1344,10 @@ mod tests {
             )
             .await
             .expect("the reconnect login is written");
-        assert_eq!(written_login(&mut fixture).await.password, official_response(&h1));
+        assert_eq!(
+            written_login(&mut fixture).await.password,
+            official_response(&h1)
+        );
         assert_eq!(session.state(), ViewerState::AwaitLogin);
         assert!(
             session.take_reconnect_credential().is_none(),
@@ -1345,7 +1355,10 @@ mod tests {
         );
 
         send_response(&mut fixture, authorized_response()).await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
         let exported = session
             .take_reconnect_credential()
             .expect("the peer authorized this attempt");
@@ -1368,17 +1381,16 @@ mod tests {
             .await
             .expect("the login is written");
         let _ = written_login(&mut fixture).await;
-        send_response(
-            &mut fixture,
-            error_response(authentication::WRONG_PASSWORD),
-        )
-        .await;
+        send_response(&mut fixture, error_response(authentication::WRONG_PASSWORD)).await;
         assert!(matches!(
             session.recv().await,
             Ok(ViewerEvent::LoginError(error)) if error == authentication::WRONG_PASSWORD
         ));
         send_response(&mut fixture, authorized_response()).await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
         assert!(session.take_reconnect_credential().is_none());
     }
 
@@ -1409,7 +1421,10 @@ mod tests {
             Ok(ViewerEvent::LoginError(error)) if error == "Wrong 2FA Code"
         ));
         send_response(&mut fixture, authorized_response()).await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
         let exported = session
             .take_reconnect_credential()
             .expect("the password was never refused");
@@ -1435,12 +1450,11 @@ mod tests {
             .await
             .expect("the imported login is written");
         let _ = written_login(&mut fixture).await;
-        send_response(
-            &mut fixture,
-            error_response(authentication::WRONG_PASSWORD),
-        )
-        .await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::LoginError(_))));
+        send_response(&mut fixture, error_response(authentication::WRONG_PASSWORD)).await;
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::LoginError(_))
+        ));
 
         let typed = b"typed-fixture";
         session
@@ -1453,7 +1467,10 @@ mod tests {
             official_response(&authentication::salted_password(typed, SALT))
         );
         send_response(&mut fixture, authorized_response()).await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
         let exported = session
             .take_reconnect_credential()
             .expect("the typed password was accepted");
@@ -1475,7 +1492,10 @@ mod tests {
             .expect("the login is written");
         let _ = written_login(&mut fixture).await;
         send_response(&mut fixture, authorized_response()).await;
-        assert!(matches!(session.recv().await, Ok(ViewerEvent::Authorized(_))));
+        assert!(matches!(
+            session.recv().await,
+            Ok(ViewerEvent::Authorized(_))
+        ));
         session.close().await.expect("the close is written");
         assert_eq!(session.state(), ViewerState::Closed);
         assert!(session.take_reconnect_credential().is_none());

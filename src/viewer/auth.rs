@@ -1,12 +1,14 @@
 //! RustDesk authentication on the original session and its absolute deadline.
 use super::{
-    AuthAnswers, Connector, LoginFailure, Password, PasswordGate, SecondFactorGate,
-    State, ViewerError, ViewerOptions, ViewerTarget, CLIENT_VERSION, discard_password, lock,
+    AuthAnswers, CLIENT_VERSION, Connector, LoginFailure, Password, PasswordGate, SecondFactorGate,
+    State, ViewerError, ViewerOptions, ViewerTarget, discard_password, lock,
 };
 use crate::{
     conn_token::ConnToken,
     rendezvous::RouteKind,
-    session::{AuthenticatedParts, LoginCredential, SessionMode, ViewerEvent, ViewerSession, ViewerState},
+    session::{
+        AuthenticatedParts, LoginCredential, SessionMode, ViewerEvent, ViewerSession, ViewerState,
+    },
 };
 use base::message_proto::{self as proto, LoginRequest, OptionMessage};
 use std::time::Duration;
@@ -43,10 +45,14 @@ fn login_request(options: &ViewerOptions, supported: proto::SupportedDecoding) -
         version: CLIENT_VERSION.into(),
         session_id: u64::from_le_bytes(session_bytes).max(1),
         video_ack_required: false,
-        option: (if options.mode == SessionMode::Desktop { Some(OptionMessage {
-            custom_fps: options.requested_fps as i32,
-            ..options.session_options.login_options(&supported)
-        }) } else { None })
+        option: (if options.mode == SessionMode::Desktop {
+            Some(OptionMessage {
+                custom_fps: options.requested_fps as i32,
+                ..options.session_options.login_options(&supported)
+            })
+        } else {
+            None
+        })
         .into(),
         ..Default::default()
     };
@@ -82,9 +88,10 @@ pub(super) async fn authenticate(
         Connector::Rendezvous(config) => {
             state.phase("rendezvous");
             let timeout = config.connect_timeout;
-            let (established, evidence) = crate::rendezvous::connect_viewer_for(config, options.mode)
-                .await
-                .map_err(|_| ViewerError::RendezvousFailed)?;
+            let (established, evidence) =
+                crate::rendezvous::connect_viewer_for(config, options.mode)
+                    .await
+                    .map_err(|_| ViewerError::RendezvousFailed)?;
             if !evidence.encrypted || !evidence.peer_verified {
                 return Err(ViewerError::RendezvousFailed);
             }
@@ -187,7 +194,12 @@ pub(super) async fn authenticate_loop(
                 },
             }
         } else {
-            AuthStep::Event(session.recv_for_auth().await.map_err(|_| ViewerError::TransportFailed))
+            AuthStep::Event(
+                session
+                    .recv_for_auth()
+                    .await
+                    .map_err(|_| ViewerError::TransportFailed),
+            )
         };
         lock(&state.inner).snapshot.enable_trusted_devices = session.enable_trusted_devices();
         match step {

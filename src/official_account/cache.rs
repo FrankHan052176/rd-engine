@@ -2,14 +2,14 @@
 //! Dart. Upstream Ab/Group::{store,load,remove} are intentionally never called:
 //! they use public identity-derived keys and swallow persistence errors.
 
-use super::{state, CacheKind};
-use super::storage::{RecordKind, SecretBytes, MAX_CACHE_BYTES};
+use super::storage::{MAX_CACHE_BYTES, RecordKind, SecretBytes};
+use super::{CacheKind, state};
 use hbb_common::{
+    ResultType,
     anyhow::{anyhow, ensure},
     config::{Ab, Group},
     serde_json,
     sodiumoxide::utils::memzero,
-    ResultType,
 };
 
 fn record_kind(kind: CacheKind) -> RecordKind {
@@ -32,7 +32,10 @@ enum Model {
 
 impl Model {
     fn parse(kind: CacheKind, json: &[u8]) -> ResultType<Self> {
-        ensure!(json.len() <= MAX_CACHE_BYTES, "Account cache exceeds its size bound");
+        ensure!(
+            json.len() <= MAX_CACHE_BYTES,
+            "Account cache exceeds its size bound"
+        );
         // Keep exact selected hbb_common serde behavior, including the string
         // tag_colors field and upstream default handling for missing fields.
         // Do not expose parser diagnostics containing the source secret JSON.
@@ -64,24 +67,36 @@ impl Model {
         let result = match self {
             Self::AddressBook(value) => serde_json::to_string(&value.0),
             Self::Group(value) => serde_json::to_string(&value.0),
-        }.map_err(|_| anyhow!("Official account cache serialization failed"))?;
+        }
+        .map_err(|_| anyhow!("Official account cache serialization failed"))?;
         let result = SecretBytes::from_string(result);
-        ensure!(result.bytes().len() <= MAX_CACHE_BYTES,
-            "Serialized account cache exceeds its size bound");
+        ensure!(
+            result.bytes().len() <= MAX_CACHE_BYTES,
+            "Serialized account cache exceeds its size bound"
+        );
         Ok(result)
     }
 }
 
-pub fn access_scoped(receipt: &str, kind: CacheKind, operation: &str,
-    value: Option<String>) -> ResultType<String>
-{
+pub fn access_scoped(
+    receipt: &str,
+    kind: CacheKind,
+    operation: &str,
+    value: Option<String>,
+) -> ResultType<String> {
     let value = value.map(SecretBytes::from_string);
     match (operation, value) {
         ("save", Some(input)) => {
-            ensure!(input.bytes().len() <= MAX_CACHE_BYTES, "Account cache exceeds its size bound");
+            ensure!(
+                input.bytes().len() <= MAX_CACHE_BYTES,
+                "Account cache exceeds its size bound"
+            );
             state::save_cache(receipt, record_kind(kind), |token| {
                 let model = Model::parse(kind, input.bytes())?;
-                ensure!(model.token() == token, "Account cache does not belong to the active account");
+                ensure!(
+                    model.token() == token,
+                    "Account cache does not belong to the active account"
+                );
                 model.serialize()
             })
         }
@@ -93,8 +108,10 @@ pub fn access_scoped(receipt: &str, kind: CacheKind, operation: &str,
                     return Model::empty(kind).serialize();
                 };
                 let model = Model::parse(kind, input.bytes())?;
-                ensure!(!token.is_empty() && model.token() == token,
-                    "Stored account cache does not belong to the active account");
+                ensure!(
+                    !token.is_empty() && model.token() == token,
+                    "Stored account cache does not belong to the active account"
+                );
                 model.serialize()
             })?;
             // State, receipt and lock release succeeded before the business
@@ -118,7 +135,9 @@ impl Drop for AddressBook {
             wipe(&mut entry.guid);
             wipe(&mut entry.name);
             wipe(&mut entry.tag_colors);
-            for tag in &mut entry.tags { wipe(tag); }
+            for tag in &mut entry.tags {
+                wipe(tag);
+            }
             for peer in &mut entry.peers {
                 wipe(&mut peer.id);
                 wipe(&mut peer.hash);
@@ -126,7 +145,9 @@ impl Drop for AddressBook {
                 wipe(&mut peer.hostname);
                 wipe(&mut peer.platform);
                 wipe(&mut peer.alias);
-                for tag in &mut peer.tags { wipe(tag); }
+                for tag in &mut peer.tags {
+                    wipe(tag);
+                }
             }
         }
     }
@@ -146,6 +167,8 @@ impl Drop for DeviceGroup {
             wipe(&mut peer.platform);
             wipe(&mut peer.login_name);
         }
-        for group in &mut self.0.device_groups { wipe(&mut group.name); }
+        for group in &mut self.0.device_groups {
+            wipe(&mut group.name);
+        }
     }
 }

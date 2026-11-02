@@ -83,12 +83,12 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
-use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Wire effects the writer may hold: one upstream block each, plus the small
@@ -290,7 +290,10 @@ pub enum CliprdrError {
     /// The viewer is cancelling, so no further effect is owed.
     Cancelled,
     /// A real filesystem failure on this device.
-    Disk { operation: DiskOp, kind: std::io::ErrorKind },
+    Disk {
+        operation: DiskOp,
+        kind: std::io::ErrorKind,
+    },
 }
 
 impl CliprdrError {
@@ -315,7 +318,9 @@ impl CliprdrError {
             Self::DescriptorInvalid => "the peer's file descriptor list is malformed",
             Self::FileNameInvalid => "a clipboard file name is not a normalized relative path",
             Self::RequestInvalid => "a file contents request is not one this session can serve",
-            Self::StreamMismatch => "a file contents response does not answer the request in flight",
+            Self::StreamMismatch => {
+                "a file contents response does not answer the request in flight"
+            }
             Self::StreamExhausted => "this session has used every file contents stream id",
             Self::DescriptorUnrequested => {
                 "a file descriptor answer arrived with no descriptor request outstanding"
@@ -339,7 +344,11 @@ impl std::fmt::Display for CliprdrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disk { operation, kind } => {
-                write!(f, "could not {} a clipboard file: {kind}", operation.as_str())
+                write!(
+                    f,
+                    "could not {} a clipboard file: {kind}",
+                    operation.as_str()
+                )
             }
             other => f.write_str(other.static_reason()),
         }
@@ -403,7 +412,10 @@ impl Fence {
     /// Closed, because nothing has published the facts yet.
     fn new() -> Self {
         Self {
-            state: Mutex::new(FenceState { allowed: false, revision: 1 }),
+            state: Mutex::new(FenceState {
+                allowed: false,
+                revision: 1,
+            }),
             changed: Notify::new(),
         }
     }
@@ -525,8 +537,7 @@ pub fn validate_descriptor_name(name: &str) -> Result<(), CliprdrError> {
     {
         return Err(CliprdrError::FileNameInvalid);
     }
-    base::fs::validate_file_name_no_traversal(name)
-        .map_err(|_| CliprdrError::FileNameInvalid)?;
+    base::fs::validate_file_name_no_traversal(name).map_err(|_| CliprdrError::FileNameInvalid)?;
     Ok(())
 }
 
@@ -645,8 +656,8 @@ impl OfferedFile {
     /// The handle every range of this file is read from.
     fn handle(&mut self) -> Result<&File, CliprdrError> {
         if self.handle.is_none() {
-            let handle = File::open(&self.path)
-                .map_err(|error| CliprdrError::disk(DiskOp::Open, &error))?;
+            let handle =
+                File::open(&self.path).map_err(|error| CliprdrError::disk(DiskOp::Open, &error))?;
             let metadata = handle
                 .metadata()
                 .map_err(|error| CliprdrError::disk(DiskOp::Metadata, &error))?;
@@ -796,8 +807,14 @@ struct ReceivingFile {
 /// makes a response's `stream_id` enough to attribute it.
 #[derive(Debug, Clone, Copy)]
 enum Awaiting {
-    Size { stream: i32 },
-    Range { stream: i32, offset: u64, requested: u64 },
+    Size {
+        stream: i32,
+    },
+    Range {
+        stream: i32,
+        offset: u64,
+        requested: u64,
+    },
 }
 
 impl Awaiting {
@@ -1332,16 +1349,14 @@ fn format_data_failure_message() -> Message {
 /// One `FileContentsRequest`: `FILECONTENTS_SIZE` asks for the size, and
 /// `FILECONTENTS_RANGE` for bytes at an offset. The position is split into the
 /// wire's two unsigned 32-bit halves.
-fn file_contents_request_message(
-    stream_id: i32,
-    list_index: usize,
-    kind: RequestKind,
-) -> Message {
+fn file_contents_request_message(stream_id: i32, list_index: usize, kind: RequestKind) -> Message {
     let (dw_flags, offset, requested) = match kind {
         RequestKind::Size => (FILECONTENTS_SIZE, 0_u64, 0_i32),
-        RequestKind::Range { offset, length } => {
-            (FILECONTENTS_RANGE, offset, length.min(i32::MAX as u64) as i32)
-        }
+        RequestKind::Range { offset, length } => (
+            FILECONTENTS_RANGE,
+            offset,
+            length.min(i32::MAX as u64) as i32,
+        ),
     };
     cliprdr_message(proto::cliprdr::Union::FileContentsRequest(
         proto::CliprdrFileContentsRequest {
@@ -1361,11 +1376,7 @@ fn file_contents_request_message(
 }
 
 /// One `FileContentsResponse` for the stream the peer asked on.
-fn file_contents_response_message(
-    msg_flags: i32,
-    stream_id: i32,
-    data: Vec<u8>,
-) -> Message {
+fn file_contents_response_message(msg_flags: i32, stream_id: i32, data: Vec<u8>) -> Message {
     cliprdr_message(proto::cliprdr::Union::FileContentsResponse(
         proto::CliprdrFileContentsResponse {
             msg_flags,
@@ -1704,13 +1715,15 @@ impl CliprdrOwner {
         self.adopt_fence().await;
         let request_id = issued.request_id;
         if issued.revision != self.revision {
-            self.fail(Some(request_id), CliprdrError::PermissionDenied).await;
+            self.fail(Some(request_id), CliprdrError::PermissionDenied)
+                .await;
             return;
         }
         match issued.command {
             CliprdrCommand::SetRoot(path) => {
                 if !self.allowed() {
-                    self.fail(Some(request_id), CliprdrError::PermissionDenied).await;
+                    self.fail(Some(request_id), CliprdrError::PermissionDenied)
+                        .await;
                     return;
                 }
                 match adopt_root(&path) {
@@ -1720,7 +1733,8 @@ impl CliprdrOwner {
             }
             CliprdrCommand::OfferFiles(paths) => {
                 if !self.allowed() {
-                    self.fail(Some(request_id), CliprdrError::PermissionDenied).await;
+                    self.fail(Some(request_id), CliprdrError::PermissionDenied)
+                        .await;
                     return;
                 }
                 // A new offer replaces the previous one, its handles included.
@@ -1810,7 +1824,8 @@ impl CliprdrOwner {
                 // The peer emptied the shared file clipboard: this side's offer
                 // goes with it, and so does anything it was still sending us.
                 self.offer = None;
-                self.drop_remote_state(CliprdrError::PeerReplacedClipboard).await;
+                self.drop_remote_state(CliprdrError::PeerReplacedClipboard)
+                    .await;
             }
             // The audit-only variant: a summary for a peer's own record, never
             // content this session applies.
@@ -1827,7 +1842,8 @@ impl CliprdrOwner {
         if !is_file_offer(&formats) {
             // The files this side was fetching describe a list the peer no longer
             // has; its indices are meaningless from now on.
-            self.drop_remote_state(CliprdrError::PeerReplacedClipboard).await;
+            self.drop_remote_state(CliprdrError::PeerReplacedClipboard)
+                .await;
             return;
         }
         if !self.allowed() {
@@ -1891,7 +1907,8 @@ impl CliprdrOwner {
         // longer be used for anything.
         if let Some(mut job) = self.receive.take() {
             close_handles(&mut job);
-            self.abort_receive(job, CliprdrError::PeerReplacedClipboard).await;
+            self.abort_receive(job, CliprdrError::PeerReplacedClipboard)
+                .await;
         }
         match self
             .queue(format_data_request_message(descriptor_id), 64)
@@ -2068,8 +2085,7 @@ impl CliprdrOwner {
                     self.receive = Some(job);
                     match self.queue(message, 64).await {
                         Ok(()) => {
-                            self.answer_deadline =
-                                Some(Instant::now() + CLIPRDR_RESPONSE_TIMEOUT);
+                            self.answer_deadline = Some(Instant::now() + CLIPRDR_RESPONSE_TIMEOUT);
                             return;
                         }
                         Err(error) => {
@@ -2251,7 +2267,8 @@ impl CliprdrOwner {
         if offer.revision != revision {
             return Err(CliprdrError::PermissionDenied);
         }
-        let index = usize::try_from(request.list_index).map_err(|_| CliprdrError::RequestInvalid)?;
+        let index =
+            usize::try_from(request.list_index).map_err(|_| CliprdrError::RequestInvalid)?;
         let file = offer
             .files
             .get_mut(index)
@@ -2466,6 +2483,9 @@ fn finish_entry(file: &mut ReceivingFile) -> Result<(), CliprdrError> {
         .map_err(|error| CliprdrError::disk(DiskOp::Flush, &error))?;
     drop(handle);
     apply_mode(&file.temporary, file.perm)?;
+    // A descriptor may name a nested file without separate directory records.
+    // Its validated destination still needs its parent before the final rename.
+    make_parent(&file.destination)?;
     fs::rename(&file.temporary, &file.destination)
         .map_err(|error| CliprdrError::disk(DiskOp::Rename, &error))
 }
@@ -2583,9 +2603,8 @@ fn join_descriptor_name(dir: &Path, name: &str) -> Result<PathBuf, CliprdrError>
 
 fn make_parent(path: &Path) -> Result<(), CliprdrError> {
     match path.parent() {
-        Some(parent) => {
-            fs::create_dir_all(parent).map_err(|error| CliprdrError::disk(DiskOp::CreateDir, &error))
-        }
+        Some(parent) => fs::create_dir_all(parent)
+            .map_err(|error| CliprdrError::disk(DiskOp::CreateDir, &error)),
         None => Ok(()),
     }
 }
@@ -2847,17 +2866,19 @@ mod tests {
         offset: u64,
         requested: i32,
     ) -> Cliprdr {
-        inbound_cliprdr(Union::FileContentsRequest(wire::CliprdrFileContentsRequest {
-            stream_id: stream,
-            list_index: index as i32,
-            dw_flags: flags,
-            n_position_low: offset as u32 as i32,
-            n_position_high: (offset >> 32) as u32 as i32,
-            cb_requested: requested,
-            have_clip_data_id: false,
-            clip_data_id: 0,
-            ..Default::default()
-        }))
+        inbound_cliprdr(Union::FileContentsRequest(
+            wire::CliprdrFileContentsRequest {
+                stream_id: stream,
+                list_index: index as i32,
+                dw_flags: flags,
+                n_position_low: offset as u32 as i32,
+                n_position_high: (offset >> 32) as u32 as i32,
+                cb_requested: requested,
+                have_clip_data_id: false,
+                clip_data_id: 0,
+                ..Default::default()
+            },
+        ))
     }
 
     /// One raw `FILEDESCRIPTORW` record, built without this module's own name
@@ -2895,7 +2916,13 @@ mod tests {
     fn entries(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
             .expect("a readable directory")
-            .map(|entry| entry.expect("an entry").file_name().to_string_lossy().into_owned())
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         names.sort();
         names
@@ -3244,7 +3271,11 @@ mod tests {
         // The peer reports its own failure for that request.
         harness
             .handle
-            .offer_inbound(peer_file_contents_response(MSG_FLAGS_FAIL, stream, Vec::new()))
+            .offer_inbound(peer_file_contents_response(
+                MSG_FLAGS_FAIL,
+                stream,
+                Vec::new(),
+            ))
             .await
             .expect("sent");
         match next_event(&harness.handle).await {
@@ -3370,7 +3401,10 @@ mod tests {
             .await
             .expect("sent");
         let effect = harness.outbound.recv().await.expect("the next request");
-        assert!(matches!(union(effect.message()), Union::FormatDataRequest(_)));
+        assert!(matches!(
+            union(effect.message()),
+            Union::FormatDataRequest(_)
+        ));
         effect.complete(true);
         match next_event(&harness.handle).await {
             CliprdrEvent::Failed { error, .. } => assert_eq!(error, CliprdrError::PeerFailed),
@@ -3400,7 +3434,7 @@ mod tests {
 
     /// Drives one peer offer of a single file through to the event that published
     /// its paths.
-    async fn fetch_one_file(harness: &mut Harness, name: &str, contents: &[u8]) -> CliprdrEvent {
+    async fn fetch_one_file(harness: &mut Harness, name: &str, contents: &[u8]) {
         harness
             .handle
             .offer_inbound(peer_format_list())
@@ -3446,12 +3480,12 @@ mod tests {
             ))
             .await
             .expect("sent");
-        let event = next_event(&harness.handle).await;
-        assert!(
-            matches!(event, CliprdrEvent::Files { .. }),
-            "not a files event: {event:?}"
-        );
-        event
+        // Wait without taking the fact: the caller is testing its retention.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !harness.handle.has_events() {
+            assert!(Instant::now() < deadline, "the owner published no event");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
     }
 
     /// The event mailbox keeps a fact until a consumer takes it, and a read does
@@ -3468,8 +3502,17 @@ mod tests {
             .handle
             .submit(CliprdrCommand::SetRoot(root))
             .expect("the root is queued");
-        let event = fetch_one_file(&mut harness, "note.txt", b"kept").await;
-        let paths = match &event {
+        fetch_one_file(&mut harness, "note.txt", b"kept").await;
+
+        // Reading is not taking: a notifier may look as often as it likes.
+        assert!(harness.handle.has_events());
+        assert_eq!(harness.handle.pending_events(), 1);
+        assert!(harness.handle.has_events());
+        assert_eq!(harness.handle.pending_events(), 1);
+        // The applying consumer takes it exactly once.
+        let taken = harness.handle.take_events();
+        assert_eq!(taken.len(), 1);
+        let paths = match &taken[0] {
             CliprdrEvent::Files {
                 paths, revision, ..
             } => {
@@ -3486,15 +3529,6 @@ mod tests {
             b"kept".to_vec()
         );
 
-        // Reading is not taking: a notifier may look as often as it likes.
-        assert!(harness.handle.has_events());
-        assert_eq!(harness.handle.pending_events(), 1);
-        assert!(harness.handle.has_events());
-        assert_eq!(harness.handle.pending_events(), 1);
-        // The applying consumer takes it exactly once.
-        let taken = harness.handle.take_events();
-        assert_eq!(taken.len(), 1);
-        assert!(matches!(taken[0], CliprdrEvent::Files { .. }));
         assert!(!harness.handle.has_events());
         assert!(harness.handle.take_events().is_empty());
 
@@ -3523,7 +3557,10 @@ mod tests {
             })
             .await;
         let request = outbound.try_recv().expect("a descriptor request");
-        assert!(matches!(union(request.message()), Union::FormatDataRequest(_)));
+        assert!(matches!(
+            union(request.message()),
+            Union::FormatDataRequest(_)
+        ));
         assert_eq!(request.revision, era);
         owner.offer = Some(build_offer(era, &[source]).expect("an offer"));
 
@@ -3641,7 +3678,10 @@ mod tests {
             })
             .await;
         let first = outbound.try_recv().expect("a descriptor request");
-        assert!(matches!(union(first.message()), Union::FormatDataRequest(_)));
+        assert!(matches!(
+            union(first.message()),
+            Union::FormatDataRequest(_)
+        ));
 
         // The answer never arrives within the pinned client's own wait.
         owner.answer_deadline = Some(Instant::now());
@@ -3681,11 +3721,20 @@ mod tests {
             })
             .await;
         assert!(owner.receive.is_none(), "a late answer started a receive");
-        assert!(owner.descriptor_slot.is_none(), "the tombstone drained");
+        assert!(
+            matches!(owner.descriptor_slot, Some(DescriptorSlot::InFlight { .. })),
+            "the drained tombstone was replaced by the waiting offer's request"
+        );
+        assert!(owner.pending_offer.is_none());
 
         // Draining frees the slot for the offer that waited: a new request.
-        let second = outbound.try_recv().expect("the waiting offer's own request");
-        assert!(matches!(union(second.message()), Union::FormatDataRequest(_)));
+        let second = outbound
+            .try_recv()
+            .expect("the waiting offer's own request");
+        assert!(matches!(
+            union(second.message()),
+            Union::FormatDataRequest(_)
+        ));
     }
 
     /// The 30 s answer timeout is acted on at a pass boundary, so a queue that is
@@ -3964,15 +4013,20 @@ mod tests {
 
         let events = handle.take_events();
         match events.as_slice() {
-            [CliprdrEvent::Failed {
-                error: CliprdrError::PermissionDenied,
-                ..
-            }] => {}
+            [
+                CliprdrEvent::Failed {
+                    error: CliprdrError::PermissionDenied,
+                    ..
+                },
+            ] => {}
             other => panic!("not the withdrawal's own failure: {other:?}"),
         }
         // The withdrawn job's real files are gone: nothing of the peer's was left
         // under the client's root as an unreported paste.
-        assert!(entries(&root).is_empty(), "the job's files were left behind");
+        assert!(
+            entries(&root).is_empty(),
+            "the job's files were left behind"
+        );
         assert!(owner.receive.is_none(), "the withdrawn job is still held");
     }
 
@@ -3996,9 +4050,8 @@ mod tests {
 
         // The next fact does not replace the oldest one; it waits for room.
         let waiting = Arc::clone(&shared);
-        let blocked = tokio::spawn(async move {
-            waiting.push(event(CLIPRDR_EVENTS_KEPT as u64 + 1)).await
-        });
+        let blocked =
+            tokio::spawn(async move { waiting.push(event(CLIPRDR_EVENTS_KEPT as u64 + 1)).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!blocked.is_finished(), "a full mailbox swallowed a fact");
         assert_eq!(shared.pending_events(), CLIPRDR_EVENTS_KEPT);

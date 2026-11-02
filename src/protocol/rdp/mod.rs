@@ -39,7 +39,9 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::rdp::capability_sets::InputFlags;
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+use ironrdp_session::{
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason,
+};
 use ironrdp_tokio::TokioFramed;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpStream;
@@ -160,7 +162,11 @@ impl RdpSession {
     /// authenticated connection. Cancelling this future drops any TCP/TLS
     /// connection created so far. No native protocol worker is spawned.
     pub async fn connect(mut options: RdpOptions) -> Result<Self, RdpError> {
-        let user = options.endpoint.user.as_deref().ok_or(RdpError::MissingUser)?;
+        let user = options
+            .endpoint
+            .user
+            .as_deref()
+            .ok_or(RdpError::MissingUser)?;
         if user.trim().is_empty() {
             return Err(RdpError::MissingUser);
         }
@@ -172,35 +178,61 @@ impl RdpSession {
             .map_err(|_| RdpError::Trust(TrustFailure::InvalidServerName))?;
         let tls_config = tls::config(options.trust).await?;
         let stream = TcpStream::connect((options.endpoint.host.as_str(), options.endpoint.port))
-            .await.map_err(transport_error)?;
+            .await
+            .map_err(transport_error)?;
         stream.set_nodelay(true).map_err(transport_error)?;
         let local_addr = stream.local_addr().map_err(transport_error)?;
         let password = Zeroizing::new(std::mem::take(&mut options.password));
-        let password_text = std::str::from_utf8(&password).map_err(|_| RdpError::InvalidCredentials)?;
-        let config = connector_config(user.to_owned(), password_text.to_owned(), options.width, options.height);
+        let password_text =
+            std::str::from_utf8(&password).map_err(|_| RdpError::InvalidCredentials)?;
+        let config = connector_config(
+            user.to_owned(),
+            password_text.to_owned(),
+            options.width,
+            options.height,
+        );
         // Wipe our source bytes now. ConnectorGuard scrubs the public Config
         // password on errors/cancellation and after ClientInfo encoding, before
         // activation can clone it. Upstream-private authentication copies remain
         // governed by their library lifecycle; we never log Config/Credentials.
         drop(password);
-        let mut connector = connection::ConnectorGuard(ClientConnector::new(config, local_addr)
-            .with_static_channel(DrdynvcClient::new()
-                .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))))
-            .with_static_channel(CliprdrClient::new(Box::<TextClipboard>::default())));
+        let mut connector = connection::ConnectorGuard(
+            ClientConnector::new(config, local_addr)
+                .with_static_channel(
+                    DrdynvcClient::new()
+                        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+                )
+                .with_static_channel(CliprdrClient::new(Box::<TextClipboard>::default())),
+        );
         let mut framed = TokioFramed::new(stream);
         let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector.0)
-            .await.map_err(connector_error)?;
+            .await
+            .map_err(connector_error)?;
         let (stream, leftover) = framed.into_inner();
-        let (stream, public_key) = tls::upgrade(tls::PrefixedTcp::new(stream, leftover), server_name, tls_config).await?;
+        let (stream, public_key) = tls::upgrade(
+            tls::PrefixedTcp::new(stream, leftover),
+            server_name,
+            tls_config,
+        )
+        .await?;
         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector.0);
         let mut framed = TokioFramed::new(stream);
         let mut network = ironrdp_tokio::reqwest::ReqwestNetworkClient::new();
         let (result, input_flags) = connection::finalize(
-            upgraded, connector, &mut framed, &mut network,
-            options.endpoint.host.clone().into(), public_key,
-        ).await?;
+            upgraded,
+            connector,
+            &mut framed,
+            &mut network,
+            options.endpoint.host.clone().into(),
+            public_key,
+        )
+        .await?;
         validate_desktop(result.desktop_size.width, result.desktop_size.height)?;
-        let image = DecodedImage::new(PixelFormat::BgrA32, result.desktop_size.width, result.desktop_size.height);
+        let image = DecodedImage::new(
+            PixelFormat::BgrA32,
+            result.desktop_size.width,
+            result.desktop_size.height,
+        );
         let active = ActiveStageBuilder {
             static_channels: result.static_channels,
             user_channel_id: result.user_channel_id,
@@ -210,7 +242,8 @@ impl RdpSession {
             compression_type: result.compression_type,
             enable_server_pointer: result.enable_server_pointer,
             pointer_software_rendering: result.pointer_software_rendering,
-        }.build();
+        }
+        .build();
         Ok(Self {
             framed,
             active,
@@ -231,7 +264,10 @@ impl RdpSession {
     }
 
     pub fn desktop(&self) -> (i32, i32) {
-        (i32::from(self.image.width()), i32::from(self.image.height()))
+        (
+            i32::from(self.image.width()),
+            i32::from(self.image.height()),
+        )
     }
 
     /// The actual server Input capability, not the client's advertised flags.
@@ -244,7 +280,10 @@ impl RdpSession {
     /// Cancellation-safe even during output writes and reactivation. A cancelled
     /// call must be resumed on the same session, not by recreating its framer.
     /// `None` means a control-only PDU was processed, not EOF.
-    pub async fn pump(&mut self, target: &mut dyn PixelTarget) -> Result<Option<RdpEvent>, RdpError> {
+    pub async fn pump(
+        &mut self,
+        target: &mut dyn PixelTarget,
+    ) -> Result<Option<RdpEvent>, RdpError> {
         if target.layout() != PixelLayout::bgra8888() {
             return Err(RdpError::Geometry(PixelError::UnsupportedFormat));
         }
@@ -270,7 +309,9 @@ impl RdpSession {
         self.finish_activation().await?;
         self.flush().await?;
         validate_input_flags(self.input_flags, events)?;
-        let outputs = self.active.process_fastpath_input(&mut self.image, events)
+        let outputs = self
+            .active
+            .process_fastpath_input(&mut self.image, events)
             .map_err(|_| RdpError::Protocol("input encoding"))?;
         self.accept_outputs(outputs)?;
         self.flush().await
@@ -283,7 +324,8 @@ impl RdpSession {
         self.check_open()?;
         self.finish_activation().await?;
         self.flush().await?;
-        self.active.get_svc_processor_mut::<CliprdrClient>()
+        self.active
+            .get_svc_processor_mut::<CliprdrClient>()
             .and_then(|channel| channel.downcast_backend_mut::<TextClipboard>())
             .ok_or(RdpError::Unsupported("clipboard channel"))?
             .set_text(text)?;
@@ -301,7 +343,9 @@ impl RdpSession {
         }
         self.finish_activation().await?;
         self.flush().await?;
-        let frame = self.active.encode_resize(u32::from(width), u32::from(height), None, None)
+        let frame = self
+            .active
+            .encode_resize(u32::from(width), u32::from(height), None, None)
             .ok_or(RdpError::Unsupported("display control channel"))?
             .map_err(|_| RdpError::Geometry(PixelError::GeometryRejected))?;
         self.queue_write(frame);
@@ -324,7 +368,9 @@ impl RdpSession {
         let mut requested_close = false;
         if self.termination.is_none() {
             self.finish_activation().await?;
-            let outputs = self.active.graceful_shutdown()
+            let outputs = self
+                .active
+                .graceful_shutdown()
                 .map_err(|_| RdpError::Protocol("graceful shutdown"))?;
             self.accept_outputs(outputs)?;
             // Past this flush our DisconnectProviderUltimatum is on the wire.
@@ -345,7 +391,9 @@ impl RdpSession {
                 }
             }
         }
-        let result = self.termination.ok_or(RdpError::Protocol("incomplete graceful shutdown"))?;
+        let result = self
+            .termination
+            .ok_or(RdpError::Protocol("incomplete graceful shutdown"))?;
         // The TLS close_notify leaves on the same socket, so the rule of the
         // wait above applies to it as well: once our own shutdown request is on
         // the wire, a peer that is already gone is still a normal end. A peer
@@ -356,7 +404,14 @@ impl RdpSession {
         // without replying, so it never gets here: a green acceptance probe is
         // no evidence for these bytes, and a failure here has to be read on its
         // own.
-        match self.framed.get_inner_mut().0.shutdown().await.map_err(transport_error) {
+        match self
+            .framed
+            .get_inner_mut()
+            .0
+            .shutdown()
+            .await
+            .map_err(transport_error)
+        {
             Ok(()) => {}
             Err(error) if requested_close && peer_hung_up(&error) => {}
             Err(error) => return Err(error),
@@ -388,7 +443,9 @@ impl RdpSession {
         // IronRDP retains partial read bytes in `self.framed`; there is no
         // cancellation point between returning a PDU and saving its outputs.
         let (action, payload) = self.framed.read_pdu().await.map_err(transport_error)?;
-        let outputs = self.active.process(&mut self.image, action, &payload)
+        let outputs = self
+            .active
+            .process(&mut self.image, action, &payload)
             .map_err(|_| RdpError::Protocol("active session PDU"))?;
         self.accept_outputs(outputs)?;
         self.drain_clipboard()
@@ -408,14 +465,19 @@ impl RdpSession {
                 }
                 ActiveStageOutput::Terminate(reason) => {
                     self.termination = Some(match reason {
-                        GracefulDisconnectReason::UserInitiated | GracefulDisconnectReason::ServerInitiated => Ok(()),
-                        GracefulDisconnectReason::Other(_) => Err(RdpError::Protocol("server disconnect error")),
+                        GracefulDisconnectReason::UserInitiated
+                        | GracefulDisconnectReason::ServerInitiated => Ok(()),
+                        GracefulDisconnectReason::Other(_) => {
+                            Err(RdpError::Protocol("server disconnect error"))
+                        }
                     });
                 }
                 // Software pointer rendering is selected in the connector;
                 // bitmap/position effects are already in the library image.
-                ActiveStageOutput::PointerDefault | ActiveStageOutput::PointerHidden
-                | ActiveStageOutput::PointerPosition { .. } | ActiveStageOutput::PointerBitmap(_) => {}
+                ActiveStageOutput::PointerDefault
+                | ActiveStageOutput::PointerHidden
+                | ActiveStageOutput::PointerPosition { .. }
+                | ActiveStageOutput::PointerBitmap(_) => {}
                 // The library has already answered bandwidth/RTT requests;
                 // NetworkCharacteristicsResult is informational only.
                 ActiveStageOutput::AutoDetect(_) => {}
@@ -441,11 +503,17 @@ impl RdpSession {
             return Ok(());
         };
         let mut buffer = WriteBuf::new();
-        let observe_input = matches!(activation.connection_activation_state(), ConnectionActivationState::CapabilitiesExchange);
+        let observe_input = matches!(
+            activation.connection_activation_state(),
+            ConnectionActivationState::CapabilitiesExchange
+        );
         let written = connection::step_read(
-            &mut self.framed, activation, &mut buffer,
+            &mut self.framed,
+            activation,
+            &mut buffer,
             observe_input.then_some(&mut self.input_flags),
-        ).await?;
+        )
+        .await?;
         let state = activation.connection_activation_state();
         let io_channel_id = activation.io_channel_id();
         let user_channel_id = activation.user_channel_id();
@@ -454,31 +522,51 @@ impl RdpSession {
             self.queue_write(buffer.into_inner());
         }
         if let ConnectionActivationState::Finalized {
-            desktop_size, share_id, enable_server_pointer, pointer_software_rendering,
-        } = state {
+            desktop_size,
+            share_id,
+            enable_server_pointer,
+            pointer_software_rendering,
+        } = state
+        {
             validate_desktop(desktop_size.width, desktop_size.height)?;
-            let bulk_decompressor = self.compression.map(|compression| {
-                let compression = match compression {
-                    CompressionType::K8 => ironrdp_bulk::CompressionType::Rdp4,
-                    CompressionType::K64 => ironrdp_bulk::CompressionType::Rdp5,
-                    CompressionType::Rdp6 => ironrdp_bulk::CompressionType::Rdp6,
-                    CompressionType::Rdp61 => ironrdp_bulk::CompressionType::Rdp61,
-                };
-                ironrdp_bulk::BulkCompressor::new(compression)
-                    .map_err(|_| RdpError::Protocol("reactivation bulk decompressor"))
-            }).transpose()?;
-            self.image = DecodedImage::new(PixelFormat::BgrA32, desktop_size.width, desktop_size.height);
-            self.active.set_fastpath_processor(ironrdp_session::fast_path::ProcessorBuilder {
-                io_channel_id, user_channel_id, share_id, enable_server_pointer,
-                pointer_software_rendering, bulk_decompressor,
-            }.build());
+            let bulk_decompressor = self
+                .compression
+                .map(|compression| {
+                    let compression = match compression {
+                        CompressionType::K8 => ironrdp_bulk::CompressionType::Rdp4,
+                        CompressionType::K64 => ironrdp_bulk::CompressionType::Rdp5,
+                        CompressionType::Rdp6 => ironrdp_bulk::CompressionType::Rdp6,
+                        CompressionType::Rdp61 => ironrdp_bulk::CompressionType::Rdp61,
+                    };
+                    ironrdp_bulk::BulkCompressor::new(compression)
+                        .map_err(|_| RdpError::Protocol("reactivation bulk decompressor"))
+                })
+                .transpose()?;
+            self.image =
+                DecodedImage::new(PixelFormat::BgrA32, desktop_size.width, desktop_size.height);
+            self.active.set_fastpath_processor(
+                ironrdp_session::fast_path::ProcessorBuilder {
+                    io_channel_id,
+                    user_channel_id,
+                    share_id,
+                    enable_server_pointer,
+                    pointer_software_rendering,
+                    bulk_decompressor,
+                }
+                .build(),
+            );
             self.active.set_share_id(share_id);
             self.active.set_enable_server_pointer(enable_server_pointer);
             self.activation = None;
             // The library has replaced its image, including when geometry is
             // unchanged. That reset is itself full-image damage; otherwise the
             // presentation target could retain pixels from the previous epoch.
-            self.damage = Some(Rect::new(0, 0, i32::from(desktop_size.width), i32::from(desktop_size.height)));
+            self.damage = Some(Rect::new(
+                0,
+                0,
+                i32::from(desktop_size.width),
+                i32::from(desktop_size.height),
+            ));
             self.desktop_pending = true;
         }
         Ok(())
@@ -489,7 +577,8 @@ impl RdpSession {
             let Some(channel) = self.active.get_svc_processor_mut::<CliprdrClient>() else {
                 return Ok(());
             };
-            let backend = channel.downcast_backend_mut::<TextClipboard>()
+            let backend = channel
+                .downcast_backend_mut::<TextClipboard>()
                 .ok_or(RdpError::Clipboard("missing text backend"))?;
             let Some(action) = backend.actions.pop_front() else {
                 return Ok(());
@@ -499,16 +588,23 @@ impl RdpSession {
                     let formats = backend.formats();
                     channel.initiate_copy(&formats)
                 }
-                ClipboardAction::RequestUnicode => channel.initiate_paste(ClipboardFormatId::CF_UNICODETEXT),
+                ClipboardAction::RequestUnicode => {
+                    channel.initiate_paste(ClipboardFormatId::CF_UNICODETEXT)
+                }
                 ClipboardAction::Respond(response) => channel.submit_format_data(response),
-                ClipboardAction::RejectFile(stream_id) => channel.submit_file_contents(FileContentsResponse::new_error(stream_id)),
+                ClipboardAction::RejectFile(stream_id) => {
+                    channel.submit_file_contents(FileContentsResponse::new_error(stream_id))
+                }
                 ClipboardAction::Text(text) => {
                     self.events.push_back(RdpEvent::Clipboard(text));
                     continue;
                 }
                 ClipboardAction::Error(reason) => return Err(RdpError::Clipboard(reason)),
-            }.map_err(|_| RdpError::Clipboard("channel operation"))?;
-            let frame = self.active.process_svc_processor_messages(messages)
+            }
+            .map_err(|_| RdpError::Clipboard("channel operation"))?;
+            let frame = self
+                .active
+                .process_svc_processor_messages(messages)
                 .map_err(|_| RdpError::Clipboard("channel encoding"))?;
             self.queue_write(frame);
         }
@@ -522,8 +618,13 @@ impl RdpSession {
 
     async fn flush(&mut self) -> Result<(), RdpError> {
         while let Some(frame) = self.writes.front() {
-            let written = self.framed.get_inner_mut().0.write(&frame[self.write_offset..])
-                .await.map_err(transport_error)?;
+            let written = self
+                .framed
+                .get_inner_mut()
+                .0
+                .write(&frame[self.write_offset..])
+                .await
+                .map_err(transport_error)?;
             if written == 0 {
                 return Err(RdpError::Transport(io::ErrorKind::WriteZero));
             }
@@ -535,21 +636,31 @@ impl RdpSession {
             }
         }
         if self.needs_flush {
-            self.framed.get_inner_mut().0.flush().await.map_err(transport_error)?;
+            self.framed
+                .get_inner_mut()
+                .0
+                .flush()
+                .await
+                .map_err(transport_error)?;
             self.needs_flush = false;
         }
         Ok(())
     }
 
     fn add_damage(&mut self, rect: InclusiveRectangle) -> Result<(), RdpError> {
-        if rect.left > rect.right || rect.top > rect.bottom
-            || rect.right >= self.image.width() || rect.bottom >= self.image.height()
+        if rect.left > rect.right
+            || rect.top > rect.bottom
+            || rect.right >= self.image.width()
+            || rect.bottom >= self.image.height()
         {
             return Err(RdpError::Geometry(PixelError::OutOfBounds));
         }
-        let rect = Rect::new(i32::from(rect.left), i32::from(rect.top),
+        let rect = Rect::new(
+            i32::from(rect.left),
+            i32::from(rect.top),
             i32::from(rect.right) - i32::from(rect.left) + 1,
-            i32::from(rect.bottom) - i32::from(rect.top) + 1);
+            i32::from(rect.bottom) - i32::from(rect.top) + 1,
+        );
         self.damage = Some(self.damage.map_or(rect, |previous| previous.union(&rect)));
         Ok(())
     }
@@ -574,12 +685,21 @@ impl RdpSession {
                 return Err(RdpError::Geometry(PixelError::GeometryRejected));
             }
             let stride = usize::from(self.image.width()) * 4;
-            let row_bytes = usize::try_from(rect.width).map_err(|_| RdpError::Geometry(PixelError::InvalidRect))? * 4;
+            let row_bytes = usize::try_from(rect.width)
+                .map_err(|_| RdpError::Geometry(PixelError::InvalidRect))?
+                * 4;
             let mut window = target.rect_mut(rect).map_err(RdpError::Geometry)?;
             for y in 0..rect.height {
-                let offset = usize::try_from(rect.y + y).map_err(|_| RdpError::Geometry(PixelError::InvalidRect))? * stride
-                    + usize::try_from(rect.x).map_err(|_| RdpError::Geometry(PixelError::InvalidRect))? * 4;
-                let row = self.image.data().get(offset..offset + row_bytes)
+                let offset = usize::try_from(rect.y + y)
+                    .map_err(|_| RdpError::Geometry(PixelError::InvalidRect))?
+                    * stride
+                    + usize::try_from(rect.x)
+                        .map_err(|_| RdpError::Geometry(PixelError::InvalidRect))?
+                        * 4;
+                let row = self
+                    .image
+                    .data()
+                    .get(offset..offset + row_bytes)
                     .ok_or(RdpError::Geometry(PixelError::OutOfBounds))?;
                 if !window.put_row(y, row) {
                     return Err(RdpError::Geometry(PixelError::OutOfBounds));
@@ -603,8 +723,13 @@ impl RdpSession {
 /// Shared by synchronous viewer admission and the session's final send check.
 /// A successfully encoded PDU is not evidence of server support: only the Input
 /// flags received in that server's DemandActive authorize optional input kinds.
-pub fn validate_input_flags(flags: InputFlags, events: &[FastPathInputEvent]) -> Result<(), RdpError> {
-    if !events.is_empty() && !flags.intersects(InputFlags::FASTPATH_INPUT | InputFlags::FASTPATH_INPUT_2) {
+pub fn validate_input_flags(
+    flags: InputFlags,
+    events: &[FastPathInputEvent],
+) -> Result<(), RdpError> {
+    if !events.is_empty()
+        && !flags.intersects(InputFlags::FASTPATH_INPUT | InputFlags::FASTPATH_INPUT_2)
+    {
         return Err(RdpError::Unsupported("fast-path input"));
     }
     for event in events {
@@ -612,12 +737,20 @@ pub fn validate_input_flags(flags: InputFlags, events: &[FastPathInputEvent]) ->
             FastPathInputEvent::KeyboardEvent(..) => (InputFlags::SCANCODES, "scancode input"),
             FastPathInputEvent::UnicodeKeyboardEvent(..) => (InputFlags::UNICODE, "Unicode input"),
             FastPathInputEvent::MouseEventEx(_) => (InputFlags::MOUSEX, "extended mouse input"),
-            FastPathInputEvent::MouseEventRel(_) => (InputFlags::MOUSE_RELATIVE, "relative mouse input"),
-            FastPathInputEvent::QoeEvent(_) => (InputFlags::TS_QOE_TIMESTAMPS, "input QoE timestamps"),
-            FastPathInputEvent::MouseEvent(mouse) if mouse.flags.contains(PointerFlags::HORIZONTAL_WHEEL) => {
+            FastPathInputEvent::MouseEventRel(_) => {
+                (InputFlags::MOUSE_RELATIVE, "relative mouse input")
+            }
+            FastPathInputEvent::QoeEvent(_) => {
+                (InputFlags::TS_QOE_TIMESTAMPS, "input QoE timestamps")
+            }
+            FastPathInputEvent::MouseEvent(mouse)
+                if mouse.flags.contains(PointerFlags::HORIZONTAL_WHEEL) =>
+            {
                 (InputFlags::TS_MOUSE_HWHEEL, "horizontal mouse wheel")
             }
-            FastPathInputEvent::MouseEvent(_) | FastPathInputEvent::SyncEvent(_) => (InputFlags::empty(), "baseline input"),
+            FastPathInputEvent::MouseEvent(_) | FastPathInputEvent::SyncEvent(_) => {
+                (InputFlags::empty(), "baseline input")
+            }
         };
         if !flags.contains(required) {
             return Err(RdpError::Unsupported(feature));
@@ -657,7 +790,10 @@ fn peer_hung_up(error: &RdpError) -> bool {
 }
 
 fn connector_error(error: ConnectorError) -> RdpError {
-    if matches!(error.kind(), ConnectorErrorKind::Credssp(_) | ConnectorErrorKind::AccessDenied) {
+    if matches!(
+        error.kind(),
+        ConnectorErrorKind::Credssp(_) | ConnectorErrorKind::AccessDenied
+    ) {
         return RdpError::Authentication;
     }
     let mut source = error.source();
@@ -691,9 +827,13 @@ fn connector_config(username: String, password: String, width: u16, height: u16)
         client_build: 0,
         client_name: "rd-engine".to_owned(),
         client_dir: String::new(),
-        platform: if cfg!(windows) { MajorPlatformType::WINDOWS }
-            else if cfg!(target_os = "macos") { MajorPlatformType::MACINTOSH }
-            else { MajorPlatformType::UNIX },
+        platform: if cfg!(windows) {
+            MajorPlatformType::WINDOWS
+        } else if cfg!(target_os = "macos") {
+            MajorPlatformType::MACINTOSH
+        } else {
+            MajorPlatformType::UNIX
+        },
         enable_server_pointer: true,
         request_data: None,
         autologon: false,
@@ -775,7 +915,10 @@ mod tests {
 
         let mut byte = [0u8; 1];
         let error = client.read_exact(&mut byte).await.unwrap_err();
-        assert!(peer_hung_up(&transport_error(error)), "a peer close after our request is the normal end");
+        assert!(
+            peer_hung_up(&transport_error(error)),
+            "a peer close after our request is the normal end"
+        );
     }
 
     /// The counterpart: a transport failure that is not a hangup stays one, so
@@ -787,6 +930,9 @@ mod tests {
         drop(listener);
 
         let error = TcpStream::connect(addr).await.unwrap_err();
-        assert!(!peer_hung_up(&transport_error(error)), "a refused connection must not close successfully");
+        assert!(
+            !peer_hung_up(&transport_error(error)),
+            "a refused connection must not close successfully"
+        );
     }
 }

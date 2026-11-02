@@ -54,21 +54,21 @@
 use base::{
     fs::{self, DataSource, JobType, TransferJob},
     message_proto::{
-        file_action, file_response, file_transfer_send_confirm_request, FileAction, FileDirectory,
-        FileEntry, FileResponse, FileTransferBlock, FileTransferCancel, FileTransferDigest,
-        FileTransferSendConfirmRequest, Message, ReadDir,
+        FileAction, FileDirectory, FileEntry, FileResponse, FileTransferBlock, FileTransferCancel,
+        FileTransferDigest, FileTransferSendConfirmRequest, Message, ReadDir, file_action,
+        file_response, file_transfer_send_confirm_request,
     },
 };
 use std::{
     collections::{HashMap, VecDeque},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Wire effects the writer may hold for this owner: one upstream block each
@@ -206,10 +206,7 @@ impl std::error::Error for TransferError {}
 pub enum TransferCommand {
     /// Browse the peer's filesystem. An empty path is the peer's home directory,
     /// which is the one place upstream treats an empty path as valid.
-    ReadDir {
-        path: String,
-        include_hidden: bool,
-    },
+    ReadDir { path: String, include_hidden: bool },
     /// Copy `remote` (on the peer) to `local` (under this session's root).
     Download {
         job: i32,
@@ -434,9 +431,9 @@ impl TransferConfig {
         Self {
             local_root,
             peer_platform: peer_platform.into(),
-            overwrite_detection: fs::can_enable_overwrite_detection(hbb_common::get_version_number(
-                peer_version,
-            )),
+            overwrite_detection: fs::can_enable_overwrite_detection(
+                hbb_common::get_version_number(peer_version),
+            ),
         }
     }
 
@@ -579,10 +576,7 @@ impl TransferHandle {
             }
         }
         self.commands
-            .try_send(Issued {
-                revision,
-                command,
-            })
+            .try_send(Issued { revision, command })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => TransferError::Backpressure,
                 mpsc::error::TrySendError::Closed(_) => TransferError::Closed,
@@ -1033,7 +1027,13 @@ impl TransferShared {
                 }
                 None => 0.0,
             };
-            samples.insert(job.id(), Sample { transferred, at: now });
+            samples.insert(
+                job.id(),
+                Sample {
+                    transferred,
+                    at: now,
+                },
+            );
             speed
         };
         // Upstream reports `job.file_num() - 1`: `read` already moved to the next
@@ -1218,9 +1218,7 @@ async fn upload_step(
                     // This one send is therefore confirmed; every block before it
                     // is not, which is what keeps `TRANSFER_OUTBOUND_QUEUE` and
                     // the byte budget a bounded pipeline instead of an ACK queue.
-                    let written = wire
-                        .send_confirmed(fs::new_done(id, file_num), 1)
-                        .await?;
+                    let written = wire.send_confirmed(fs::new_done(id, file_num), 1).await?;
                     if written {
                         shared.finish_row(id, TransferJobState::Done, file_num);
                         shared.push_event(TransferEvent::Done { job: id, file_num });
@@ -1323,9 +1321,7 @@ impl TransferOwner {
                     continue;
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    return TransferExit::CommandClosed
-                }
+                Err(mpsc::error::TryRecvError::Disconnected) => return TransferExit::CommandClosed,
             }
             match self.inbound.try_recv() {
                 Ok(inbound) => {
@@ -1335,9 +1331,7 @@ impl TransferOwner {
                     continue;
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    return TransferExit::InboundClosed
-                }
+                Err(mpsc::error::TryRecvError::Disconnected) => return TransferExit::InboundClosed,
             }
             match upload_step(&mut self.jobs.read, &self.wire, &self.shared).await {
                 Ok(ReadTick::Sent | ReadTick::Finished) => continue,
@@ -1359,9 +1353,7 @@ impl TransferOwner {
     /// while waiting, so neither is lost behind an unpolled client.
     async fn make_room(&self) -> Result<(), TransferError> {
         loop {
-            if lock(&self.shared.events).len() + TRANSFER_EVENT_PASS_ROOM
-                <= TRANSFER_EVENTS_KEPT
-            {
+            if lock(&self.shared.events).len() + TRANSFER_EVENT_PASS_ROOM <= TRANSFER_EVENTS_KEPT {
                 return Ok(());
             }
             tokio::select! {
@@ -1794,14 +1786,7 @@ async fn cancel(
     wire: &Wire,
     jobs: &mut JobTables,
 ) -> Result<(), TransferError> {
-    stop_job(
-        job,
-        shared,
-        wire,
-        jobs,
-        TransferJobState::Cancelled,
-    )
-    .await
+    stop_job(job, shared, wire, jobs, TransferJobState::Cancelled).await
 }
 
 /// Ends one job of this session at a pass boundary: the peer is told to stop, the
@@ -1876,7 +1861,11 @@ async fn response_received(
             job.modify_time();
             match job.job_error() {
                 Some(error) => {
-                    shared.finish_row(done.id, TransferJobState::Failed(error.clone()), done.file_num);
+                    shared.finish_row(
+                        done.id,
+                        TransferJobState::Failed(error.clone()),
+                        done.file_num,
+                    );
                     shared.push_event(TransferEvent::Failed {
                         job: done.id,
                         file_num: done.file_num,
@@ -2483,7 +2472,13 @@ mod tests {
         assert!(validate_remote_path("C:\\Users", false).is_ok());
         // The one empty remote path: `ReadDir`'s own home-directory request.
         assert!(validate_remote_path("", true).is_ok());
-        for bad in ["", "relative/path", "./x", "/sdcard/../secret", "/sdcard/\0"] {
+        for bad in [
+            "",
+            "relative/path",
+            "./x",
+            "/sdcard/../secret",
+            "/sdcard/\0",
+        ] {
             assert_eq!(
                 validate_remote_path(bad, false),
                 Err(TransferError::RemotePathInvalid),
@@ -2530,12 +2525,10 @@ mod tests {
             Err(TransferError::ResumeUnsupported)
         );
         assert_eq!(
-            session
-                .handle
-                .submit(TransferCommand::ReadDir {
-                    path: "relative".into(),
-                    include_hidden: false,
-                }),
+            session.handle.submit(TransferCommand::ReadDir {
+                path: "relative".into(),
+                include_hidden: false,
+            }),
             Err(TransferError::RemotePathInvalid)
         );
         assert_eq!(
@@ -2689,11 +2682,13 @@ mod tests {
         let events = session
             .events(|event| matches!(event, TransferEvent::Done { .. }))
             .await;
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, TransferEvent::Done { job: 7, file_num: 1 }))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TransferEvent::Done {
+                job: 7,
+                file_num: 1
+            }
+        )));
         assert_eq!(std::fs::read(&local).expect("the received file"), b"hello!");
         let rows = session.handle.jobs();
         assert_eq!(rows.len(), 1);
@@ -2712,7 +2707,11 @@ mod tests {
             .submit(TransferCommand::Download {
                 job: 5,
                 remote: "/sdcard/escape.txt".into(),
-                local: temp.path().join("escape.txt").to_string_lossy().into_owned(),
+                local: temp
+                    .path()
+                    .join("escape.txt")
+                    .to_string_lossy()
+                    .into_owned(),
                 file_num: 0,
                 include_hidden: false,
             })
@@ -2979,7 +2978,10 @@ mod tests {
             snapshot.events[0],
             TransferEvent::Progress { speed, .. } if speed == 2.0
         ));
-        assert!(matches!(snapshot.events[1], TransferEvent::Overwrite { .. }));
+        assert!(matches!(
+            snapshot.events[1],
+            TransferEvent::Overwrite { .. }
+        ));
         assert!(matches!(snapshot.events[2], TransferEvent::Done { .. }));
         // Taking the snapshot consumed the events and kept the rows.
         assert!(shared.take_snapshot().events.is_empty());
@@ -3188,11 +3190,7 @@ mod tests {
             .submit(TransferCommand::Download {
                 job: 999,
                 remote: "/sdcard/999".into(),
-                local: temp
-                    .path()
-                    .join("999.txt")
-                    .to_string_lossy()
-                    .into_owned(),
+                local: temp.path().join("999.txt").to_string_lossy().into_owned(),
                 file_num: 0,
                 include_hidden: false,
             })
@@ -3327,7 +3325,11 @@ mod tests {
             let effect = session.effect_raw().await;
             match response(effect.message()).union.as_ref() {
                 Some(file_response::Union::Block(block)) => {
-                    assert_eq!(block.data.len(), BLOCK, "the fixture must pay for the budget")
+                    assert_eq!(
+                        block.data.len(),
+                        BLOCK,
+                        "the fixture must pay for the budget"
+                    )
                 }
                 other => panic!("expected a block, got {other:?}"),
             }

@@ -13,7 +13,10 @@ use crate::platform;
 use anyhow::ensure;
 use base::message_proto::{ControlKey, ImageQuality, KeyEvent, KeyboardMode};
 use flutter_rust_bridge::{StreamSink, SyncReturn};
-use hbb_common::base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
+use hbb_common::base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use hbb_common::config::{
     Config, LocalConfig, PeerConfig, UserDefaultConfig, BUILTIN_SETTINGS, ENCRYPT_MAX_LEN,
     HARD_SETTINGS, NEW_STORED_PEER_CONFIG, RS_PUB_KEY,
@@ -525,9 +528,13 @@ pub fn main_change_id(new_id: String) -> Result<()> {
 
 pub fn main_get_uuid() -> Result<String> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::registration_uuid(); }
+    {
+        return crate::host_bridge::registration_uuid();
+    }
     #[cfg(not(target_os = "windows"))]
-    { Ok(STANDARD.encode(hbb_common::get_uuid())) }
+    {
+        Ok(STANDARD.encode(hbb_common::get_uuid()))
+    }
 }
 
 pub fn main_device_id(id: String) {
@@ -547,23 +554,31 @@ pub fn translate(name: String, locale: String) -> Result<SyncReturn<String>> {
     #[cfg(target_os = "windows")]
     if crate::host_bridge::is_cm() {
         let language = crate::host_bridge::cm_ui_preference("lang")?;
-        return Ok(SyncReturn(crate::localization::translate_locale_with_preference(name, &locale, &language)));
+        return Ok(SyncReturn(
+            crate::localization::translate_locale_with_preference(name, &locale, &language),
+        ));
     }
-    Ok(SyncReturn(crate::localization::translate_locale(name, &locale)))
+    Ok(SyncReturn(crate::localization::translate_locale(
+        name, &locale,
+    )))
 }
 
 pub fn main_get_error() -> String {
     #[cfg(target_os = "windows")]
     if crate::host_bridge::uses_host_options() {
         let error = crate::host_bridge::last_error();
-        if !error.is_empty() { return error; }
+        if !error.is_empty() {
+            return error;
+        }
     }
     lock(&APP).last_error.clone()
 }
 
 pub fn main_get_fingerprint() -> Result<String> {
     #[cfg(target_os = "windows")]
-    { return Ok(crate::host_bridge::snapshot()?.fingerprint); }
+    {
+        return Ok(crate::host_bridge::snapshot()?.fingerprint);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_get_fingerprint")
 }
@@ -653,7 +668,11 @@ pub fn main_get_option(key: String) -> Result<String> {
     }
     #[cfg(target_os = "windows")]
     if crate::host_bridge::uses_host_options() {
-        return Ok(crate::host_bridge::snapshot()?.options.get(&key).cloned().unwrap_or_default());
+        return Ok(crate::host_bridge::snapshot()?
+            .options
+            .get(&key)
+            .cloned()
+            .unwrap_or_default());
     }
     Ok(option(&key))
 }
@@ -670,7 +689,10 @@ pub fn main_set_option(key: String, value: String) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOption { key, value });
+        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOption {
+            key,
+            value,
+        });
     }
     #[cfg(not(target_os = "windows"))]
     if matches!(
@@ -688,7 +710,9 @@ pub fn main_set_option(key: String, value: String) -> Result<()> {
 pub fn main_get_options() -> Result<String> {
     #[cfg(target_os = "windows")]
     if crate::host_bridge::uses_host_options() {
-        return Ok(serde_json::to_string(&crate::host_bridge::snapshot()?.options)?);
+        return Ok(serde_json::to_string(
+            &crate::host_bridge::snapshot()?.options,
+        )?);
     }
     let mut options = Config::get_options();
     configuration::strip_credential_options(&mut options);
@@ -711,26 +735,28 @@ pub fn main_set_options(json: String) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOptions { options });
+        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOptions {
+            options,
+        });
     }
     #[cfg(not(target_os = "windows"))]
     {
-    let previous = Config::get_options();
-    let changes_server = [
-        "api-server",
-        "custom-rendezvous-server",
-        "relay-server",
-        "key",
-        "allow-websocket",
-    ]
-    .iter()
-    .any(|key| previous.get(*key) != options.get(*key));
-    if changes_server {
-        account::change_server_configuration(|| Config::set_options(options))
-    } else {
-        Config::set_options(options);
-        Ok(())
-    }
+        let previous = Config::get_options();
+        let changes_server = [
+            "api-server",
+            "custom-rendezvous-server",
+            "relay-server",
+            "key",
+            "allow-websocket",
+        ]
+        .iter()
+        .any(|key| previous.get(*key) != options.get(*key));
+        if changes_server {
+            account::change_server_configuration(|| Config::set_options(options))
+        } else {
+            Config::set_options(options);
+            Ok(())
+        }
     }
 }
 
@@ -741,7 +767,13 @@ pub fn main_get_local_option(key: String) -> Result<SyncReturn<String>> {
     }
     #[cfg(target_os = "windows")]
     if key == "allow-remote-cm-modification" {
-        return Ok(SyncReturn(crate::host_bridge::snapshot()?.options.get(&key).cloned().unwrap_or_default()));
+        return Ok(SyncReturn(
+            crate::host_bridge::snapshot()?
+                .options
+                .get(&key)
+                .cloned()
+                .unwrap_or_default(),
+        ));
     }
     if matches!(key.as_str(), "access_token" | "user_info") {
         return account::get_local_option(&key).map(SyncReturn);
@@ -760,7 +792,10 @@ pub fn main_set_local_option(key: String, value: String) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     if key == "allow-remote-cm-modification" {
-        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOption { key, value });
+        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetOption {
+            key,
+            value,
+        });
     }
     if matches!(key.as_str(), "access_token" | "user_info") {
         discard_credential(value);
@@ -1090,7 +1125,11 @@ pub fn main_get_lan_peers() -> String {
 
 pub fn main_change_theme(dark: String) -> Result<()> {
     #[cfg(target_os = "windows")]
-    let dark = if crate::host_bridge::uses_host_options() { crate::host_bridge::refresh_ui_preference("theme")? } else { dark };
+    let dark = if crate::host_bridge::uses_host_options() {
+        crate::host_bridge::refresh_ui_preference("theme")?
+    } else {
+        dark
+    };
     let event = json!({ "name": "theme", "dark": dark });
     broadcast_others(&event);
     Ok(())
@@ -1098,7 +1137,11 @@ pub fn main_change_theme(dark: String) -> Result<()> {
 
 pub fn main_change_language(lang: String) -> Result<()> {
     #[cfg(target_os = "windows")]
-    let lang = if crate::host_bridge::uses_host_options() { crate::host_bridge::refresh_ui_preference("lang")? } else { lang };
+    let lang = if crate::host_bridge::uses_host_options() {
+        crate::host_bridge::refresh_ui_preference("lang")?
+    } else {
+        lang
+    };
     let event = json!({ "name": "language", "lang": lang });
     broadcast_others(&event);
     Ok(())
@@ -1108,18 +1151,25 @@ pub fn main_get_connect_status() -> Result<String> {
     #[cfg(target_os = "windows")]
     if crate::host_bridge::uses_host_options() {
         let state = crate::host_bridge::snapshot()?;
-        let video_conn_count = state.peers.iter().filter(|peer| peer.authorized && !peer.disconnected).count();
+        let video_conn_count = state
+            .peers
+            .iter()
+            .filter(|peer| peer.authorized && !peer.disconnected)
+            .count();
         return Ok(json!({ "status_num":state.status_num, "phase":state.phase,
             "registration":state.registration, "ready":state.ready, "error":state.error,
             "video_conn_count":video_conn_count,
-            "owner_epoch":state.owner_epoch.to_string(), "revision":state.revision.to_string() }).to_string());
+            "owner_epoch":state.owner_epoch.to_string(), "revision":state.revision.to_string() })
+        .to_string());
     }
     Ok(json!({ "status_num":0 }).to_string())
 }
 
 pub fn main_check_connect_status() -> Result<()> {
     #[cfg(target_os = "windows")]
-    if crate::host_bridge::uses_host_options() { crate::host_bridge::snapshot()?; }
+    if crate::host_bridge::uses_host_options() {
+        crate::host_bridge::snapshot()?;
+    }
     Ok(())
 }
 
@@ -1130,9 +1180,17 @@ pub fn main_get_async_status() -> String {
 
 pub fn main_get_common(key: String) -> Result<String> {
     #[cfg(target_os = "windows")]
-    if matches!(key.as_str(), "permanent-password-set" | "local-permanent-password-set") {
+    if matches!(
+        key.as_str(),
+        "permanent-password-set" | "local-permanent-password-set"
+    ) {
         let state = crate::host_bridge::snapshot()?;
-        return Ok(if key == "permanent-password-set" { state.permanent_password_set } else { state.local_permanent_password_set }.to_string());
+        return Ok(if key == "permanent-password-set" {
+            state.permanent_password_set
+        } else {
+            state.local_permanent_password_set
+        }
+        .to_string());
     }
     let _ = key;
     Ok(String::new())
@@ -1165,8 +1223,8 @@ pub fn main_get_displays() -> SyncReturn<String> {
 }
 
 pub fn main_get_sound_inputs() -> Vec<String> {
-    // The engine's login request disables audio, so it has no input devices to
-    // enumerate.
+    // Receive-side playback belongs to the Viewer. This bridge exposes no
+    // microphone or capture devices.
     Vec::new()
 }
 
@@ -1310,7 +1368,9 @@ pub fn is_disable_installation() -> SyncReturn<bool> {
 
 pub fn is_preset_password() -> Result<bool> {
     #[cfg(target_os = "windows")]
-    { return Ok(crate::host_bridge::snapshot()?.preset_password); }
+    {
+        return Ok(crate::host_bridge::snapshot()?.preset_password);
+    }
     #[cfg(not(target_os = "windows"))]
     Ok(false)
 }
@@ -1365,14 +1425,19 @@ pub fn main_hide_dock() -> SyncReturn<bool> {
 
 pub fn main_get_mouse_time() -> Result<f64> {
     #[cfg(target_os = "windows")]
-    { return Ok(crate::host_bridge::activity()?.mouse_wall_ms as f64); }
+    {
+        return Ok(crate::host_bridge::activity()?.mouse_wall_ms as f64);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_get_mouse_time")
 }
 
 pub fn main_check_mouse_time() -> Result<()> {
     #[cfg(target_os = "windows")]
-    { crate::host_bridge::activity()?; return Ok(()); }
+    {
+        crate::host_bridge::activity()?;
+        return Ok(());
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_check_mouse_time")
 }
@@ -1498,21 +1563,29 @@ pub fn install_install_options() -> Result<SyncReturn<String>> {
 
 pub fn main_start_service() -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::Start); }
+    {
+        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::Start);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_start_service")
 }
 
 pub fn main_stop_service() -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::Stop); }
+    {
+        return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::Stop);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_stop_service")
 }
 
 pub fn main_update_temporary_password() -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::RotateTemporaryPassword); }
+    {
+        return crate::host_bridge::acknowledge(
+            crate::host_bridge::HostCommand::RotateTemporaryPassword,
+        );
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_update_temporary_password")
 }
@@ -1523,7 +1596,9 @@ pub fn main_check_super_user_permission() -> Result<bool> {
 
 pub fn main_get_temporary_password() -> Result<String> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::temporary_password(); }
+    {
+        return crate::host_bridge::temporary_password();
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("main_get_temporary_password")
 }
@@ -1531,11 +1606,16 @@ pub fn main_get_temporary_password() -> Result<String> {
 pub fn main_set_permanent_password_with_result(password: String) -> Result<bool> {
     #[cfg(target_os = "windows")]
     {
-        crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetPermanentPassword { password })?;
+        crate::host_bridge::acknowledge(crate::host_bridge::HostCommand::SetPermanentPassword {
+            password,
+        })?;
         return Ok(true);
     }
     #[cfg(not(target_os = "windows"))]
-    { discard_credential(password); unsupported_result("main_set_permanent_password_with_result") }
+    {
+        discard_credential(password);
+        unsupported_result("main_set_permanent_password_with_result")
+    }
 }
 
 pub fn main_get_unlock_pin() -> SyncReturn<String> {
@@ -1796,49 +1876,69 @@ pub fn main_handle_wayland_screencast_restore_token(
 
 pub fn cm_init() -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::cm_init(); }
+    {
+        return crate::host_bridge::cm_init();
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_init")
 }
 
 pub fn cm_get_clients_state() -> Result<String> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::clients_state(); }
+    {
+        return crate::host_bridge::clients_state();
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_get_clients_state")
 }
 
 pub fn cm_get_clients_length() -> Result<usize> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::clients_length(); }
+    {
+        return crate::host_bridge::clients_length();
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_get_clients_length")
 }
 
 pub fn cm_check_clients_length(length: usize) -> Result<Option<String>> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::check_clients_length(length); }
+    {
+        return crate::host_bridge::check_clients_length(length);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_check_clients_length")
 }
 
 pub fn cm_get_config(name: String) -> Result<String> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::cm_config(&name); }
+    {
+        return crate::host_bridge::cm_config(&name);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_get_config")
 }
 
 pub fn cm_login_res(conn_id: i32, res: bool) -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::peer_action(conn_id, crate::host_bridge::PeerAction::Approve { allow:res }); }
+    {
+        return crate::host_bridge::peer_action(
+            conn_id,
+            crate::host_bridge::PeerAction::Approve { allow: res },
+        );
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_login_res")
 }
 
 pub fn cm_close_connection(conn_id: i32) -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::peer_action(conn_id, crate::host_bridge::PeerAction::Disconnect); }
+    {
+        return crate::host_bridge::peer_action(
+            conn_id,
+            crate::host_bridge::PeerAction::Disconnect,
+        );
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_close_connection")
 }
@@ -1850,7 +1950,9 @@ pub fn cm_close_connection_window(conn_id: i32) -> Result<()> {
 
 pub fn cm_remove_disconnected_connection(conn_id: i32) -> Result<()> {
     #[cfg(target_os = "windows")]
-    { return crate::host_bridge::peer_action(conn_id, crate::host_bridge::PeerAction::Remove); }
+    {
+        return crate::host_bridge::peer_action(conn_id, crate::host_bridge::PeerAction::Remove);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_remove_disconnected_connection")
 }
@@ -1858,7 +1960,13 @@ pub fn cm_remove_disconnected_connection(conn_id: i32) -> Result<()> {
 pub fn cm_check_click_time(conn_id: i32) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        ensure!(crate::host_bridge::snapshot()?.peers.iter().any(|p| p.conn_id == conn_id), "unknown CM connection");
+        ensure!(
+            crate::host_bridge::snapshot()?
+                .peers
+                .iter()
+                .any(|p| p.conn_id == conn_id),
+            "unknown CM connection"
+        );
         crate::host_bridge::activity()?;
         return Ok(());
     }
@@ -1868,7 +1976,9 @@ pub fn cm_check_click_time(conn_id: i32) -> Result<()> {
 
 pub fn cm_get_click_time() -> Result<f64> {
     #[cfg(target_os = "windows")]
-    { return Ok(crate::host_bridge::activity()?.click_wall_ms as f64); }
+    {
+        return Ok(crate::host_bridge::activity()?.click_wall_ms as f64);
+    }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_get_click_time")
 }
@@ -1877,7 +1987,10 @@ pub fn cm_switch_permission(conn_id: i32, name: String, enabled: bool) -> Result
     #[cfg(target_os = "windows")]
     {
         ensure!(name == "keyboard", "unsupported CM permission");
-        return crate::host_bridge::peer_action(conn_id, crate::host_bridge::PeerAction::Keyboard { enabled });
+        return crate::host_bridge::peer_action(
+            conn_id,
+            crate::host_bridge::PeerAction::Keyboard { enabled },
+        );
     }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_switch_permission")
@@ -2130,6 +2243,15 @@ struct Session {
     /// a viewer runs, its own requested state is the answer and this is no
     /// longer consulted, so the two are never two opinions about one value.
     session_options: Mutex<SessionOptions>,
+    /// This attempt's platform clipboard owner: one bounded thread, started with
+    /// the viewer and stopped and joined with it.
+    ///
+    /// The pinned official client has no bridge call for the ordinary clipboard
+    /// at all - its own native half owns that exchange, and `src/clipboard.rs`
+    /// here records those callsites - so the platform side of it belongs to this
+    /// crate rather than to a Dart function nothing calls. `None` is a session
+    /// with no live viewer, or one whose owner thread could not be started.
+    clipboard: Mutex<Option<crate::clipboard::Owner>>,
 }
 
 impl Session {
@@ -2157,6 +2279,7 @@ impl Session {
             unverified_accepted: AtomicBool::new(false),
             keyboard: Mutex::new(KeyboardState::default()),
             session_options: Mutex::new(SessionOptions::default()),
+            clipboard: Mutex::new(None),
         }
     }
 
@@ -2398,6 +2521,16 @@ impl Session {
         if let Some(stop) = lock(&self.stop).take() {
             stop.store(true, Ordering::SeqCst);
         }
+        // The platform clipboard owner is retired with this viewer, and it is
+        // joined *before* the viewer is closed: once this returns, nothing this
+        // session started can still read or write a pasteboard, so a closed
+        // session cannot apply content afterwards. The wait is bounded - one poll
+        // interval plus whatever one platform clipboard call takes to return -
+        // and the handle is consumed here rather than dropped unwatched.
+        let clipboard = lock(&self.clipboard).take();
+        if let Some(clipboard) = clipboard {
+            clipboard.stop_and_join();
+        }
         if let Some(viewer) = lock(&self.viewer).take() {
             viewer.request_close();
         }
@@ -2521,13 +2654,19 @@ fn refuse_session(session_id: SessionID, rejection: &Arc<RejectedSession>) {
     }
 }
 
-fn session_get_or_insert(session_id: SessionID, peer: String, rustdesk_id_only: bool) -> Result<Arc<Session>> {
+fn session_get_or_insert(
+    session_id: SessionID,
+    peer: String,
+    rustdesk_id_only: bool,
+) -> Result<Arc<Session>> {
     let session = {
         let mut sessions = lock(&SESSIONS);
         match sessions.get(&session_id) {
             Some(session) => {
-                ensure!(session.peer == peer && session.rustdesk_id_only == rustdesk_id_only,
-                    "session identity or route intent changed; close it and use a fresh session ID");
+                ensure!(
+                    session.peer == peer && session.rustdesk_id_only == rustdesk_id_only,
+                    "session identity or route intent changed; close it and use a fresh session ID"
+                );
                 return Ok(session.clone());
             }
             None => {
@@ -2619,17 +2758,31 @@ fn decode_session_target(id: String) -> Result<(String, bool)> {
     let (peer, rustdesk_id_only) = if let Some(encoded) = id.strip_prefix(ID_ONLY_PREFIX) {
         // Same 512-byte peer bound as the existing route admission; limit the
         // envelope before allocation. This engine rejects padding/trailing bits.
-        ensure!(!encoded.is_empty() && encoded.len() <= 4 * ((512 + 2) / 3), "invalid ID-only route envelope");
-        let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| anyhow::anyhow!("invalid ID-only route encoding"))?;
-        let peer = String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("ID-only route peer is not UTF-8"))?;
+        ensure!(
+            !encoded.is_empty() && encoded.len() <= 4 * ((512 + 2) / 3),
+            "invalid ID-only route envelope"
+        );
+        let bytes = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| anyhow::anyhow!("invalid ID-only route encoding"))?;
+        let peer = String::from_utf8(bytes)
+            .map_err(|_| anyhow::anyhow!("ID-only route peer is not UTF-8"))?;
         (peer, true)
     } else {
         (id, false)
     };
     let raw = peer.trim();
-    ensure!(!raw.is_empty() && raw.len() <= 512, "invalid peer id or direct address");
-    ensure!(!raw.contains("://") && !raw.get(..ID_ONLY_NAMESPACE.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(ID_ONLY_NAMESPACE)),
-        "unsupported, malformed or nested route envelope");
+    ensure!(
+        !raw.is_empty() && raw.len() <= 512,
+        "invalid peer id or direct address"
+    );
+    ensure!(
+        !raw.contains("://")
+            && !raw
+                .get(..ID_ONLY_NAMESPACE.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(ID_ONLY_NAMESPACE)),
+        "unsupported, malformed or nested route envelope"
+    );
     Ok((peer, rustdesk_id_only))
 }
 
@@ -2762,8 +2915,25 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
     .map_err(|error| anyhow::anyhow!("viewer start failed: {error}"))?;
 
     *lock(&session.viewer) = Some(viewer.clone());
-    spawn_pump(session, viewer, credential_was_empty);
+    spawn_pump(session, viewer.clone(), credential_was_empty);
+    // The ordinary clipboard has no bridge call in the pinned client, so this
+    // adapter owns its platform half for exactly the lifetime of this viewer: one
+    // bounded thread, started here and stopped and joined by `stop_viewer`, which
+    // is what both `session_close` and every restart go through.
+    *lock(&session.clipboard) = Some(crate::clipboard::start(viewer, clipboard_events(session)));
     Ok(())
+}
+
+/// The event sink the platform clipboard owner publishes through: this session's
+/// own stream, held weakly so a closed session is not kept alive by its own
+/// clipboard thread.
+fn clipboard_events(session: &Arc<Session>) -> crate::clipboard::EventSink {
+    let session = Arc::downgrade(session);
+    Arc::new(move |event: serde_json::Value| {
+        if let Some(session) = session.upgrade() {
+            session.emit_json(event);
+        }
+    })
 }
 
 /// The task that turns the viewer's own state into the client's events. The
@@ -2839,7 +3009,12 @@ fn password_prompt(phase: &str, challenge: u64, announced: u64) -> Option<Passwo
     }
 }
 
-fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credential_was_empty: bool) {
+fn pump(
+    weak: Weak<Session>,
+    viewer: Arc<Viewer>,
+    stop: Arc<AtomicBool>,
+    credential_was_empty: bool,
+) {
     let mut announced_ready = false;
     let mut asked_for_password = false;
     let mut announced_approval = false;
@@ -2854,6 +3029,7 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credent
     // is what makes one demand one form and a refusal a new one.
     let mut announced_password = 0u64;
     let mut last_error = String::new();
+    let mut last_audio_error = String::new();
     while !stop.load(Ordering::SeqCst) {
         let Some(session) = weak.upgrade() else {
             return;
@@ -2872,7 +3048,9 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credent
                 ENGINE_AWAITING_SECOND_FACTOR | ENGINE_SECOND_FACTOR_REJECTED
             );
             if snapshot.protocol != rd_engine::protocol::Protocol::RustDesk.as_str()
-                && credential_was_empty && !asked_for_password && !awaiting_second_factor
+                && credential_was_empty
+                && !asked_for_password
+                && !awaiting_second_factor
             {
                 asked_for_password = true;
                 session.password_required();
@@ -2959,6 +3137,17 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credent
             if *error != last_error {
                 last_error = error.clone();
                 set_last_error(format!("{}: {error}", session.session_id));
+            }
+        }
+        // A playback-device failure is diagnostic, not a failed control session.
+        if let Some(error) = snapshot
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.last_error.as_ref())
+        {
+            if *error != last_audio_error {
+                last_audio_error = error.clone();
+                set_last_error(format!("{}: audio playback: {error}", session.session_id));
             }
         }
         if snapshot.closed {
@@ -3059,14 +3248,19 @@ pub fn session_add_sync(
         Err(error) => {
             let reason = error.to_string();
             discard_credentials(password, conn_token);
-            if session_record(session_id).is_none() { reject(session_id, reason.clone()); }
+            if session_record(session_id).is_none() {
+                reject(session_id, reason.clone());
+            }
             return SyncReturn(format!("err={reason}"));
         }
     };
     if let Some(session) = session_record(session_id) {
         if session.peer != id || session.rustdesk_id_only != rustdesk_id_only {
             discard_credentials(password, conn_token);
-            return SyncReturn("err=session identity or route intent changed; close it and use a fresh session ID".to_owned());
+            return SyncReturn(
+                "err=session identity or route intent changed; close it and use a fresh session ID"
+                    .to_owned(),
+            );
         }
     }
     let kind = if is_file_transfer {
@@ -3120,7 +3314,9 @@ pub fn session_add_sync(
                 Err(error) => {
                     let reason = error.to_string();
                     discard_credentials(password, conn_token);
-                    if session_record(session_id).is_none() { reject(session_id, reason.clone()); }
+                    if session_record(session_id).is_none() {
+                        reject(session_id, reason.clone());
+                    }
                     return SyncReturn(format!("err={reason}"));
                 }
             };
@@ -3237,7 +3433,8 @@ pub fn session_login(
             // RFB/RDP retain their explicit credential/start path. RustDesk's
             // live challenge is answered only on the wire that issued it.
             Err(ViewerError::PasswordNotAwaiting)
-                if viewer.snapshot().protocol != rd_engine::protocol::Protocol::RustDesk.as_str() => {}
+                if viewer.snapshot().protocol
+                    != rd_engine::protocol::Protocol::RustDesk.as_str() => {}
             Err(error) => {
                 anyhow::bail!("password refused: {error}");
             }
@@ -3397,9 +3594,9 @@ fn named_quality(name: &str) -> Result<ImageQuality> {
             "session_set_image_quality takes a named level; the custom percentage is \
              session_set_custom_image_quality"
         ),
-        other => anyhow::bail!(
-            "session_set_image_quality has no level {other:?}: low, balanced or best"
-        ),
+        other => {
+            anyhow::bail!("session_set_image_quality has no level {other:?}: low, balanced or best")
+        }
     }
 }
 

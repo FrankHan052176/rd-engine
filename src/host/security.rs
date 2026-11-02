@@ -62,7 +62,9 @@ pub const MAX_HWID_BYTES: usize = 256;
 const SETTING_TRUSTED_DEVICES: &str = "trustedDevicesEnabled";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The primary verifier set this host accepts. The strings are the ones the
@@ -610,23 +612,28 @@ fn decode(value: &Value) -> Result<Stored, SecurityError> {
     if salt.len() != SALT_BYTES * 2 || unhex(salt).is_none() {
         return Err(SecurityError::Corrupt("its salt is not a hex value"));
     }
-    let permanent = match object.get("permanent") {
-        None | Some(Value::Null) => None,
-        Some(value) => {
-            let bytes = value
-                .as_str()
-                .and_then(unhex)
-                .ok_or(SecurityError::Corrupt("its permanent verifier is unreadable"))?;
-            Some(<[u8; 32]>::try_from(bytes).map_err(|_| {
-                SecurityError::Corrupt("its permanent verifier is not 32 bytes")
-            })?)
-        }
-    };
+    let permanent =
+        match object.get("permanent") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let bytes = value
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(SecurityError::Corrupt(
+                        "its permanent verifier is unreadable",
+                    ))?;
+                Some(<[u8; 32]>::try_from(bytes).map_err(|_| {
+                    SecurityError::Corrupt("its permanent verifier is not 32 bytes")
+                })?)
+            }
+        };
     let method = object
         .get("method")
         .and_then(Value::as_str)
         .and_then(VerificationMethod::parse)
-        .ok_or(SecurityError::Corrupt("it names no known verification method"))?;
+        .ok_or(SecurityError::Corrupt(
+            "it names no known verification method",
+        ))?;
     if method == VerificationMethod::Permanent && permanent.is_none() {
         return Err(SecurityError::Corrupt(
             "it requires a permanent password it does not hold",
@@ -647,10 +654,7 @@ fn decode(value: &Value) -> Result<Stored, SecurityError> {
                 .get("created_at")
                 .and_then(Value::as_i64)
                 .ok_or(SecurityError::Corrupt("its TOTP enrolment has no time"))?;
-            Some(Totp {
-                secret,
-                created_at,
-            })
+            Some(Totp { secret, created_at })
         }
     };
     let trusted_devices_enabled = object
@@ -660,9 +664,13 @@ fn decode(value: &Value) -> Result<Stored, SecurityError> {
     let entries = object
         .get("trusted_devices")
         .and_then(Value::as_array)
-        .ok_or(SecurityError::Corrupt("its trusted-device list is not a list"))?;
+        .ok_or(SecurityError::Corrupt(
+            "its trusted-device list is not a list",
+        ))?;
     if entries.len() > MAX_TRUSTED_DEVICES {
-        return Err(SecurityError::Corrupt("its trusted-device list is too long"));
+        return Err(SecurityError::Corrupt(
+            "its trusted-device list is too long",
+        ));
     }
     let mut devices = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -720,7 +728,9 @@ fn read_record(path: &Path) -> Result<Option<Stored>, SecurityError> {
         use std::os::unix::fs::MetadataExt;
         if metadata.uid() != unsafe { hbb_common::libc::geteuid() } || metadata.mode() & 0o077 != 0
         {
-            return Err(SecurityError::Corrupt("it is not private to the current user"));
+            return Err(SecurityError::Corrupt(
+                "it is not private to the current user",
+            ));
         }
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
@@ -759,9 +769,9 @@ fn open_existing(path: &Path) -> Result<Option<fs::File>, SecurityError> {
 /// and then renamed over the live one, so a reader never sees half a record and a
 /// failed write leaves the previous record intact.
 fn write_record(path: &Path, state: &Stored) -> Result<(), SecurityError> {
-    let directory = path
-        .parent()
-        .ok_or(SecurityError::Invalid("the host security record has no directory"))?;
+    let directory = path.parent().ok_or(SecurityError::Invalid(
+        "the host security record has no directory",
+    ))?;
     fs::create_dir_all(directory)?;
     let bytes = hbb_common::serde_json::to_vec(&encode(state))
         .map_err(|_| SecurityError::Invalid("the host security record cannot be encoded"))?;
@@ -1124,7 +1134,9 @@ mod tests {
     fn the_verification_method_decides_the_primary_verifier_set() {
         let root = TempRoot::new();
         let security = opened(&root);
-        security.set_permanent_password("permanent-password").unwrap();
+        security
+            .set_permanent_password("permanent-password")
+            .unwrap();
         let permanent = security.verifier(b"permanent-password");
         assert_eq!(security.permanent_verifier(), Some(permanent));
         assert!(security.accepts_temporary_password());
@@ -1147,7 +1159,9 @@ mod tests {
             "the verifier is kept but not accepted"
         );
 
-        security.set_verification_method("use-both-passwords").unwrap();
+        security
+            .set_verification_method("use-both-passwords")
+            .unwrap();
         assert!(security.accepts_temporary_password());
         assert_eq!(security.permanent_verifier(), Some(permanent));
 
@@ -1163,7 +1177,9 @@ mod tests {
                 .set_verification_method("use-permanent-password")
                 .is_err()
         );
-        security.set_permanent_password("permanent-password").unwrap();
+        security
+            .set_permanent_password("permanent-password")
+            .unwrap();
         security
             .set_verification_method("use-permanent-password")
             .unwrap();
@@ -1319,13 +1335,18 @@ mod tests {
         ));
 
         // The policy is a real switch, persisted under the key the client sends.
-        assert!(!security.set_setting("trustedDevicesEnabled", "false").unwrap());
+        assert!(
+            !security
+                .set_setting("trustedDevicesEnabled", "false")
+                .unwrap()
+        );
         assert!(!opened(&root).trusted_devices_enabled());
-        assert!(matches!(
-            verdict(&security, "", hwid),
-            FactorResult::Wrong
-        ));
-        assert!(security.set_setting("trustedDevicesEnabled", "true").unwrap());
+        assert!(matches!(verdict(&security, "", hwid), FactorResult::Wrong));
+        assert!(
+            security
+                .set_setting("trustedDevicesEnabled", "true")
+                .unwrap()
+        );
         assert!(matches!(
             verdict(&security, "", hwid),
             FactorResult::Verified
@@ -1338,16 +1359,8 @@ mod tests {
 
         // Removal and clearing are durable.
         security.remove_trusted_devices(&[hwid.to_vec()]).unwrap();
-        assert!(
-            opened(&root)
-                .two_factor_state()
-                .trusted_devices
-                .is_empty()
-        );
-        assert!(matches!(
-            verdict(&security, "", hwid),
-            FactorResult::Wrong
-        ));
+        assert!(opened(&root).two_factor_state().trusted_devices.is_empty());
+        assert!(matches!(verdict(&security, "", hwid), FactorResult::Wrong));
 
         // A device older than ninety days is neither listed nor trusted.
         let code = totp_code(&enabled_secret(&security), get_time());
@@ -1362,10 +1375,7 @@ mod tests {
             *current = next;
         }
         assert!(security.two_factor_state().trusted_devices.is_empty());
-        assert!(matches!(
-            verdict(&security, "", hwid),
-            FactorResult::Wrong
-        ));
+        assert!(matches!(verdict(&security, "", hwid), FactorResult::Wrong));
         // The expired record is no longer worth trusting, and a fresh one
         // replaces it rather than joining it.
         let code = totp_code(&enabled_secret(&security), get_time());

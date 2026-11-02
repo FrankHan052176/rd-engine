@@ -716,10 +716,7 @@ mod native {
             scan_code: *mut u32,
             extended: *mut u32,
         ) -> i32;
-        pub(super) fn rd_input_key_for_scancode(
-            scan_code: u32,
-            virtual_key: *mut u32,
-        ) -> i32;
+        pub(super) fn rd_input_key_for_scancode(scan_code: u32, virtual_key: *mut u32) -> i32;
     }
 }
 
@@ -1091,37 +1088,61 @@ impl RemoteActivity {
             self.snapshot.uncertain = true;
         }
         let count = batch.events.len() as u32;
-        let known_status = matches!(status,
-            native::OK | native::INVALID_ARGUMENT | native::DESKTOP_UNAVAILABLE
-                | native::INJECTION_FAILED | native::UNSUPPORTED
-                | native::GUARD_UNAVAILABLE | native::RECLAMATION_UNCONFIRMED);
+        let known_status = matches!(
+            status,
+            native::OK
+                | native::INVALID_ARGUMENT
+                | native::DESKTOP_UNAVAILABLE
+                | native::INJECTION_FAILED
+                | native::UNSUPPORTED
+                | native::GUARD_UNAVAILABLE
+                | native::RECLAMATION_UNCONFIRMED
+        );
         let zero_submission = result.struct_size == RESULT_SIZE
-            && known_status && status != native::OK
-            && result.submitted == 0 && result.inserted == 0
-            && batch.episodes.iter().zip(&batch.receipts).all(|(episode, receipt)| {
-                *receipt == if *episode == 0 {
-                    native::RECEIPT_NOT_TRACKED
-                } else {
-                    native::RECEIPT_NOT_SUBMITTED
-                }
-            });
+            && known_status
+            && status != native::OK
+            && result.submitted == 0
+            && result.inserted == 0
+            && batch
+                .episodes
+                .iter()
+                .zip(&batch.receipts)
+                .all(|(episode, receipt)| {
+                    *receipt
+                        == if *episode == 0 {
+                            native::RECEIPT_NOT_TRACKED
+                        } else {
+                            native::RECEIPT_NOT_SUBMITTED
+                        }
+                });
         if zero_submission {
             // No submission time or sequence is invented. An explicit native
             // reclamation failure above still closes the sensitive-action gate.
             return;
         }
-        let terminal_receipts = batch.episodes.iter().zip(&batch.receipts).all(|(episode, receipt)| {
-            if *episode == 0 {
-                *receipt == native::RECEIPT_NOT_TRACKED
-            } else {
-                matches!(*receipt, native::RECEIPT_PASSED | native::RECEIPT_SELF_VETOED
-                    | native::RECEIPT_DOWNSTREAM_VETOED)
-            }
-        });
+        let terminal_receipts =
+            batch
+                .episodes
+                .iter()
+                .zip(&batch.receipts)
+                .all(|(episode, receipt)| {
+                    if *episode == 0 {
+                        *receipt == native::RECEIPT_NOT_TRACKED
+                    } else {
+                        matches!(
+                            *receipt,
+                            native::RECEIPT_PASSED
+                                | native::RECEIPT_SELF_VETOED
+                                | native::RECEIPT_DOWNSTREAM_VETOED
+                        )
+                    }
+                });
         let confirmed_batch = result.struct_size == RESULT_SIZE
-            && result.epoch == epoch && status == native::OK
+            && result.epoch == epoch
+            && status == native::OK
             && result.guard_state == native::GUARD_ARMED
-            && result.submitted == count && result.inserted == count
+            && result.submitted == count
+            && result.inserted == count
             && terminal_receipts;
         self.snapshot.uncertain |= !confirmed_batch;
         match self.snapshot.sequence.checked_add(1) {
@@ -1140,7 +1161,8 @@ impl RemoteActivity {
             // count is submission evidence, never a claim about which prefix
             // was inserted; any short/unknown batch remains uncertain above.
             let untracked = *receipt == native::RECEIPT_NOT_TRACKED
-                && result.submitted != 0 && result.inserted != 0;
+                && result.submitted != 0
+                && result.inserted != 0;
             let unconfirmed = result.submitted != 0
                 && (*receipt == native::RECEIPT_UNKNOWN || Receipt::of(*receipt).is_none());
             if !observed && !untracked && !unconfirmed {
@@ -1148,7 +1170,9 @@ impl RemoteActivity {
             }
             match event.kind {
                 native::EVENT_MOUSE => {
-                    if event.action == native::MOUSE_BUTTON_UP && event.button == native::BUTTON_LEFT {
+                    if event.action == native::MOUSE_BUTTON_UP
+                        && event.button == native::BUTTON_LEFT
+                    {
                         click = true;
                     } else {
                         mouse = true;
@@ -1167,7 +1191,9 @@ impl RemoteActivity {
         if !click && !mouse {
             return;
         }
-        let wall_ms = SystemTime::now().duration_since(UNIX_EPOCH).ok()
+        let wall_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
             .and_then(|time| u64::try_from(time.as_millis()).ok());
         let Some(wall_ms) = wall_ms else {
             self.snapshot.uncertain = true;
@@ -1218,15 +1244,24 @@ impl Arbitration {
     }
 
     fn open_session(&mut self) -> Result<u64, InputError> {
-        Self::take(&mut self.next_session, &mut self.activity.snapshot.uncertain)
+        Self::take(
+            &mut self.next_session,
+            &mut self.activity.snapshot.uncertain,
+        )
     }
 
     fn open_episode(&mut self) -> Result<u64, InputError> {
-        Self::take(&mut self.next_episode, &mut self.activity.snapshot.uncertain)
+        Self::take(
+            &mut self.next_episode,
+            &mut self.activity.snapshot.uncertain,
+        )
     }
 
     fn open_transaction(&mut self) -> Result<u64, InputError> {
-        Self::take(&mut self.next_transaction, &mut self.activity.snapshot.uncertain)
+        Self::take(
+            &mut self.next_transaction,
+            &mut self.activity.snapshot.uncertain,
+        )
     }
 
     /// The record on one key, whoever owns it.
@@ -1322,7 +1357,8 @@ pub(crate) fn remote_input_allows_sensitive_action() -> bool {
         return false;
     }
     registry.activity.last_submission.is_none_or(|last| {
-        Instant::now().checked_duration_since(last)
+        Instant::now()
+            .checked_duration_since(last)
             .is_some_and(|elapsed| elapsed > Duration::from_millis(120))
     })
 }
@@ -1781,7 +1817,12 @@ impl InputSession {
     }
 
     /// Whether the guard may admit a fresh episode for a free `key`.
-    fn admit(&mut self, registry: &mut Arbitration, epoch: u32, key: u32) -> Result<Admission, InputError> {
+    fn admit(
+        &mut self,
+        registry: &mut Arbitration,
+        epoch: u32,
+        key: u32,
+    ) -> Result<Admission, InputError> {
         match admit_hold(epoch, self.session, key) {
             Ok(native::KEY_ADMIT) => Ok(Admission::Claim),
             // A hold that is not a lease's own: the down is not injected and
@@ -1993,7 +2034,12 @@ impl InputSession {
                 return Ok(());
             }
             let encoding = map_key_encoding(wire_scan)?;
-            let Encoding::Key { virtual_key, extended, .. } = encoding else {
+            let Encoding::Key {
+                virtual_key,
+                extended,
+                ..
+            } = encoding
+            else {
                 return Err(InputError::Unsupported);
             };
             let key = hold_key(virtual_key, extended)?;
@@ -2152,7 +2198,11 @@ impl InputSession {
         // The modifiers this event presses for itself, and their own episodes.
         let mut pressed = [(0usize, 0u64, Encoding::Button(0)); MAX_TRANSIENT_MODIFIERS];
         let mut pressed_len = 0usize;
-        for &TransientModifier { canonical, encoding } in &required[..required_len] {
+        for &TransientModifier {
+            canonical,
+            encoding,
+        } in &required[..required_len]
+        {
             let modifier_slot = slot_for(canonical)?;
             if !matches!(
                 self.plan_down(registry, epoch, modifier_slot, canonical)?,
@@ -2328,7 +2378,12 @@ impl InputSession {
         };
         let up = effect == Effect::Release;
         let event = self.push_key_event(
-            virtual_key, scan_code, extended, scan_code_mode, up, episode,
+            virtual_key,
+            scan_code,
+            extended,
+            scan_code_mode,
+            up,
+            episode,
         );
         self.batch.holds.push(Hold {
             event,
@@ -2497,7 +2552,9 @@ impl InputSession {
             receipts: self.batch.receipts.as_mut_ptr(),
         };
         let status = unsafe { native::rd_input_send(&request, &mut result) };
-        registry.activity.observe(&self.batch, epoch, status, &result);
+        registry
+            .activity
+            .observe(&self.batch, epoch, status, &result);
 
         // The whole reply is read before any of it is believed: a structure the
         // adapter did not write, a count that cannot come from this batch, an

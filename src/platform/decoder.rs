@@ -64,7 +64,10 @@ pub mod windows {
     pub struct Observer(WindowsDecoderObserver);
 
     impl Decoder {
-        pub fn open(config: DecoderConfig, lease: Arc<dyn SurfaceLease>) -> Result<Self, OpenFailure> {
+        pub fn open(
+            config: DecoderConfig,
+            lease: Arc<dyn SurfaceLease>,
+        ) -> Result<Self, OpenFailure> {
             if !matches!(config.codec, VideoCodec::H264 | VideoCodec::H265) {
                 return Err(OpenFailure {
                     error: DecoderError::UnsupportedCodec,
@@ -88,7 +91,9 @@ pub mod windows {
                 // No decoder or producer has been created by this attempt.
                 cleanup: CleanupVerdict::Confirmed,
             })?;
-            WindowsDecoder::open(config, presentation).map(Self).map_err(Into::into)
+            WindowsDecoder::open(config, presentation)
+                .map(Self)
+                .map_err(Into::into)
         }
 
         pub fn observer(&self) -> Observer {
@@ -104,7 +109,10 @@ pub mod windows {
             unit: AccessUnit,
             cancel: &tokio_util::sync::CancellationToken,
         ) -> Result<(), RejectedSubmission> {
-            self.0.submit_cancellable(unit, cancel).await.map_err(Into::into)
+            self.0
+                .submit_cancellable(unit, cancel)
+                .await
+                .map_err(Into::into)
         }
 
         pub fn codec_name(&self) -> Result<&str, DecoderError> {
@@ -392,7 +400,10 @@ impl SurfaceDecoder {
                 // `Opened` is the rung this backend reaches: a real context
                 // initialized and destroyed, not a metadata claim.
                 Ok(probe) if probe.evidence == software::CapabilityEvidence::Opened => None,
-                Ok(probe) => Some(format!("the {codec:?} probe reached only {:?}", probe.evidence)),
+                Ok(probe) => Some(format!(
+                    "the {codec:?} probe reached only {:?}",
+                    probe.evidence
+                )),
                 Err(error) => Some(error.to_string()),
             }
         }

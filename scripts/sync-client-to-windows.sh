@@ -53,11 +53,15 @@
 #
 # The bridge selects the engine's software-vpx feature (native/frb/Cargo.toml).
 # REMOTE_LIBVPX_PREFIX names the remote x64-windows-static-md dependency install,
-# never a prefix from this machine. The driver verifies pinned libvpx 1.15.2 and
-# Zlib 1.3.2 in that same .../installed/x64-windows-static-md prefix, plus the
-# selected CMake toolchain wrapper pointing at its installed root. Cargo receives
-# both LIBVPX_PREFIX and ZLIB_ROOT in its own process environment. This script
-# installs no native dependencies and changes no renderer or feature selection.
+# never a prefix from this machine. The driver verifies pinned libvpx 1.15.2,
+# Zlib 1.3.2 and the static Opus library and headers in that same
+# .../installed/x64-windows-static-md prefix, plus the selected CMake toolchain
+# wrapper pointing at its installed root. Cargo receives LIBVPX_PREFIX and
+# ZLIB_ROOT in its own process environment. magnum-opus reads only VCPKG_ROOT, so
+# the driver mirrors just that Opus library and its headers into the isolated
+# <root>/deps/magnum-opus tree and exports it only to the kernel process. This
+# script installs no native dependencies and changes no renderer or feature
+# selection.
 #
 # `scripts/verify-native-provenance.sh --require-tracked` and the Windows
 # workflow's libvpx overlay (`native/frb/vcpkg-overlays/libvpx`) are how a clean
@@ -82,7 +86,14 @@
 #     actual installed root and x64-windows-static-md triplet for Cargo's native
 #     dependencies. It is not passed to the Flutter runner's CMake configuration.
 #   - REMOTE_LIBVPX_PREFIX: that install's static-md prefix, containing the pinned
-#     libvpx and Zlib headers, libraries and provenance checked by the driver.
+#     libvpx, Zlib and Opus headers, libraries and provenance checked by the
+#     driver. The driver mirrors only the verified static Opus library and
+#     headers into <root>/deps/magnum-opus, the isolated VCPKG_ROOT that
+#     magnum-opus reads (<VCPKG_ROOT>/installed/x64-windows-static on this
+#     target); the supplied prefix itself is only read, never written.
+#   - REMOTE_LIBCLANG_PATH: the directory holding the real libclang.dll that
+#     bindgen (magnum-opus) dlopen()s. A clang.exe on PATH is not that DLL, and
+#     the driver refuses to build without it.
 #   - Git and rustup proxies on the host's PATH; git applies patches to the copied
 #     client (which carries no .git). Network or complete caches for locked Cargo
 #     dependencies and the selected SDK's Windows build artifacts. Client Pub
@@ -115,6 +126,7 @@
 #     REMOTE_CMAKE='C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' \
 #     REMOTE_CMAKE_TOOLCHAIN_FILE=C:/Users/me/rd-build/deps/rd-engine-vcpkg.cmake \
 #     REMOTE_LIBVPX_PREFIX=C:/Users/me/rd-build/deps/vcpkg/installed/x64-windows-static-md \
+#     REMOTE_LIBCLANG_PATH='C:/Program Files/LLVM/bin' \
 #     bash scripts/sync-client-to-windows.sh
 #
 # REMOTE_HOST defaults to rustdesk-windows; REMOTE_ROOT defaults to the authenticated
@@ -372,6 +384,7 @@ remote_vs_root="$(windows_path REMOTE_VS_ROOT "${REMOTE_VS_ROOT:-}")"
 remote_cmake="$(windows_path REMOTE_CMAKE "${REMOTE_CMAKE:-}")"
 remote_cmake_toolchain_file="$(windows_path REMOTE_CMAKE_TOOLCHAIN_FILE "${REMOTE_CMAKE_TOOLCHAIN_FILE:-}")"
 remote_libvpx_prefix="$(windows_path REMOTE_LIBVPX_PREFIX "${REMOTE_LIBVPX_PREFIX:-}")"
+remote_libclang_path="$(windows_path REMOTE_LIBCLANG_PATH "${REMOTE_LIBCLANG_PATH:-}")"
 remote_rust_toolchain="${REMOTE_RUST_TOOLCHAIN:-1.95-x86_64-pc-windows-msvc}"
 [[ "$remote_rust_toolchain" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die \
   "REMOTE_RUST_TOOLCHAIN must be a rustup toolchain name without command metacharacters (do not prefix it with +)"
@@ -406,6 +419,10 @@ esac
 remote_client="$remote_root/client"
 remote_engine="$remote_root/engine"
 remote_bridge="$remote_engine/native/frb"
+# The isolated magnum-opus VCPKG_ROOT this run owns: the driver copies only the
+# verified static Opus library and headers there. It is not the dependency
+# install REMOTE_LIBVPX_PREFIX names, which stays read-only.
+remote_magnum_root="$remote_root/deps/magnum-opus"
 remote_patch="$remote_bridge/patches/official-client-cpu-rgba.patch"
 remote_account_patch="$remote_bridge/patches/official-client-account-safety.patch"
 remote_flutter_lock_patch="$remote_bridge/patches/official-client-flutter-lock.patch"
@@ -425,6 +442,8 @@ printf -v driver_arguments '%s' \
   "-CMakePath \"$remote_cmake\" " \
   "-CMakeToolchainFile \"$remote_cmake_toolchain_file\" " \
   "-LibvpxPrefix \"$remote_libvpx_prefix\" " \
+  "-MagnumOpusRoot \"$remote_magnum_root\" " \
+  "-LibclangPath \"$remote_libclang_path\" " \
   "-EngineDll \"$remote_engine_dll\""
 echo "    tree: $remote_root"
 
@@ -440,8 +459,10 @@ remote "if not exist \"$remote_root/.\" mkdir \"$remote_root\"" || die \
 scp "$build_driver" "$remote_host:$remote_root/"
 
 step "Preflighting the selected Windows tools and native dependencies"
-# The driver must validate the SDKs, MSVC/CMake and pinned libvpx/Zlib install
-# without reading, creating or modifying the still-absent client/engine trees.
+# The driver must validate the SDKs, MSVC/CMake, the pinned libvpx/Zlib/Opus
+# install and the bindgen libclang without reading, creating or modifying the
+# still-absent client/engine trees. Its only write is the isolated Opus mirror at
+# $remote_magnum_root, which the kernel stage then uses as VCPKG_ROOT.
 run_stage preflight || die \
   "Windows build preflight failed; no client or engine sources were copied; $remote_root is retained"
 

@@ -41,11 +41,7 @@ pub(super) fn load_key(_root: &Path, namespace: &str) -> io::Result<Option<secre
     }
 }
 
-pub(super) fn create_key(
-    _root: &Path,
-    namespace: &str,
-    key: &secretbox::Key,
-) -> io::Result<bool> {
+pub(super) fn create_key(_root: &Path, namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
     validate_namespace(namespace)?;
     let service = connect()?;
     if let Some(item) = find_item(&service, namespace)? {
@@ -125,10 +121,7 @@ fn connect<'a>() -> io::Result<SecretService<'a>> {
     SecretService::connect_with_existing(EncryptionType::Dh, connection).map_err(secret_error)
 }
 
-fn find_item<'a>(
-    service: &'a SecretService<'a>,
-    namespace: &str,
-) -> io::Result<Option<Item<'a>>> {
+fn find_item<'a>(service: &'a SecretService<'a>, namespace: &str) -> io::Result<Option<Item<'a>>> {
     // Search the entire service, including locked matches. Searching only the
     // current default collection could orphan a key after an alias change.
     let mut items = service

@@ -61,7 +61,7 @@ jobs:
       - name: Host build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cmake ninja-build pkg-config protobuf-compiler make perl
+          sudo apt-get install --yes cmake ninja-build pkg-config protobuf-compiler make perl libasound2-dev
       - name: HarmonyOS SDK
         uses: ErBWs/setup-ohos@4dbb63025116eb6165ceac58a4bf47cbdc5ac721
         with:
@@ -76,6 +76,20 @@ jobs:
         with:
           workspaces: native/ohos_napi
           prefix-key: ohos-har-sdk-6.1.1.280-rust-1.95.0
+      - name: Pinned Opus for host tests and the OHOS target
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/ohos-env.sh
+          python3 scripts/build-ohos-opus.py --target x64-linux arm64-linux
+          # magnum-opus generates its FFI with bindgen. The SDK's own host
+          # libclang is the one that knows the ohos triple and is a host build,
+          # and magnum finds the archives through VCPKG_ROOT.
+          if [ -z "$(find "$LIBCLANG_PATH" -maxdepth 1 -name 'libclang.so*' -print -quit 2>/dev/null)" ]; then
+            echo "::error::no host libclang in $LIBCLANG_PATH (needed by bindgen)"; exit 1
+          fi
+          echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
       - name: Session, clipboard, transfer and host regressions
         shell: bash
         run: |
@@ -87,6 +101,7 @@ jobs:
           cargo test --locked --lib transfer
           cargo test --locked --lib clipboard
           cargo test --locked --lib cliprdr
+          cargo test --locked --lib audio::tests
           cargo test --locked --lib viewer::tests
           cargo test --locked --lib host::security
           cargo test --locked --lib host::service

@@ -276,7 +276,11 @@ mod tests {
             latency.record(micros);
         }
         assert_eq!(latency.percentile_us(0.5), 64, "rank 50 lands in [32, 64)");
-        assert_eq!(latency.percentile_us(0.99), 128, "rank 99 lands in [64, 128)");
+        assert_eq!(
+            latency.percentile_us(0.99),
+            128,
+            "rank 99 lands in [64, 128)"
+        );
         assert_eq!(latency.percentile_us(1.0), 128, "the last sample too");
         assert_eq!(latency.max_us(), 100, "the exact maximum is still exact");
     }
@@ -288,7 +292,11 @@ mod tests {
             latency.record(500);
         }
         latency.record(40_000);
-        assert_eq!(latency.percentile_us(0.5), 512, "the median ignores the tail");
+        assert_eq!(
+            latency.percentile_us(0.5),
+            512,
+            "the median ignores the tail"
+        );
         assert_eq!(latency.percentile_us(0.99), 512);
         assert_eq!(latency.percentile_us(1.0), 65_536, "[32768, 65536)");
         assert_eq!(latency.max_us(), 40_000);

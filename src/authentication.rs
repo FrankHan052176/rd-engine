@@ -26,25 +26,48 @@ pub fn password_response(h1: &[u8; 32], challenge: &str) -> [u8; 32] {
 pub struct Passwords {
     values: std::sync::Arc<PasswordValues>,
 }
-struct PasswordValues { values: Vec<[u8; 32]>, temporary: Option<usize> }
+struct PasswordValues {
+    values: Vec<[u8; 32]>,
+    temporary: Option<usize>,
+}
 impl Passwords {
     pub fn from_salted(values: Vec<[u8; 32]>) -> Self {
-        Self { values: std::sync::Arc::new(PasswordValues { values, temporary: None }) }
+        Self {
+            values: std::sync::Arc::new(PasswordValues {
+                values,
+                temporary: None,
+            }),
+        }
     }
     /// The checked host owner identifies its temporary verifier explicitly;
     /// permanent/preset matches must never count as temporary failures.
     pub(crate) fn from_host(temporary: Option<[u8; 32]>, permanent: Option<[u8; 32]>) -> Self {
-        let mut values = Vec::with_capacity(usize::from(temporary.is_some()) + usize::from(permanent.is_some()));
-        let temporary_index = temporary.map(|h1| { values.push(h1); 0 });
-        if let Some(h1) = permanent { values.push(h1); }
-        Self { values: std::sync::Arc::new(PasswordValues { values, temporary: temporary_index }) }
+        let mut values =
+            Vec::with_capacity(usize::from(temporary.is_some()) + usize::from(permanent.is_some()));
+        let temporary_index = temporary.map(|h1| {
+            values.push(h1);
+            0
+        });
+        if let Some(h1) = permanent {
+            values.push(h1);
+        }
+        Self {
+            values: std::sync::Arc::new(PasswordValues {
+                values,
+                temporary: temporary_index,
+            }),
+        }
     }
     /// Shares the zeroizing verifier owner, never copies password-equivalent bytes.
     pub(crate) fn shared(&self) -> Self {
-        Self { values: self.values.clone() }
+        Self {
+            values: self.values.clone(),
+        }
     }
     fn verify(&self, hash: &Hash, response: &[u8]) -> (bool, Option<bool>) {
-        if response.len() != 32 { return (false, self.values.temporary.map(|_| false)); }
+        if response.len() != 32 {
+            return (false, self.values.temporary.map(|_| false));
+        }
         let mut valid = false;
         let mut temporary_match = false;
         for (index, value) in self.values.values.iter().enumerate() {
@@ -54,8 +77,13 @@ impl Passwords {
             temporary_match |= self.values.temporary == Some(index) && matched;
             utils::memzero(&mut expected);
         }
-        let temporary_outcome = if temporary_match { Some(true) }
-            else if !valid && self.values.temporary.is_some() { Some(false) } else { None };
+        let temporary_outcome = if temporary_match {
+            Some(true)
+        } else if !valid && self.values.temporary.is_some() {
+            Some(false)
+        } else {
+            None
+        };
         (valid, temporary_outcome)
     }
 }
@@ -288,7 +316,9 @@ impl HostAuthentication {
             }
             let (valid, temporary) = self.config.passwords.verify(&self.hash, &response);
             self.config.attempts.outcome(false, valid);
-            if let Some(matched) = temporary { self.config.attempts.temporary_password_outcome(matched); }
+            if let Some(matched) = temporary {
+                self.config.attempts.temporary_password_outcome(matched);
+            }
             valid
         } else {
             false

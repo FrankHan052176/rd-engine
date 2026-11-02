@@ -8,8 +8,8 @@
 //! the Host's own listener/route admission only — a session with no controller
 //! really is `listening` with no capture, and that is a normal, sustainable
 //! state rather than a failed start.
-use super::*;
 use super::security::HostSecurity;
+use super::*;
 use crate::authentication::{Passwords, PrimaryPolicy};
 use crate::rendezvous::{
     IncomingHostRoute, RegistrationConfig, RegistrationState, run_host_registration,
@@ -192,8 +192,12 @@ pub struct HostServiceStatus {
 /// approval epoch and the credential revision together, so an old answer cannot
 /// be applied to a later connection.
 pub fn request_id(run_epoch: u64, peer: &HostPeerSnapshot) -> Option<String> {
-    peer.approval_epoch
-        .map(|approval| format!("{run_epoch}:{}:{approval}:{}", peer.conn_id, peer.policy_revision))
+    peer.approval_epoch.map(|approval| {
+        format!(
+            "{run_epoch}:{}:{approval}:{}",
+            peer.conn_id, peer.policy_revision
+        )
+    })
 }
 
 fn parse_request_id(value: &str) -> Option<(u64, u64, u64, u64)> {
@@ -202,7 +206,10 @@ fn parse_request_id(value: &str) -> Option<(u64, u64, u64, u64)> {
     let conn = parts.next()?.parse::<u64>().ok()?;
     let approval = parts.next()?.parse::<u64>().ok()?;
     let revision = parts.next()?.parse::<u64>().ok()?;
-    parts.next().is_none().then_some((run, conn, approval, revision))
+    parts
+        .next()
+        .is_none()
+        .then_some((run, conn, approval, revision))
 }
 
 #[derive(Clone, Copy)]
@@ -317,7 +324,9 @@ impl HostService {
             return Err(HostServiceError::InvalidOptions);
         }
         let epoch = NEXT_RUN
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
             .map_err(|_| HostServiceError::InvalidOptions)?
             + 1;
         // The accepted primary set belongs to the record, not to this run: its
@@ -360,7 +369,8 @@ impl HostService {
             allow_input: false,
             codec_selection: CodecSelection::Auto,
         };
-        let host = Arc::new(Host::start(host_options, Some(route_rx)).map_err(HostServiceError::Host)?);
+        let host =
+            Arc::new(Host::start(host_options, Some(route_rx)).map_err(HostServiceError::Host)?);
         let cancel = CancellationToken::new();
         let (states, state_rx) = watch::channel(RegistrationState::Registering);
         let report = Arc::new(Mutex::new(HostRegistration::Registering));
@@ -415,7 +425,10 @@ impl HostService {
         // The real admission boundary: the Host's own listener/route hand-off.
         let ready = tokio::time::timeout(START_TIMEOUT, host.wait_ready()).await;
         // A concurrent stop may have taken this run; it owns the teardown then.
-        if !lock(&self.run).as_ref().is_some_and(|run| run.epoch == epoch) {
+        if !lock(&self.run)
+            .as_ref()
+            .is_some_and(|run| run.epoch == epoch)
+        {
             return Err(HostServiceError::StaleRun);
         }
         match ready {
@@ -543,7 +556,9 @@ impl HostService {
             let snapshot = run.host.snapshot();
             host_phase = snapshot.phase;
             // The Host's own terminal verdict owns the service state.
-            if matches!(state, "starting" | "listening") && (snapshot.closed || snapshot.error.is_some()) {
+            if matches!(state, "starting" | "listening")
+                && (snapshot.closed || snapshot.error.is_some())
+            {
                 state = "failed";
                 error = snapshot.error.map(HostServiceError::Host).or(error);
             }
@@ -762,15 +777,29 @@ mod tests {
         assert_eq!(request_id(4, &authorized), None);
 
         // Malformed or extended tokens are refused, not partially parsed.
-        for value in ["", "4", "4:7", "4:7:11", "4:7:11:3:9", "a:7:11:3", "4:-7:11:3"] {
+        for value in [
+            "",
+            "4",
+            "4:7",
+            "4:7:11",
+            "4:7:11:3:9",
+            "a:7:11:3",
+            "4:-7:11:3",
+        ] {
             assert_eq!(parse_request_id(value), None, "{value:?}");
         }
     }
 
     #[test]
     fn a_worker_that_ends_badly_is_never_reported_as_registering() {
-        assert_eq!(HostRegistration::from_state(RegistrationState::Registering), HostRegistration::Registering);
-        assert!(HostRegistration::from_state(RegistrationState::Observed { keep_alive_raw: 0 }).observed());
+        assert_eq!(
+            HostRegistration::from_state(RegistrationState::Registering),
+            HostRegistration::Registering
+        );
+        assert!(
+            HostRegistration::from_state(RegistrationState::Observed { keep_alive_raw: 0 })
+                .observed()
+        );
         // An address observation is not the identity acknowledged by hbbs.
         assert!(!HostRegistration::from_state(RegistrationState::AddressObserved).observed());
         assert!(!HostRegistration::from_state(RegistrationState::Stale).observed());

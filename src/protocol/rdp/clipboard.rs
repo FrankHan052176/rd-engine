@@ -6,9 +6,9 @@ use std::fmt;
 
 use ironrdp_cliprdr::backend::CliprdrBackend;
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
-    FileContentsRequest, FileContentsResponse, FormatDataRequest, FormatDataResponse,
-    LockDataId, OwnedFormatDataResponse,
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
+    OwnedFormatDataResponse,
 };
 use ironrdp_core::IntoOwned as _;
 use zeroize::Zeroizing;
@@ -36,7 +36,9 @@ pub(super) struct TextClipboard {
 
 impl fmt::Debug for TextClipboard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TextClipboard").field("ready", &self.ready).finish_non_exhaustive()
+        f.debug_struct("TextClipboard")
+            .field("ready", &self.ready)
+            .finish_non_exhaustive()
     }
 }
 
@@ -90,17 +92,22 @@ impl CliprdrBackend for TextClipboard {
 
     fn on_format_list_response(&mut self, ok: bool) {
         if !ok {
-            self.actions.push_back(Action::Error("remote rejected clipboard formats"));
+            self.actions
+                .push_back(Action::Error("remote rejected clipboard formats"));
         }
     }
 
-    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {
+    fn on_process_negotiated_capabilities(
+        &mut self,
+        _capabilities: ClipboardGeneralCapabilityFlags,
+    ) {
         // Unicode text has no optional capability; Cliprdr selects short/long
         // format names itself. File and locking capabilities are never offered.
     }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
-        self.remote_unicode = available_formats.iter()
+        self.remote_unicode = available_formats
+            .iter()
             .any(|format| format.id == ClipboardFormatId::CF_UNICODETEXT);
         self.remote_changed = self.request_pending;
         if self.ready {
@@ -115,12 +122,14 @@ impl CliprdrBackend for TextClipboard {
             }
             _ => FormatDataResponse::new_error(),
         };
-        self.actions.push_back(Action::Respond(response.into_owned()));
+        self.actions
+            .push_back(Action::Respond(response.into_owned()));
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
         if !self.request_pending {
-            self.actions.push_back(Action::Error("unsolicited clipboard data"));
+            self.actions
+                .push_back(Action::Error("unsolicited clipboard data"));
             return;
         }
         self.request_pending = false;
@@ -132,28 +141,35 @@ impl CliprdrBackend for TextClipboard {
             return;
         }
         if response.is_error() {
-            self.actions.push_back(Action::Error("remote clipboard data unavailable"));
+            self.actions
+                .push_back(Action::Error("remote clipboard data unavailable"));
             return;
         }
         match response.to_unicode_string() {
             Ok(text) => self.actions.push_back(Action::Text(text)),
-            Err(_) => self.actions.push_back(Action::Error("invalid Unicode clipboard data")),
+            Err(_) => self
+                .actions
+                .push_back(Action::Error("invalid Unicode clipboard data")),
         }
     }
 
     fn on_file_contents_request(&mut self, request: FileContentsRequest) {
-        self.actions.push_back(Action::RejectFile(request.stream_id));
+        self.actions
+            .push_back(Action::RejectFile(request.stream_id));
     }
 
     fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {
-        self.actions.push_back(Action::Error("unsolicited file clipboard data"));
+        self.actions
+            .push_back(Action::Error("unsolicited file clipboard data"));
     }
 
     fn on_lock(&mut self, _data_id: LockDataId) {
-        self.actions.push_back(Action::Error("file clipboard locking was not negotiated"));
+        self.actions
+            .push_back(Action::Error("file clipboard locking was not negotiated"));
     }
 
     fn on_unlock(&mut self, _data_id: LockDataId) {
-        self.actions.push_back(Action::Error("file clipboard locking was not negotiated"));
+        self.actions
+            .push_back(Action::Error("file clipboard locking was not negotiated"));
     }
 }

@@ -138,8 +138,10 @@ async fn serve(listener: TcpListener) -> Observed {
     // rather than be accepted and discovered later.
     // Independent OpenSSL DES-ECB vector for bit-reversed "hunter2\\0".
     // The fixture must not call the client's authentication implementation.
-    let expected = [0xae, 0x2f, 0xfb, 0x6b, 0x2f, 0xdd, 0x58, 0xfb,
-                    0x77, 0x56, 0x79, 0x77, 0xd8, 0xd5, 0xec, 0xe4];
+    let expected = [
+        0xae, 0x2f, 0xfb, 0x6b, 0x2f, 0xdd, 0x58, 0xfb, 0x77, 0x56, 0x79, 0x77, 0xd8, 0xd5, 0xec,
+        0xe4,
+    ];
     assert_eq!(response, expected, "the client's DES response");
     write_all(&mut stream, &0u32.to_be_bytes()).await;
 
@@ -152,9 +154,7 @@ async fn serve(listener: TcpListener) -> Observed {
     let mut init = Vec::new();
     init.extend_from_slice(&WIDTH.to_be_bytes());
     init.extend_from_slice(&HEIGHT.to_be_bytes());
-    init.extend_from_slice(&[
-        32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
-    ]);
+    init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
     init.extend_from_slice(&(NAME.len() as u32).to_be_bytes());
     init.extend_from_slice(NAME.as_bytes());
     write_all(&mut stream, &init).await;
@@ -177,7 +177,14 @@ async fn serve(listener: TcpListener) -> Observed {
 
     // One raw rectangle covering the desktop.
     let mut message = update(1);
-    rect_header(&mut message, 0, 0, WIDTH as i32, HEIGHT as i32, ENCODING_RAW);
+    rect_header(
+        &mut message,
+        0,
+        0,
+        WIDTH as i32,
+        HEIGHT as i32,
+        ENCODING_RAW,
+    );
     for _ in 0..(WIDTH as usize * HEIGHT as usize) {
         message.extend_from_slice(&RED);
     }
@@ -285,7 +292,6 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         assert_eq!(pixel, RED, "every pixel of the raw rectangle");
     }
 
-
     // A CopyRect from (0,0) to (1,1) moves one pixel and damages only that
     // rectangle, so the sink keeps the rest of the frame.
     let event = timeout(LIMIT, session.pump(&mut sink))
@@ -294,7 +300,10 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         .expect("pump");
     assert_eq!(event, Some(RfbEvent::Painted));
     let damage = sink.take_damage().expect("copy damage");
-    assert_eq!((damage.x, damage.y, damage.width, damage.height), (1, 1, 1, 1));
+    assert_eq!(
+        (damage.x, damage.y, damage.width, damage.height),
+        (1, 1, 1, 1)
+    );
     assert_eq!(&sink.bytes()[..4], &RED, "the first pixel is untouched");
     let stride = sink.stride();
     assert_eq!(
@@ -318,7 +327,6 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         .expect("pump did not stall")
         .expect("pump");
     assert_eq!(event, Some(RfbEvent::Clipboard("ping".into())));
-
 
     let observed = timeout(LIMIT, observed)
         .await
@@ -413,7 +421,10 @@ async fn a_rejected_password_is_reported_as_an_authentication_failure() {
         }
         other => panic!("expected an authentication failure, got {other}"),
     }
-    assert!(sink.take_damage().is_none(), "a failed login paints nothing");
+    assert!(
+        sink.take_damage().is_none(),
+        "a failed login paints nothing"
+    );
 }
 
 /// A server offering only types this client cannot complete is refused rather
@@ -475,9 +486,7 @@ async fn upstream_sends_exactly_one_incremental_request_per_update() {
         let mut init = Vec::new();
         init.extend_from_slice(&4u16.to_be_bytes());
         init.extend_from_slice(&2u16.to_be_bytes());
-        init.extend_from_slice(&[
-            32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
-        ]);
+        init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
         init.extend_from_slice(&0u32.to_be_bytes());
         write_all(&mut stream, &init).await;
 
@@ -513,7 +522,6 @@ async fn upstream_sends_exactly_one_incremental_request_per_update() {
         .expect("pump");
     assert_eq!(event, Some(RfbEvent::Painted));
 
-
     let (first, was_quiet, second, no_duplicate) = timeout(LIMIT, rx)
         .await
         .expect("fixture finished")
@@ -527,5 +535,8 @@ async fn upstream_sends_exactly_one_incremental_request_per_update() {
         second[1], 1,
         "upstream requests the next update without a caller request"
     );
-    assert!(no_duplicate, "the adapter duplicated upstream's incremental request");
+    assert!(
+        no_duplicate,
+        "the adapter duplicated upstream's incremental request"
+    );
 }

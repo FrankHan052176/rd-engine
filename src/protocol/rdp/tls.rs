@@ -51,7 +51,11 @@ impl AsyncRead for PrefixedTcp {
 }
 
 impl AsyncWrite for PrefixedTcp {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
     }
 
@@ -81,7 +85,9 @@ pub(super) async fn config(trust: RdpTrust) -> Result<Arc<ClientConfig>, RdpErro
                 }
                 let mut roots = rustls::RootCertStore::empty();
                 for cert in loaded.certs {
-                    roots.add(cert).map_err(|_| RdpError::Trust(TrustFailure::RootsUnavailable))?;
+                    roots
+                        .add(cert)
+                        .map_err(|_| RdpError::Trust(TrustFailure::RootsUnavailable))?;
                 }
                 Ok(roots)
             })
@@ -108,14 +114,20 @@ pub(super) async fn upgrade(
         .connect(server_name, stream)
         .await
         .map_err(handshake_error)?;
-    let cert = stream.get_ref().1.peer_certificates()
+    let cert = stream
+        .get_ref()
+        .1
+        .peer_certificates()
         .and_then(|chain| chain.first())
         .ok_or(RdpError::Trust(TrustFailure::MissingCertificate))?;
     // Same x509-cert extraction as the official example / ironrdp-tls helper;
     // there is no local ASN.1/DER parser.
     let cert = x509_cert::Certificate::from_der(cert.as_ref())
         .map_err(|_| RdpError::Trust(TrustFailure::MalformedCertificate))?;
-    let public_key = cert.tbs_certificate.subject_public_key_info.subject_public_key
+    let public_key = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
         .as_bytes()
         .ok_or(RdpError::Trust(TrustFailure::MalformedCertificate))?
         .to_owned();
@@ -123,7 +135,10 @@ pub(super) async fn upgrade(
 }
 
 fn handshake_error(error: io::Error) -> RdpError {
-    if let Some(error) = error.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>()) {
+    if let Some(error) = error
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<rustls::Error>())
+    {
         match error {
             rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented => {
                 return RdpError::Trust(TrustFailure::CertificateRejected);
@@ -166,7 +181,12 @@ impl ServerCertVerifier for PinnedCertificate {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -175,10 +195,17 @@ impl ServerCertVerifier for PinnedCertificate {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }

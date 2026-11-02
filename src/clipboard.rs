@@ -179,7 +179,10 @@ pub enum ClipboardFormatData {
     Html(String),
     Image(ClipboardImage),
     /// A named platform format, opaque to this module.
-    Special { name: String, bytes: Vec<u8> },
+    Special {
+        name: String,
+        bytes: Vec<u8>,
+    },
 }
 
 impl ClipboardFormatData {
@@ -316,10 +319,7 @@ pub enum ClipboardError {
     /// Kept apart from [`Self::TooLarge`] because that one measures what
     /// arrived: this one is refused while it is being inflated, so the size it
     /// would have reached is unknown and none is claimed.
-    InflatedTooLarge {
-        format: &'static str,
-        limit: usize,
-    },
+    InflatedTooLarge { format: &'static str, limit: usize },
     /// A real format whose bytes cannot be interpreted as that format.
     Corrupt { format: &'static str },
     /// An image whose dimensions, stride or bytes do not describe each other.
@@ -361,7 +361,10 @@ impl fmt::Display for ClipboardError {
             Self::InvalidImage { reason } => write!(f, "clipboard image is invalid: {reason}"),
             Self::NotAccepted => write!(f, "clipboard delivery is not accepted"),
             Self::StaleGeneration => {
-                write!(f, "clipboard update belongs to a generation this viewer has left")
+                write!(
+                    f,
+                    "clipboard update belongs to a generation this viewer has left"
+                )
             }
             Self::NotDeliverable => write!(
                 f,
@@ -543,12 +546,12 @@ fn encode_image(image: ClipboardImage) -> Result<Clipboard, ClipboardError> {
             // Upstream compresses RGBA pixels exactly as it compresses text.
             let raw = image.bytes;
             let compressed = compress(&raw);
-            let (compress_flag, content) =
-                if !compressed.is_empty() && compressed.len() < raw.len() {
-                    (true, compressed)
-                } else {
-                    (false, raw)
-                };
+            let (compress_flag, content) = if !compressed.is_empty() && compressed.len() < raw.len()
+            {
+                (true, compressed)
+            } else {
+                (false, raw)
+            };
             Ok(Clipboard {
                 compress: compress_flag,
                 content: content.into(),
@@ -683,7 +686,10 @@ fn decode_content(
     }
     let decoded = decompress_within(&content, limit).map_err(|error| match error {
         InflateError::Corrupt => ClipboardError::Corrupt { format: name },
-        InflateError::TooLarge => ClipboardError::InflatedTooLarge { format: name, limit },
+        InflateError::TooLarge => ClipboardError::InflatedTooLarge {
+            format: name,
+            limit,
+        },
     })?;
     if decoded.is_empty() {
         // Upstream sets the flag only for a frame that is strictly smaller than
@@ -1086,12 +1092,12 @@ mod tests {
             ClipboardPayload::text("hello"),
             PeerClipboardSupport { multi: false },
         ));
-        assert!(!plain.compress, "a frame that saves nothing is not compressed");
-        assert_eq!(plain.content.as_ref(), b"hello".as_slice());
-        assert_eq!(
-            plain.format.enum_value(),
-            Ok(proto::ClipboardFormat::Text)
+        assert!(
+            !plain.compress,
+            "a frame that saves nothing is not compressed"
         );
+        assert_eq!(plain.content.as_ref(), b"hello".as_slice());
+        assert_eq!(plain.format.enum_value(), Ok(proto::ClipboardFormat::Text));
 
         let repeated = "a".repeat(4096);
         let compressed = single(message(
@@ -1173,7 +1179,10 @@ mod tests {
             PeerClipboardSupport { multi: true },
         ));
         assert_eq!((encoded.width, encoded.height), (64, 64));
-        assert!(encoded.compress, "RGBA pixels are zstd-compressed on the wire");
+        assert!(
+            encoded.compress,
+            "RGBA pixels are zstd-compressed on the wire"
+        );
         assert_eq!(decode_clipboard(encoded).unwrap(), Some(payload));
 
         // Four pixels claimed, three carried.
@@ -1256,7 +1265,10 @@ mod tests {
             payload.clone(),
             PeerClipboardSupport { multi: false },
         ));
-        assert_eq!(encoded.format.enum_value(), Ok(proto::ClipboardFormat::Text));
+        assert_eq!(
+            encoded.format.enum_value(),
+            Ok(proto::ClipboardFormat::Text)
+        );
         assert_eq!(
             decode_clipboard(encoded).unwrap(),
             Some(ClipboardPayload::text("hi"))

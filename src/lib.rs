@@ -1,5 +1,6 @@
 //! Replacement RustDesk runtime. Wire definitions and cryptography retain the
 //! upstream contract; legacy Connection/VideoService/VideoHandler are not linked.
+pub mod audio;
 pub mod authentication;
 pub mod clipboard;
 pub mod cliprdr;
@@ -18,6 +19,15 @@ pub mod media_capability;
 pub mod media_color;
 #[cfg(all(feature = "official-account", not(target_env = "ohos")))]
 pub mod official_account;
+#[cfg(all(test, not(target_env = "ohos")))]
+#[path = "platform/ohos_audio.rs"]
+mod ohos_audio;
+#[cfg(target_env = "ohos")]
+#[path = "platform/ohos_audio.rs"]
+pub mod platform_audio;
+#[cfg(not(target_env = "ohos"))]
+#[path = "platform/desktop_audio.rs"]
+pub mod platform_audio;
 #[cfg(not(any(target_os = "windows", dsh_windows_typecheck)))]
 #[path = "platform/ohos_publisher.rs"]
 pub mod publisher;
@@ -34,8 +44,8 @@ pub mod session_options;
 // in-memory sink in this module is what the host build and tests exercise.
 #[path = "platform/ohos_surface.rs"]
 pub mod surface;
-pub mod transport;
 pub mod transfer;
+pub mod transport;
 // The RustDesk-wire encoded video pipeline, shared by every session that owns one.
 pub mod video;
 pub mod viewer;

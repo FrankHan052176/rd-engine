@@ -97,13 +97,13 @@ use quinn::{
     TransportConfig, VarInt,
 };
 use rustls::{
+    DigitallySignedStruct, Error as TlsError, SignatureScheme,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{
         CryptoProvider, verify_tls12_signature as verify_tls12,
         verify_tls13_signature as verify_tls13,
     },
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
-    DigitallySignedStruct, Error as TlsError, SignatureScheme,
 };
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -751,7 +751,8 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
     }
 
     fn server(alpn: Vec<Vec<u8>>) -> Endpoint {
-        let config = server_config(alpn, certificate_chain(), private_key()).expect("server config");
+        let config =
+            server_config(alpn, certificate_chain(), private_key()).expect("server config");
         Endpoint::server(config, loopback_address()).expect("server endpoint")
     }
 
@@ -824,10 +825,11 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             .write_all(ANNOUNCE)
             .await
             .expect("announce stream");
-        let (mut acceptor_reader, acceptor_writer) = timeout(HANDSHAKE_LIMIT, accept_stream(acceptor))
-            .await
-            .expect("accept timed out")
-            .expect("accept stream");
+        let (mut acceptor_reader, acceptor_writer) =
+            timeout(HANDSHAKE_LIMIT, accept_stream(acceptor))
+                .await
+                .expect("accept timed out")
+                .expect("accept stream");
         let mut announced = [0u8; ANNOUNCE.len()];
         acceptor_reader
             .read_exact(&mut announced)
@@ -837,7 +839,12 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             &announced, ANNOUNCE,
             "the announcement must arrive before the session proper"
         );
-        (opener_writer, opener_reader, acceptor_reader, acceptor_writer)
+        (
+            opener_writer,
+            opener_reader,
+            acceptor_reader,
+            acceptor_writer,
+        )
     }
 
     /// A real QUIC handshake over loopback, with the ALPN negotiated on both
@@ -852,7 +859,10 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
         let (mut client_writer, mut client_reader, mut server_reader, mut server_writer) =
             open_session(&session.client, &session.server).await;
 
-        client_writer.write_all(b"ping!").await.expect("client write");
+        client_writer
+            .write_all(b"ping!")
+            .await
+            .expect("client write");
         let mut greeting = [0u8; 5];
         server_reader
             .read_exact(&mut greeting)
@@ -860,7 +870,10 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             .expect("server read");
         assert_eq!(&greeting, b"ping!");
 
-        server_writer.write_all(b"pong").await.expect("server write");
+        server_writer
+            .write_all(b"pong")
+            .await
+            .expect("server write");
         let mut reply = [0u8; 4];
         client_reader
             .read_exact(&mut reply)
@@ -870,7 +883,10 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
 
         // The peer's FIN is a clean end of stream for both halves.
         server_writer.finish().await.expect("server finish");
-        assert_eq!(client_reader.read(&mut reply).await.expect("clean eof"), None);
+        assert_eq!(
+            client_reader.read(&mut reply).await.expect("clean eof"),
+            None
+        );
     }
 
     /// A server that does not offer the client's ALPN cannot complete a
@@ -883,7 +899,10 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
         let peer = tokio::spawn(async move { accept(&server_endpoint).await });
 
         let client = connect(&client_endpoint, bound, "127.0.0.1").await;
-        assert!(client.is_err(), "client must refuse the mismatched protocol");
+        assert!(
+            client.is_err(),
+            "client must refuse the mismatched protocol"
+        );
         assert!(
             timeout(Duration::from_secs(5), peer)
                 .await
@@ -923,10 +942,7 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             client_writer.write_all(frame).await.expect("write");
         }
         let mut received = [0u8; 16];
-        server_reader
-            .read_exact(&mut received)
-            .await
-            .expect("read");
+        server_reader.read_exact(&mut received).await.expect("read");
         assert_eq!(&received, b"firstsecondthird");
     }
 
@@ -941,10 +957,7 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
         server_writer.write_all(b"bye").await.expect("write");
         server_writer.finish().await.expect("finish");
         let mut received = [0u8; 3];
-        client_reader
-            .read_exact(&mut received)
-            .await
-            .expect("read");
+        client_reader.read_exact(&mut received).await.expect("read");
         assert_eq!(&received, b"bye");
         assert_eq!(client_reader.read(&mut received).await.expect("eof"), None);
     }
@@ -1029,11 +1042,9 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             .await
             .expect("open settled")
             .expect("open stream");
-        let (mut client_reader, mut client_writer) =
-            crate::transport::split(hbb_common::tcp::FramedStream::from(
-                client_stream,
-                session.bound,
-            ));
+        let (mut client_reader, mut client_writer) = crate::transport::split(
+            hbb_common::tcp::FramedStream::from(client_stream, session.bound),
+        );
 
         let mut first = Message::new();
         let mut misc = base::message_proto::Misc::new();
@@ -1048,11 +1059,9 @@ BHqbJDxgaagTFZdIQKOg8KEYyA2hRANCAARHQb5x9t8y9KPZpNWiZHn4QwUwkYbe
             .await
             .expect("accept settled")
             .expect("accept stream");
-        let (mut server_reader, mut server_writer) =
-            crate::transport::split(hbb_common::tcp::FramedStream::from(
-                server_stream,
-                session.bound,
-            ));
+        let (mut server_reader, mut server_writer) = crate::transport::split(
+            hbb_common::tcp::FramedStream::from(server_stream, session.bound),
+        );
 
         let received = timeout(HANDSHAKE_LIMIT, server_reader.recv())
             .await

@@ -382,3 +382,9 @@ Not yet proven:
 - Build `native/ohos_napi` from this project, then refresh `R_RustDesk-ArkTS/rustdesk-ohrs.har` using the ArkTS refresh script. Never edit the HAR binary.
 - Validate current behavior with current build output and runtime evidence. For Pad interaction, wake the selected target, confirm its state and bounds, and stop the keep-awake task on exit.
 - A high-frame-rate claim requires measured receive and display telemetry during a real direct-LAN session; a selected target rate alone is insufficient.
+- The isolated Windows client entry is `scripts/sync-client-to-windows.sh` driving
+  `native/frb/build-windows.ps1`. `REMOTE_LIBVPX_PREFIX` must hold the static Opus library and
+  headers (`lib/opus.lib`, `include/opus/opus_multistream.h`) beside libvpx/Zlib, and the driver
+  mirrors only those into `<root>/deps/magnum-opus` as the `magnum-opus` VCPKG_ROOT.
+  `REMOTE_LIBCLANG_PATH` must name the directory with the real `libclang.dll` bindgen loads; a
+  `clang.exe` on PATH is not it.

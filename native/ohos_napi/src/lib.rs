@@ -1049,6 +1049,24 @@ fn session_response(
             "pushed_units": snapshot.pushed_units,
             "render_submissions": snapshot.render_submissions,
             "queued_units": snapshot.queued_units,
+            "audio": snapshot.audio.as_ref().map(|audio| serde_json::json!({
+                "allowed": audio.allowed,
+                "generation": audio.generation.to_string(),
+                "format": audio.format.as_ref().map(|format| serde_json::json!({
+                    "sample_rate": format.sample_rate,
+                    "channels": format.channels,
+                })),
+                "active": audio.active,
+                "received_packets": audio.received_packets,
+                "decoded_packets": audio.decoded_packets,
+                "dropped_packets": audio.dropped_packets,
+                "stale_packets": audio.stale_packets,
+                "rejected_packets": audio.rejected_packets,
+                "queued_samples": audio.queued_samples,
+                "played_samples": audio.played_samples,
+                "last_error": audio.last_error,
+                "resources_unconfirmed": audio.resources_unconfirmed,
+            })),
             "note": release_note(snapshot.releases_retired, snapshot.releases_unreleased)
                 .unwrap_or_else(|| poll_note(phase, snapshot.error.as_deref())),
         });

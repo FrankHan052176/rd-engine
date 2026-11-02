@@ -3,9 +3,15 @@
 // 092a961b629d318fe290eeafac0cd214a1e9deeb. Modified for rd-engine 2026-09-23.
 // Exact provenance/security adaptations: UPSTREAM.json. Dart owns login business.
 
-use super::{AuthAttempt, api, http::{Request, Transport}, state};
+use super::{
+    AuthAttempt, api,
+    http::{Request, Transport},
+    state,
+};
 use hbb_common::{
-    ResultType, anyhow::anyhow, bail,
+    ResultType,
+    anyhow::anyhow,
+    bail,
     base64::{Engine as _, engine::general_purpose::STANDARD},
     config::Config,
     serde_derive::{Deserialize, Serialize},
@@ -13,7 +19,11 @@ use hbb_common::{
 };
 use serde::de::DeserializeOwned;
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::{collections::HashMap, sync::{LazyLock, Mutex}, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
 use tokio::task::AbortHandle;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
@@ -26,7 +36,8 @@ const REQUESTING_ACCOUNT_AUTH: &str = "Requesting account auth";
 const WAITING_ACCOUNT_AUTH: &str = "Waiting account auth";
 const LOGIN_ACCOUNT_AUTH: &str = "Login account auth";
 
-static OIDC_SESSION: LazyLock<Mutex<OidcSession>> = LazyLock::new(|| Mutex::new(OidcSession::new()));
+static OIDC_SESSION: LazyLock<Mutex<OidcSession>> =
+    LazyLock::new(|| Mutex::new(OidcSession::new()));
 
 // The four-way official envelope is distinct from HTTP status. Never turn a
 // parsing error into absent/success, or include the original response in errors.
@@ -115,7 +126,9 @@ enum UserStatus {
 }
 
 impl Default for UserStatus {
-    fn default() -> Self { Self::Normal }
+    fn default() -> Self {
+        Self::Normal
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -185,9 +198,17 @@ struct OidcSession {
 impl OidcSession {
     fn new() -> Self {
         Self {
-            state_msg: REQUESTING_ACCOUNT_AUTH, failed_msg: "", url: None,
-            auth_body: None, attempt: None, running: false, expires: None, job: None,
-            attempt_receipt: None, account_scope: None, terminal_consumed: false,
+            state_msg: REQUESTING_ACCOUNT_AUTH,
+            failed_msg: "",
+            url: None,
+            auth_body: None,
+            attempt: None,
+            running: false,
+            expires: None,
+            job: None,
+            attempt_receipt: None,
+            account_scope: None,
+            terminal_consumed: false,
         }
     }
 
@@ -220,7 +241,8 @@ impl OidcSession {
             url: self.url.as_ref().map(|url| url.as_str()),
             auth_body: self.auth_body.as_ref(),
             account_scope: self.account_scope.as_deref(),
-        }).map_err(|_| anyhow!("Cannot encode account authentication result"))
+        })
+        .map_err(|_| anyhow!("Cannot encode account authentication result"))
     }
 }
 
@@ -230,7 +252,9 @@ fn discard(attempt: &AuthAttempt) -> ResultType<()> {
     // missing/replaced witness or poisoned owner already refuses this commit;
     // cancellation never logs out an account whose commit won the owner lock.
     let retired = state::cancel_auth(attempt);
-    let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut session = OIDC_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if session.is_current(attempt) {
         session.reset();
     }
@@ -257,7 +281,9 @@ fn ensure_current(attempt: &AuthAttempt) -> ResultType<()> {
 fn publish_url(attempt: &AuthAttempt, url: String) -> ResultType<()> {
     let url = Zeroizing::new(url);
     ensure_current(attempt)?;
-    let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut session = OIDC_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !session.is_current(attempt) {
         bail!("Account authentication was replaced");
     }
@@ -267,11 +293,17 @@ fn publish_url(attempt: &AuthAttempt, url: String) -> ResultType<()> {
     Ok(())
 }
 
-fn publish_auth_body(attempt: &AuthAttempt, body: AuthBody, account_scope: Option<String>) -> ResultType<()> {
+fn publish_auth_body(
+    attempt: &AuthAttempt,
+    body: AuthBody,
+    account_scope: Option<String>,
+) -> ResultType<()> {
     // B's committed-attempt witness keeps this original attempt authorized after
     // commit advances account generation. Never use its old context alone here.
     ensure_current(attempt)?;
-    let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut session = OIDC_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !session.is_current(attempt) {
         bail!("Account authentication was replaced");
     }
@@ -294,7 +326,9 @@ fn finish(attempt: &AuthAttempt, failure: Option<&'static str>) {
         }
         Err(_) => Some("Account context unavailable"),
     };
-    let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut session = OIDC_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if session.is_current(attempt) {
         session.running = false;
         session.expires = Some(Instant::now() + RESULT_RETENTION);
@@ -307,33 +341,47 @@ fn finish(attempt: &AuthAttempt, failure: Option<&'static str>) {
 }
 
 async fn auth(
-    transport: &Transport, api_server: &str, op: &str, id: &str, uuid: &str,
+    transport: &Transport,
+    api_server: &str,
+    op: &str,
+    id: &str,
+    uuid: &str,
 ) -> ResultType<HbbHttpResponse<OidcAuthUrl>> {
     let device_info: Value = serde_json::from_str(&api::device_info()?)
         .map_err(|_| anyhow!("Invalid login device information"))?;
     let body = serde_json::json!({
         "op": op, "id": id, "uuid": uuid,
         "deviceInfo": device_info, "apiDomain": api_server,
-    }).to_string();
-    let response = transport.request(Request::new(
-        format!("{api_server}/api/oidc/auth"), "post", Some(body),
-        r#"{"Content-Type":"application/json"}"#.to_owned(),
-    )?).await?;
+    })
+    .to_string();
+    let response = transport
+        .request(Request::new(
+            format!("{api_server}/api/oidc/auth"),
+            "post",
+            Some(body),
+            r#"{"Content-Type":"application/json"}"#.to_owned(),
+        )?)
+        .await?;
     HbbHttpResponse::parse(&response.body)
 }
 
 async fn query(
-    transport: &Transport, api_server: &str, code: &str, id: &str, uuid: &str,
+    transport: &Transport,
+    api_server: &str,
+    code: &str,
+    id: &str,
+    uuid: &str,
 ) -> ResultType<HbbHttpResponse<AuthBody>> {
     let url = Url::parse_with_params(
         &format!("{api_server}/api/oidc/auth-query"),
         &[("code", code), ("id", id), ("uuid", uuid)],
-    ).map_err(|_| anyhow!("Invalid account query endpoint"))?;
+    )
+    .map_err(|_| anyhow!("Invalid account query endpoint"))?;
     // The same official HTTP body envelope, without serializing it only to parse
     // it again inside Rust. The public HttpService still receives the full JSON.
-    let response = transport.request(Request::new(
-        url.into(), "get", None, "{}".to_owned(),
-    )?).await?;
+    let response = transport
+        .request(Request::new(url.into(), "get", None, "{}".to_owned())?)
+        .await?;
     HbbHttpResponse::parse(&response.body)
 }
 
@@ -349,21 +397,23 @@ async fn auth_task(attempt: &AuthAttempt, op: &str, remember_me: bool) -> Option
         ensure_current(attempt)?;
         let response = auth(&transport, api_server, op, &id, &uuid).await?;
         Ok::<_, hbb_common::anyhow::Error>((transport, response))
-    }).await;
+    })
+    .await;
     if ensure_current(attempt).is_err() {
         return None;
     }
     let (transport, mut code_url) = match requested {
         Ok(Ok((transport, HbbHttpResponse::Data(code_url)))) => (transport, code_url),
-        Ok(Ok((_, HbbHttpResponse::Error(_)))) => return Some("Account authentication rejected by server"),
+        Ok(Ok((_, HbbHttpResponse::Error(_)))) => {
+            return Some("Account authentication rejected by server");
+        }
         Ok(Ok(_)) => return Some("Invalid auth response"),
         Ok(Err(_)) => return Some("Account authentication request failed"),
         Err(_) => return Some("Account authentication request timed out"),
     };
     // The external provider URL is an authorized business result, not a log or
     // error context. Do not open an insecure or credential-userinfo URL.
-    let valid_url = api::http_url(&code_url.url, false)
-        .is_ok_and(|url| url.scheme() == "https");
+    let valid_url = api::http_url(&code_url.url, false).is_ok_and(|url| url.scheme() == "https");
     if !valid_url || code_url.code.is_empty() || code_url.code.len() > 16 * 1024 {
         return Some("Invalid auth response");
     }
@@ -374,8 +424,10 @@ async fn auth_task(attempt: &AuthAttempt, op: &str, remember_me: bool) -> Option
     let deadline = tokio::time::Instant::now() + QUERY_TIMEOUT;
     while tokio::time::Instant::now() < deadline && ensure_current(attempt).is_ok() {
         let queried = tokio::time::timeout_at(
-            deadline, query(&transport, api_server, &code_url.code, &id, &uuid),
-        ).await;
+            deadline,
+            query(&transport, api_server, &code_url.code, &id, &uuid),
+        )
+        .await;
         if ensure_current(attempt).is_err() {
             return None;
         }
@@ -387,14 +439,16 @@ async fn auth_task(attempt: &AuthAttempt, op: &str, remember_me: bool) -> Option
                         "display_name": body.user.display_name,
                         "avatar": body.user.avatar,
                         "status": body.user.status,
-                    }).to_string();
+                    })
+                    .to_string();
                     // This one token copy is required: B owns the committed
                     // credential, while the official cbLogin must receive it.
                     let token = body.access_token.clone();
                     let commit_attempt = attempt.clone();
                     let committed = tokio::task::spawn_blocking(move || {
                         state::commit_oidc(&commit_attempt, token, user_info, remember_me)
-                    }).await;
+                    })
+                    .await;
                     match committed {
                         Ok(Ok(receipt)) => Some(receipt),
                         _ => return Some("Account credential commit failed"),
@@ -420,9 +474,14 @@ async fn auth_task(attempt: &AuthAttempt, op: &str, remember_me: bool) -> Option
             }
             Err(_) => break,
         }
-        tokio::time::sleep_until((tokio::time::Instant::now() + QUERY_INTERVAL).min(deadline)).await;
+        tokio::time::sleep_until((tokio::time::Instant::now() + QUERY_INTERVAL).min(deadline))
+            .await;
     }
-    if ensure_current(attempt).is_ok() { Some("timeout") } else { None }
+    if ensure_current(attempt).is_ok() {
+        Some("timeout")
+    } else {
+        None
+    }
 }
 
 /// Start or replace the official OIDC attempt, without a runtime/block_on or
@@ -431,15 +490,22 @@ pub fn start(receipt: String, op: String, remember_me: bool) -> ResultType<Strin
     if op.len() > 16 * 1024 {
         bail!("Account authentication provider is too large");
     }
-    let runtime = crate::executor::runtime().map_err(|_| anyhow!("Account authentication executor unavailable"))?;
+    let runtime = crate::executor::runtime()
+        .map_err(|_| anyhow!("Account authentication executor unavailable"))?;
     let attempt = state::begin_auth(&receipt)?;
     ensure_current(&attempt)?;
     let attempt_receipt = hbb_common::uuid::Uuid::new_v4().to_string();
     {
-        let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut session = OIDC_SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // begin_auth generations are monotonic across server/account changes.
         // A delayed older start must not abort the already-installed newer job.
-        if session.attempt.as_ref().is_some_and(|active| active.generation > attempt.generation) {
+        if session
+            .attempt
+            .as_ref()
+            .is_some_and(|active| active.generation > attempt.generation)
+        {
             bail!("Account authentication was replaced");
         }
         session.reset();
@@ -458,17 +524,25 @@ pub fn start(receipt: String, op: String, remember_me: bool) -> ResultType<Strin
         let deadline = Instant::now() + RESULT_RETENTION;
         loop {
             tokio::time::sleep(QUERY_INTERVAL).await;
-            if Instant::now() >= deadline || matches!(state::auth_is_current(&worker_attempt), Ok(false)) {
+            if Instant::now() >= deadline
+                || matches!(state::auth_is_current(&worker_attempt), Ok(false))
+            {
                 let _ = discard(&worker_attempt);
                 break;
             }
-            let current = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            let current = OIDC_SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_current(&worker_attempt);
-            if !current { break; }
+            if !current {
+                break;
+            }
         }
     });
     {
-        let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut session = OIDC_SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if session.is_current(&attempt) {
             session.job = Some(job.abort_handle());
         } else {
@@ -482,11 +556,16 @@ pub fn start(receipt: String, op: String, remember_me: bool) -> ResultType<Strin
 /// account. A newer begin_auth that races after cancellation must survive.
 pub fn cancel(attempt_receipt: &str) -> ResultType<()> {
     let attempt = {
-        let session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = OIDC_SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if session.attempt_receipt.as_deref() != Some(attempt_receipt) {
             bail!("Unknown or retired account authentication attempt");
         }
-        session.attempt.clone().ok_or_else(|| anyhow!("No account authentication attempt"))?
+        session
+            .attempt
+            .clone()
+            .ok_or_else(|| anyhow!("No account authentication attempt"))?
     };
     // B matches this exact attempt atomically; a delayed old dialog cannot
     // cancel a new dialog which starts between this snapshot and the call.
@@ -497,24 +576,36 @@ pub fn cancel(attempt_receipt: &str) -> ResultType<()> {
 /// once, and a final B check rejects results canceled while being serialized.
 pub fn result(attempt_receipt: &str) -> ResultType<String> {
     let attempt = {
-        let session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = OIDC_SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if session.attempt_receipt.as_deref() != Some(attempt_receipt) {
             bail!("Unknown or retired account authentication attempt");
         }
-        session.attempt.clone().ok_or_else(|| anyhow!("No account authentication attempt"))?
+        session
+            .attempt
+            .clone()
+            .ok_or_else(|| anyhow!("No account authentication attempt"))?
     };
     if !state::auth_is_current(&attempt)? {
         let _ = discard(&attempt);
         bail!("Account authentication was canceled or replaced");
     }
     let mut response = {
-        let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !session.is_current(&attempt) || session.attempt_receipt.as_deref() != Some(attempt_receipt) {
+        let mut session = OIDC_SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !session.is_current(&attempt)
+            || session.attempt_receipt.as_deref() != Some(attempt_receipt)
+        {
             bail!("Account authentication was replaced");
         }
         // Publication can replace the running deadline while B is checked.
         // Decide expiry against the current attempt under the session lock.
-        if session.expires.is_some_and(|expires| expires <= Instant::now()) {
+        if session
+            .expires
+            .is_some_and(|expires| expires <= Instant::now())
+        {
             drop(session);
             discard(&attempt)?;
             bail!("Account authentication result expired");

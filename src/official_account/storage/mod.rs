@@ -3,8 +3,13 @@
 //! supplied by the selected hbb_common. No identity material is used as a key.
 
 use hbb_common::{
-    config::{Config, APP_NAME},
-    sodiumoxide::{self, crypto::{hash::sha256, secretbox}, randombytes, utils::memzero},
+    config::{APP_NAME, Config},
+    sodiumoxide::{
+        self,
+        crypto::{hash::sha256, secretbox},
+        randombytes,
+        utils::memzero,
+    },
 };
 use std::{
     fs::{self, File, OpenOptions},
@@ -12,26 +17,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod apple;
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-mod linux;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+mod linux;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(target_os = "android")]
 pub use android::init_account_storage;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use apple as backend;
-#[cfg(target_os = "windows")]
-use windows as backend;
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-use linux as backend;
 #[cfg(target_os = "android")]
 use android as backend;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use apple as backend;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+use linux as backend;
+#[cfg(target_os = "windows")]
+use windows as backend;
 
 pub(super) const MAX_TOKEN_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_USER_INFO_BYTES: usize = 4 * 1024 * 1024;
@@ -72,7 +77,6 @@ impl SecretBytes {
     pub(super) fn is_empty(&self) -> bool {
         self.bytes().is_empty()
     }
-
 
     pub(super) fn into_string(mut self) -> io::Result<String> {
         std::str::from_utf8(self.bytes()).map_err(|_| invalid("Account text is not UTF-8"))?;
@@ -184,7 +188,8 @@ impl AccountRecord {
             RecordKind::Group => (&mut self.group_revision, &mut self.group_present),
             RecordKind::Account => return Err(invalid("Account is not a cache kind")),
         };
-        *revision = revision.checked_add(1)
+        *revision = revision
+            .checked_add(1)
             .ok_or_else(|| invalid("Account cache generation exhausted"))?;
         *stored = present;
         Ok(())
@@ -199,7 +204,12 @@ impl AccountRecord {
     }
 
     fn cache_file(&self, kind: RecordKind) -> io::Result<String> {
-        Ok(format!("{}.{}.{:016x}", kind.file(), hex(&self.epoch_id), self.revision(kind)?))
+        Ok(format!(
+            "{}.{}.{:016x}",
+            kind.file(),
+            hex(&self.epoch_id),
+            self.revision(kind)?
+        ))
     }
 }
 
@@ -224,11 +234,16 @@ pub(super) struct Store {
 impl Store {
     pub(super) fn open() -> io::Result<Self> {
         if !cfg!(any(
-            target_os = "macos", target_os = "ios", target_os = "windows",
-            target_os = "android", all(target_os = "linux", not(target_env = "ohos"))
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "windows",
+            target_os = "android",
+            all(target_os = "linux", not(target_env = "ohos"))
         )) {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Official account protected storage is unsupported on this target"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Official account protected storage is unsupported on this target",
+            ));
         }
         sodiumoxide::init().map_err(|_| io::Error::other("Account cryptography unavailable"))?;
         let (root, namespace) = location()?;
@@ -243,9 +258,16 @@ impl Store {
         check_regular(&lock)?;
         lock.lock()?;
         let key = platform_load_key(&root, &namespace)?;
-        let result = Self { root, namespace, lock, key };
+        let result = Self {
+            root,
+            namespace,
+            lock,
+            key,
+        };
         if result.key.is_none() && result.has_records()? {
-            return Err(invalid("Protected account key is missing for existing encrypted records"));
+            return Err(invalid(
+                "Protected account key is missing for existing encrypted records",
+            ));
         }
         Ok(result)
     }
@@ -280,24 +302,32 @@ impl Store {
             return Ok(());
         }
         if self.has_records()? {
-            return Err(invalid("Protected account key is missing for existing encrypted records"));
+            return Err(invalid(
+                "Protected account key is missing for existing encrypted records",
+            ));
         }
         let candidate = secretbox::gen_key();
         self.key = if platform_create_key(&self.root, &self.namespace, &candidate)? {
             Some(candidate)
         } else {
-            Some(platform_load_key(&self.root, &self.namespace)?
-                .ok_or_else(|| invalid("Protected account key creation did not leave a readable key"))?)
+            Some(
+                platform_load_key(&self.root, &self.namespace)?.ok_or_else(|| {
+                    invalid("Protected account key creation did not leave a readable key")
+                })?,
+            )
         };
         Ok(())
     }
 
     pub(super) fn read_account(&self) -> io::Result<Option<AccountRecord>> {
-        let Some(record) = self.read_record(RecordKind::Account, RecordKind::Account.file())? else {
+        let Some(record) = self.read_record(RecordKind::Account, RecordKind::Account.file())?
+        else {
             // An unpublished first account staging file is not a committed
             // account. Any cache, however, must already have an account owner.
             for entry in fs::read_dir(&self.root)? {
-                if owned_kind(&entry?.file_name()).is_some_and(|kind| !matches!(kind, RecordKind::Account)) {
+                if owned_kind(&entry?.file_name())
+                    .is_some_and(|kind| !matches!(kind, RecordKind::Account))
+                {
                     return Err(invalid("Encrypted cache has no account owner record"));
                 }
             }
@@ -320,7 +350,9 @@ impl Store {
         std::str::from_utf8(token).map_err(|_| invalid("Account token is not UTF-8"))?;
         std::str::from_utf8(user_info).map_err(|_| invalid("Account metadata is not UTF-8"))?;
         if token.is_empty() && (!user_info.is_empty() || flags != 0) {
-            return Err(invalid("A revoked account record contains metadata or a persisted cache"));
+            return Err(invalid(
+                "A revoked account record contains metadata or a persisted cache",
+            ));
         }
         if (flags & 1 != 0 && ab_revision == 0) || (flags & 2 != 0 && group_revision == 0) {
             return Err(invalid("Invalid committed cache generation"));
@@ -342,9 +374,12 @@ impl Store {
     pub(super) fn write_account(&mut self, record: &AccountRecord) -> io::Result<()> {
         if record.token.bytes().len() > MAX_TOKEN_BYTES
             || record.user_info.bytes().len() > MAX_USER_INFO_BYTES
-            || (record.token.is_empty() && (!record.user_info.is_empty() || record.ab_present || record.group_present))
+            || (record.token.is_empty()
+                && (!record.user_info.is_empty() || record.ab_present || record.group_present))
         {
-            return Err(invalid("Account record exceeds its bound or has revoked metadata"));
+            return Err(invalid(
+                "Account record exceeds its bound or has revoked metadata",
+            ));
         }
         let metadata_revision = record.metadata_revision.to_le_bytes();
         let ab_revision = record.ab_revision.to_le_bytes();
@@ -352,48 +387,83 @@ impl Store {
         let flags = [u8::from(record.ab_present) | (u8::from(record.group_present) << 1)];
         let token_length = (record.token.bytes().len() as u32).to_le_bytes();
         let info_length = (record.user_info.bytes().len() as u32).to_le_bytes();
-        self.write_record(RecordKind::Account, RecordKind::Account.file(), &record.scope,
-            record.epoch, &record.epoch_id, 0, &[&metadata_revision, &ab_revision,
-                &group_revision, &flags, &token_length, record.token.bytes(),
-                &info_length, record.user_info.bytes()])
+        self.write_record(
+            RecordKind::Account,
+            RecordKind::Account.file(),
+            &record.scope,
+            record.epoch,
+            &record.epoch_id,
+            0,
+            &[
+                &metadata_revision,
+                &ab_revision,
+                &group_revision,
+                &flags,
+                &token_length,
+                record.token.bytes(),
+                &info_length,
+                record.user_info.bytes(),
+            ],
+        )
     }
 
-    pub(super) fn read_cache(&self, kind: RecordKind, account: &AccountRecord)
-        -> io::Result<Option<SecretBytes>>
-    {
+    pub(super) fn read_cache(
+        &self,
+        kind: RecordKind,
+        account: &AccountRecord,
+    ) -> io::Result<Option<SecretBytes>> {
         if !account.cache_present(kind)? {
             // Authenticated control explicitly says absent/cleared. Orphaned
             // uncommitted ciphertext is never a fallback or auto-deleted here.
             return Ok(None);
         }
-        let record = self.read_record(kind, &account.cache_file(kind)?)?
+        let record = self
+            .read_record(kind, &account.cache_file(kind)?)?
             .ok_or_else(|| invalid("Committed encrypted account cache is missing"))?;
-        if record.scope != account.scope || record.epoch != account.epoch
-            || record.epoch_id != account.epoch_id || record.revision != account.revision(kind)?
+        if record.scope != account.scope
+            || record.epoch != account.epoch
+            || record.epoch_id != account.epoch_id
+            || record.revision != account.revision(kind)?
         {
-            return Err(invalid("Encrypted cache belongs to a retired account or cache generation"));
+            return Err(invalid(
+                "Encrypted cache belongs to a retired account or cache generation",
+            ));
         }
         std::str::from_utf8(record.payload.bytes())
             .map_err(|_| invalid("Encrypted account cache is not UTF-8"))?;
         Ok(Some(record.payload))
     }
 
-    pub(super) fn write_cache(&mut self, kind: RecordKind, account: &AccountRecord, value: &[u8])
-        -> io::Result<()>
-    {
+    pub(super) fn write_cache(
+        &mut self,
+        kind: RecordKind,
+        account: &AccountRecord,
+        value: &[u8],
+    ) -> io::Result<()> {
         if account.token.is_empty() || !account.cache_present(kind)? {
-            return Err(invalid("A cache cannot be persisted without a remembered account"));
+            return Err(invalid(
+                "A cache cannot be persisted without a remembered account",
+            ));
         }
         // Publish a complete candidate first. The account control's later
         // atomic replacement is the commit point; the old version remains
         // readable if that commit fails before publication.
-        self.write_record(kind, &account.cache_file(kind)?, &account.scope,
-            account.epoch, &account.epoch_id, account.revision(kind)?, &[value])
+        self.write_record(
+            kind,
+            &account.cache_file(kind)?,
+            &account.scope,
+            account.epoch,
+            &account.epoch_id,
+            account.revision(kind)?,
+            &[value],
+        )
     }
 
     pub(super) fn remove_cache(&self, kind: RecordKind) -> io::Result<()> {
         if matches!(kind, RecordKind::Account) {
-            return Err(invalid("The durable account revocation record cannot be removed"));
+            return Err(invalid(
+                "The durable account revocation record cannot be removed",
+            ));
         }
         self.prune(kind, None)
     }
@@ -406,7 +476,11 @@ impl Store {
     }
 
     pub(super) fn prune_cache(&self, kind: RecordKind, account: &AccountRecord) -> io::Result<()> {
-        let keep = if account.cache_present(kind)? { Some(account.cache_file(kind)?) } else { None };
+        let keep = if account.cache_present(kind)? {
+            Some(account.cache_file(kind)?)
+        } else {
+            None
+        };
         self.prune(kind, keep.as_deref())
     }
 
@@ -441,19 +515,24 @@ impl Store {
         }
         let mut ciphertext = Vec::with_capacity(length as usize);
         file.take(max as u64 + 1).read_to_end(&mut ciphertext)?;
-        if ciphertext.len() > max || ciphertext.len() < FILE_ALLOWANCE
+        if ciphertext.len() > max
+            || ciphertext.len() < FILE_ALLOWANCE
             || !ciphertext.starts_with(MAGIC)
         {
             return Err(invalid("Invalid encrypted account record envelope"));
         }
-        let key = self.key.as_ref()
+        let key = self
+            .key
+            .as_ref()
             .ok_or_else(|| invalid("Protected key is missing for an encrypted account record"))?;
         let nonce_start = MAGIC.len();
         let nonce_end = nonce_start + secretbox::NONCEBYTES;
         let nonce = secretbox::Nonce::from_slice(&ciphertext[nonce_start..nonce_end])
             .ok_or_else(|| invalid("Invalid account record nonce"))?;
-        let mut plaintext = SecretBytes::from_vec(secretbox::open(&ciphertext[nonce_end..], &nonce, key)
-            .map_err(|_| invalid("Account record authentication failed"))?);
+        let mut plaintext = SecretBytes::from_vec(
+            secretbox::open(&ciphertext[nonce_end..], &nonce, key)
+                .map_err(|_| invalid("Account record authentication failed"))?,
+        );
         let mut reader = Fields::new(plaintext.bytes());
         if reader.take(DOMAIN.len())? != DOMAIN
             || reader.take(64)? != self.namespace.as_bytes()
@@ -462,7 +541,8 @@ impl Store {
             return Err(invalid("Account record domain, profile or kind mismatch"));
         }
         let scope = std::str::from_utf8(reader.bytes(MAX_SCOPE_BYTES)?)
-            .map_err(|_| invalid("Invalid account scope encoding"))?.to_owned();
+            .map_err(|_| invalid("Invalid account scope encoding"))?
+            .to_owned();
         if scope.is_empty() {
             return Err(invalid("Empty account record scope"));
         }
@@ -471,28 +551,47 @@ impl Store {
         epoch_id.copy_from_slice(reader.take(32)?);
         let revision = reader.u64()?;
         if epoch == 0 || reader.rest().len() > kind.limit() {
-            return Err(invalid("Invalid account record generation or payload bound"));
+            return Err(invalid(
+                "Invalid account record generation or payload bound",
+            ));
         }
         // Keep a view into the wiped allocation, not a second 256 MiB payload
         // allocation. The authenticated header is wiped with that allocation.
         plaintext.1 = plaintext.bytes().len() - reader.rest().len();
         Ok(Some(OpenedRecord {
-            scope, epoch, epoch_id, revision, payload: plaintext,
+            scope,
+            epoch,
+            epoch_id,
+            revision,
+            payload: plaintext,
         }))
     }
 
-    fn write_record(&mut self, kind: RecordKind, name: &str, scope: &str, epoch: u64,
-        epoch_id: &[u8; 32], revision: u64, parts: &[&[u8]]) -> io::Result<()>
-    {
-        let payload_len = parts.iter().try_fold(0usize, |total, part| total.checked_add(part.len()))
+    fn write_record(
+        &mut self,
+        kind: RecordKind,
+        name: &str,
+        scope: &str,
+        epoch: u64,
+        epoch_id: &[u8; 32],
+        revision: u64,
+        parts: &[&[u8]],
+    ) -> io::Result<()> {
+        let payload_len = parts
+            .iter()
+            .try_fold(0usize, |total, part| total.checked_add(part.len()))
             .ok_or_else(|| invalid("Account record payload size overflow"))?;
-        if scope.is_empty() || scope.len() > MAX_SCOPE_BYTES || epoch == 0
+        if scope.is_empty()
+            || scope.len() > MAX_SCOPE_BYTES
+            || epoch == 0
             || payload_len > kind.limit()
         {
             return Err(invalid("Invalid account record scope, generation or size"));
         }
         self.ensure_key()?;
-        let key = self.key.as_ref()
+        let key = self
+            .key
+            .as_ref()
             .ok_or_else(|| io::Error::other("Protected account key unavailable"))?;
         let capacity = DOMAIN.len() + 64 + 1 + 4 + scope.len() + 16 + 32 + payload_len;
         let mut plaintext = SecretBytes::from_vec(Vec::with_capacity(capacity));
@@ -503,7 +602,9 @@ impl Store {
         plaintext.0.extend_from_slice(&epoch.to_le_bytes());
         plaintext.0.extend_from_slice(epoch_id);
         plaintext.0.extend_from_slice(&revision.to_le_bytes());
-        for part in parts { plaintext.0.extend_from_slice(part); }
+        for part in parts {
+            plaintext.0.extend_from_slice(part);
+        }
         let nonce = secretbox::gen_nonce();
         let ciphertext = secretbox::seal(plaintext.bytes(), &nonce, key);
         drop(plaintext);
@@ -540,32 +641,70 @@ impl Store {
 }
 
 fn platform_load_key(root: &Path, namespace: &str) -> io::Result<Option<secretbox::Key>> {
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos"))))]
-    { backend::load_key(root, namespace) }
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos")))))]
-    { let _ = (root, namespace); Err(io::Error::new(io::ErrorKind::Unsupported,
-        "Official account protected storage is unsupported on this target")) }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "android",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    {
+        backend::load_key(root, namespace)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "android",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
+    {
+        let _ = (root, namespace);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Official account protected storage is unsupported on this target",
+        ))
+    }
 }
 
 fn platform_create_key(root: &Path, namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos"))))]
-    { backend::create_key(root, namespace, key) }
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos")))))]
-    { let _ = (root, namespace, key); Err(io::Error::new(io::ErrorKind::Unsupported,
-        "Official account protected storage is unsupported on this target")) }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "android",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    {
+        backend::create_key(root, namespace, key)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "android",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
+    {
+        let _ = (root, namespace, key);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Official account protected storage is unsupported on this target",
+        ))
+    }
 }
 
 fn location() -> io::Result<(PathBuf, String)> {
     let profile = Config::path("");
     if !profile.is_absolute() {
-        return Err(io::Error::new(io::ErrorKind::NotFound,
-            "Application private account directory has not been initialized"));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Application private account directory has not been initialized",
+        ));
     }
-    let app_name = APP_NAME.read().map_err(|_| io::Error::other("Application name lock poisoned"))?;
+    let app_name = APP_NAME
+        .read()
+        .map_err(|_| io::Error::other("Application name lock poisoned"))?;
     let mut identity = Vec::from(&b"rd-engine/official-account/profile/v1\0"[..]);
     identity.extend_from_slice(app_name.as_bytes());
     identity.push(0);
@@ -578,8 +717,12 @@ fn location() -> io::Result<(PathBuf, String)> {
         let directory = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
-                "Current-user LOCALAPPDATA is unavailable for account storage"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Current-user LOCALAPPDATA is unavailable for account storage",
+                )
+            })?;
         directory.join("rd-engine").join("official-account")
     };
     #[cfg(not(target_os = "windows"))]
@@ -609,16 +752,19 @@ fn private_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if metadata.uid() != unsafe { hbb_common::libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
+        if metadata.uid() != unsafe { hbb_common::libc::geteuid() } || metadata.mode() & 0o077 != 0
         {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
-                "Account storage directory is not private to the current user"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Account storage directory is not private to the current user",
+            ));
         }
     }
     #[cfg(not(windows))]
     if missing {
-        let parent = path.parent().ok_or_else(|| invalid("Account root has no parent"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid("Account root has no parent"))?;
         sync_directory(parent)?;
     }
     #[cfg(windows)]
@@ -630,7 +776,9 @@ fn secure_options(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(hbb_common::libc::O_NOFOLLOW);
+        options
+            .mode(0o600)
+            .custom_flags(hbb_common::libc::O_NOFOLLOW);
     }
     #[cfg(windows)]
     {
@@ -650,10 +798,13 @@ fn check_regular(file: &File) -> io::Result<()> {
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.uid() != unsafe { hbb_common::libc::geteuid() }
-            || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1
+            || metadata.mode() & 0o077 != 0
+            || metadata.nlink() != 1
         {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
-                "Account storage entry is not private to the current user"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Account storage entry is not private to the current user",
+            ));
         }
     }
     Ok(())
@@ -687,7 +838,6 @@ fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
-
 fn remove_temporary(path: &Path, root: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => {
@@ -712,12 +862,23 @@ fn owned_kind(name: &std::ffi::OsStr) -> Option<RecordKind> {
         Some(_) => return None,
         None => name,
     };
-    for kind in [RecordKind::Account, RecordKind::AddressBook, RecordKind::Group] {
-        if base == kind.file() { return Some(kind); }
+    for kind in [
+        RecordKind::Account,
+        RecordKind::AddressBook,
+        RecordKind::Group,
+    ] {
+        if base == kind.file() {
+            return Some(kind);
+        }
         if !matches!(kind, RecordKind::Account) {
-            if let Some(suffix) = base.strip_prefix(kind.file()).and_then(|value| value.strip_prefix('.')) {
+            if let Some(suffix) = base
+                .strip_prefix(kind.file())
+                .and_then(|value| value.strip_prefix('.'))
+            {
                 if let Some((epoch_id, revision)) = suffix.split_once('.') {
-                    if lower_hex(epoch_id, 64) && lower_hex(revision, 16) { return Some(kind); }
+                    if lower_hex(epoch_id, 64) && lower_hex(revision, 16) {
+                        return Some(kind);
+                    }
                 }
             }
         }
@@ -726,14 +887,19 @@ fn owned_kind(name: &std::ffi::OsStr) -> Option<RecordKind> {
 }
 
 fn lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn combine(first: io::Result<()>, second: io::Result<()>) -> io::Result<()> {
     match (first, second) {
         (Ok(()), result) | (result, Ok(())) => result,
-        (Err(first), Err(second)) => Err(io::Error::new(first.kind(),
-            format!("{first}; encrypted account cleanup also failed: {second}"))),
+        (Err(first), Err(second)) => Err(io::Error::new(
+            first.kind(),
+            format!("{first}; encrypted account cleanup also failed: {second}"),
+        )),
     }
 }
 
@@ -749,7 +915,9 @@ struct Fields<'a> {
 }
 
 impl<'a> Fields<'a> {
-    fn new(remaining: &'a [u8]) -> Self { Self { remaining } }
+    fn new(remaining: &'a [u8]) -> Self {
+        Self { remaining }
+    }
     fn take(&mut self, count: usize) -> io::Result<&'a [u8]> {
         if count > self.remaining.len() {
             return Err(invalid("Truncated authenticated account record"));
@@ -767,13 +935,20 @@ impl<'a> Fields<'a> {
         let mut bytes = [0; 4];
         bytes.copy_from_slice(self.take(4)?);
         let length = u32::from_le_bytes(bytes) as usize;
-        if length > max { return Err(invalid("Account field exceeds its size bound")); }
+        if length > max {
+            return Err(invalid("Account field exceeds its size bound"));
+        }
         self.take(length)
     }
-    fn rest(&self) -> &'a [u8] { self.remaining }
+    fn rest(&self) -> &'a [u8] {
+        self.remaining
+    }
     fn end(&self) -> io::Result<()> {
-        if self.remaining.is_empty() { Ok(()) }
-        else { Err(invalid("Unexpected authenticated account record fields")) }
+        if self.remaining.is_empty() {
+            Ok(())
+        } else {
+            Err(invalid("Unexpected authenticated account record fields"))
+        }
     }
 }
 

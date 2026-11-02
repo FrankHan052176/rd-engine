@@ -210,35 +210,52 @@ mod windows {
         eprintln!("peer_signing_key_base64={}", STANDARD.encode(public_key.0));
         let salt = hbb_common::config::Config::get_auto_password(32);
         let mut password = cli.password.unwrap_or_default();
-        let policy = if password.is_empty() { rd_engine::authentication::PrimaryPolicy::ClickOnly }
-            else { rd_engine::authentication::PrimaryPolicy::PasswordOrClick };
-        let values = if password.is_empty() { Vec::new() }
-            else { vec![rd_engine::authentication::salted_password(password.as_bytes(), &salt)] };
-        unsafe { hbb_common::sodiumoxide::utils::memzero(password.as_bytes_mut()); }
+        let policy = if password.is_empty() {
+            rd_engine::authentication::PrimaryPolicy::ClickOnly
+        } else {
+            rd_engine::authentication::PrimaryPolicy::PasswordOrClick
+        };
+        let values = if password.is_empty() {
+            Vec::new()
+        } else {
+            vec![rd_engine::authentication::salted_password(
+                password.as_bytes(),
+                &salt,
+            )]
+        };
+        unsafe {
+            hbb_common::sodiumoxide::utils::memzero(password.as_bytes_mut());
+        }
         let credentials = std::sync::Arc::new(rd_engine::host::HostCredentials::new(
-            1, salt, rd_engine::authentication::Passwords::from_salted(values), policy,
+            1,
+            salt,
+            rd_engine::authentication::Passwords::from_salted(values),
+            policy,
         ));
-        let host = Host::start(HostOptions {
-            listen: Some(cli.listen),
-            allow_legacy_plain: true,
-            display_name: cli.id.clone(),
-            id: cli.id,
-            credentials,
-            security: None,
-            signing_key,
-            // The bound display's own geometry and binding key: the host
-            // publishes this output, not an ordinal that may resolve elsewhere.
-            width: display.width,
-            height: display.height,
-            bitrate: cli.bitrate,
-            platform: "Windows".into(),
-            publisher_backend: cli.backend,
-            output_key: display.binding_key.clone(),
-            // This console host is explicit-only: remote input stays denied
-            // until a local product surface turns it on.
-            allow_input: false,
-            codec_selection: cli.codec,
-        }, None)
+        let host = Host::start(
+            HostOptions {
+                listen: Some(cli.listen),
+                allow_legacy_plain: true,
+                display_name: cli.id.clone(),
+                id: cli.id,
+                credentials,
+                security: None,
+                signing_key,
+                // The bound display's own geometry and binding key: the host
+                // publishes this output, not an ordinal that may resolve elsewhere.
+                width: display.width,
+                height: display.height,
+                bitrate: cli.bitrate,
+                platform: "Windows".into(),
+                publisher_backend: cli.backend,
+                output_key: display.binding_key.clone(),
+                // This console host is explicit-only: remote input stays denied
+                // until a local product surface turns it on.
+                allow_input: false,
+                codec_selection: cli.codec,
+            },
+            None,
+        )
         .map_err(|error| format!("host start failed: {error}"))?;
 
         let selected_backend = "dxgi-nvenc";

@@ -66,7 +66,10 @@ impl PersistentIdentity {
             std::mem::take(&mut self.id),
             std::mem::take(&mut self.registration_uuid),
             self.public_key,
-            std::mem::replace(&mut self.signing_key, sign::SecretKey([0; sign::SECRETKEYBYTES])),
+            std::mem::replace(
+                &mut self.signing_key,
+                sign::SecretKey([0; sign::SECRETKEYBYTES]),
+            ),
         )
     }
 }

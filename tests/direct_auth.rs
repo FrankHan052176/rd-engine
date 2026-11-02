@@ -9,10 +9,10 @@ mod handshake;
 mod session;
 
 use authentication::*;
-use handshake::*;
 use base::message_proto::{
     Hash, LoginRequest, LoginResponse, Message, PeerInfo, PublicKey, SignedId, message,
 };
+use handshake::*;
 use hbb_common::{
     protobuf::Message as _,
     rendezvous_proto::IdPk,
@@ -554,7 +554,10 @@ async fn encrypted_new_host_authenticates_hbb_viewer_fixture_with_wrong_retry() 
             panic!("Expected PermissionInfo for {expected:?}")
         };
         assert_eq!(info.permission.enum_value(), Ok(expected));
-        assert!(!info.enabled, "this host config grants no {expected:?} capability");
+        assert!(
+            !info.enabled,
+            "this host config grants no {expected:?} capability"
+        );
     }
     assert!(matches!(
         recv(&mut wire).await.union,

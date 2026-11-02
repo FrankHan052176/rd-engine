@@ -6,22 +6,32 @@
 use super::{AccountContext, api, state};
 use base::config::keys;
 use hbb_common::{
-    ResultType, Stream, anyhow::anyhow, bail,
+    ResultType, Stream,
+    anyhow::anyhow,
+    bail,
     bytes::Bytes,
     config::{self, Config, Socks5Server},
     protobuf::Message as _,
     proxy::{Proxy, ProxyScheme},
-    rendezvous_proto::{HeaderEntry, HttpProxyRequest, KeyExchange, RendezvousMessage, rendezvous_message},
+    rendezvous_proto::{
+        HeaderEntry, HttpProxyRequest, KeyExchange, RendezvousMessage, rendezvous_message,
+    },
     serde_derive::Serialize,
     serde_json,
     sha2::{Digest, Sha256},
     sodiumoxide::crypto::{box_, secretbox, sign},
     tls::{TlsType, get_cached_tls_accept_invalid_cert, get_cached_tls_type},
 };
-use reqwest::{Client, Method, header::{HeaderMap, HeaderName, HeaderValue}};
+use reqwest::{
+    Client, Method,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::{sync::Semaphore, task::AbortHandle, time::timeout};
@@ -37,7 +47,8 @@ const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_HEADERS: usize = 64 * 1024;
 
 static CONSTRUCTION_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(4)));
-static REQUESTS: LazyLock<Mutex<HashMap<[u8; 32], PendingRequest>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REQUESTS: LazyLock<Mutex<HashMap<[u8; 32], PendingRequest>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 struct PendingRequest {
@@ -64,7 +75,12 @@ pub(super) struct Request {
 }
 
 impl Request {
-    pub(super) fn new(url: String, method: &str, body: Option<String>, headers: String) -> ResultType<Self> {
+    pub(super) fn new(
+        url: String,
+        method: &str,
+        body: Option<String>,
+        headers: String,
+    ) -> ResultType<Self> {
         let url = Zeroizing::new(url);
         let body = body.map(Zeroizing::new);
         let headers = Zeroizing::new(headers);
@@ -79,7 +95,12 @@ impl Request {
         if body.as_ref().is_some_and(|value| value.len() > MAX_BODY) {
             bail!("Account HTTP request is too large");
         }
-        Ok(Self { url, method, body, headers: parse_json_header_entries(&headers)? })
+        Ok(Self {
+            url,
+            method,
+            body,
+            headers: parse_json_header_entries(&headers)?,
+        })
     }
 }
 
@@ -96,8 +117,8 @@ fn parse_json_header_entries(header: &str) -> ResultType<HeaderMap> {
         for (name, value) in &entries {
             let name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| anyhow!("Invalid HTTP header name"))?;
-            let mut value = HeaderValue::from_str(value)
-                .map_err(|_| anyhow!("Invalid HTTP header value"))?;
+            let mut value =
+                HeaderValue::from_str(value).map_err(|_| anyhow!("Invalid HTTP header value"))?;
             // This also prevents dependent request Debug output exposing headers.
             value.set_sensitive(true);
             if headers.insert(name, value).is_some() {
@@ -168,8 +189,12 @@ pub(super) struct Transport {
 fn same_api_target(target: &Url, api: &Url) -> bool {
     let base_path = api.path().trim_end_matches('/');
     target.origin() == api.origin()
-        && (base_path.is_empty() || target.path() == base_path
-            || target.path().strip_prefix(base_path).is_some_and(|rest| rest.starts_with('/')))
+        && (base_path.is_empty()
+            || target.path() == base_path
+            || target
+                .path()
+                .strip_prefix(base_path)
+                .is_some_and(|rest| rest.starts_with('/')))
 }
 
 impl Transport {
@@ -186,8 +211,16 @@ impl Transport {
         if !raw_tcp && target.scheme() != "https" {
             bail!("Account HTTP transport requires HTTPS");
         }
-        let address = if raw_tcp { api::rendezvous_server() } else { String::new() };
-        let key = if raw_tcp { Some(api::public_key()?) } else { None };
+        let address = if raw_tcp {
+            api::rendezvous_server()
+        } else {
+            String::new()
+        };
+        let key = if raw_tcp {
+            Some(api::public_key()?)
+        } else {
+            None
+        };
         if raw_tcp && (address.contains("://") || address.contains(['/', '?', '#', '@'])) {
             bail!("Invalid account TCP proxy endpoint");
         }
@@ -206,27 +239,48 @@ impl Transport {
         // blocking. Bound admission and caller wait; a timed-out OS operation
         // retains its slot until it really finishes, not an unbounded worker pool.
         let transport = timeout(CONSTRUCTION_TIMEOUT, async move {
-            let permit = CONSTRUCTION_SLOTS.clone().acquire_owned().await
+            let permit = CONSTRUCTION_SLOTS
+                .clone()
+                .acquire_owned()
+                .await
                 .map_err(|_| anyhow!("HTTP client construction unavailable"))?;
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let proxy = proxy_conf.0.as_ref()
+                let proxy = proxy_conf
+                    .0
+                    .as_ref()
                     .map(|conf| Proxy::from_conf(conf, Some(REQUEST_TIMEOUT.as_millis() as u64)))
-                    .transpose().map_err(|_| anyhow!("Invalid account proxy configuration"))?;
+                    .transpose()
+                    .map_err(|_| anyhow!("Invalid account proxy configuration"))?;
                 let route = if let Some(key) = key {
-                    let proxy_tls = if proxy.as_ref().is_some_and(|p| matches!(p.intercept, ProxyScheme::Https { .. })) {
-                        Some(Arc::new(hbb_common::verifier::client_config(false)
-                            .map_err(|_| anyhow!("Cannot construct strict proxy TLS client"))?))
+                    let proxy_tls = if proxy
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.intercept, ProxyScheme::Https { .. }))
+                    {
+                        Some(Arc::new(
+                            hbb_common::verifier::client_config(false)
+                                .map_err(|_| anyhow!("Cannot construct strict proxy TLS client"))?,
+                        ))
                     } else {
                         None
                     };
-                    Route::Tcp(TcpRoute { api: api_url, address, key, proxy, proxy_tls })
+                    Route::Tcp(TcpRoute {
+                        api: api_url,
+                        address,
+                        key,
+                        proxy,
+                        proxy_tls,
+                    })
                 } else {
                     Route::Https(create_http_client_strict(tls_type, proxy.as_ref())?)
                 };
                 Ok::<_, hbb_common::anyhow::Error>(Self { route })
-            }).await.map_err(|_| anyhow!("HTTP client construction failed"))?
-        }).await.map_err(|_| anyhow!("HTTP client construction timed out"))??;
+            })
+            .await
+            .map_err(|_| anyhow!("HTTP client construction failed"))?
+        })
+        .await
+        .map_err(|_| anyhow!("HTTP client construction timed out"))??;
         ensure_current(context)?;
         Ok(transport)
     }
@@ -245,14 +299,18 @@ impl Transport {
                 }
                 Route::Tcp(route) => {
                     let request = Request {
-                        url: Zeroizing::new(url.to_owned()), method: Method::HEAD,
-                        body: None, headers: HeaderMap::new(),
+                        url: Zeroizing::new(url.to_owned()),
+                        method: Method::HEAD,
+                        body: None,
+                        headers: HeaderMap::new(),
                     };
                     tcp_proxy_request(route, request).await?;
                 }
             }
             Ok(())
-        }).await.map_err(|_| anyhow!("HTTP probe timed out"))?
+        })
+        .await
+        .map_err(|_| anyhow!("HTTP probe timed out"))?
     }
 
     pub(super) async fn request(&self, request: Request) -> ResultType<HttpResponse> {
@@ -261,7 +319,9 @@ impl Transport {
                 Route::Https(client) => http_request_http(client, request).await,
                 Route::Tcp(route) => tcp_proxy_request(route, request).await,
             }
-        }).await.map_err(|_| anyhow!("HTTP request timed out"))?
+        })
+        .await
+        .map_err(|_| anyhow!("HTTP request timed out"))?
     }
 }
 
@@ -295,7 +355,8 @@ fn create_http_client_strict(tls_type: TlsType, proxy: Option<&Proxy>) -> Result
             ProxyScheme::Http { host, .. } => reqwest::Proxy::all(format!("http://{host}")),
             ProxyScheme::Https { host, .. } => reqwest::Proxy::all(format!("https://{host}")),
             ProxyScheme::Socks5 { addr, .. } => reqwest::Proxy::all(format!("socks5://{addr}")),
-        }.map_err(|_| anyhow!("Invalid account proxy configuration"))?;
+        }
+        .map_err(|_| anyhow!("Invalid account proxy configuration"))?;
         if let Some(auth) = proxy.intercept.maybe_auth() {
             if !auth.username().is_empty() && !auth.password().is_empty() {
                 configured = configured.basic_auth(auth.username(), auth.password());
@@ -303,7 +364,9 @@ fn create_http_client_strict(tls_type: TlsType, proxy: Option<&Proxy>) -> Result
         }
         builder = builder.proxy(configured);
     }
-    builder.build().map_err(|_| anyhow!("Cannot construct strict HTTP client"))
+    builder
+        .build()
+        .map_err(|_| anyhow!("Cannot construct strict HTTP client"))
 }
 
 fn http_error(error: reqwest::Error) -> hbb_common::anyhow::Error {
@@ -334,24 +397,35 @@ async fn http_request_http(client: &Client, mut request: Request) -> ResultType<
     if parsed.scheme() != "https" {
         bail!("Account HTTP transport requires HTTPS");
     }
-    let mut builder = client.request(request.method, parsed).headers(request.headers);
+    let mut builder = client
+        .request(request.method, parsed)
+        .headers(request.headers);
     if let Some(body) = request.body.as_mut() {
         builder = builder.body(std::mem::take(&mut **body));
     }
     let mut response = builder.send().await.map_err(http_error)?;
     let status_code = response.status().as_u16();
     reject_redirect(status_code)?;
-    if response.content_length().is_some_and(|length| length > MAX_BODY as u64) {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_BODY as u64)
+    {
         bail!("Account HTTP response is too large");
     }
-    let mut result = HttpResponse { status_code, headers: HashMap::new(), body: String::new() };
+    let mut result = HttpResponse {
+        status_code,
+        headers: HashMap::new(),
+        body: String::new(),
+    };
     let mut header_bytes = 0usize;
     for (name, value) in response.headers() {
         header_bytes = header_bytes.saturating_add(name.as_str().len() + value.as_bytes().len());
         if header_bytes > MAX_HEADERS {
             bail!("Account HTTP response headers are too large");
         }
-        result.headers.insert(name.to_string(), value.to_str().unwrap_or("").to_owned());
+        result
+            .headers
+            .insert(name.to_string(), value.to_str().unwrap_or("").to_owned());
     }
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = response.chunk().await.map_err(http_error)? {
@@ -368,7 +442,9 @@ async fn http_request_http(client: &Client, mut request: Request) -> ResultType<
 // Unlike secure_tcp_impl's peer compatibility path, every non-KeyExchange,
 // malformed message, read failure and EOF is a hard failure before credentials.
 async fn secure_tcp_silent(conn: &mut Stream, rs_pk: &sign::PublicKey) -> ResultType<()> {
-    let bytes = conn.next().await
+    let bytes = conn
+        .next()
+        .await
         .ok_or_else(|| anyhow!("Account proxy closed before authentication"))?
         .map_err(|_| anyhow!("Account proxy authentication read failed"))?;
     let msg = RendezvousMessage::parse_from_bytes(&bytes)
@@ -381,14 +457,19 @@ async fn secure_tcp_silent(conn: &mut Stream, rs_pk: &sign::PublicKey) -> Result
     }
     let their_pk = sign::verify(&exchange.keys[0], rs_pk)
         .map_err(|_| anyhow!("Account proxy signature verification failed"))?;
-    let their_pk: [u8; 32] = their_pk.as_slice().try_into()
+    let their_pk: [u8; 32] = their_pk
+        .as_slice()
+        .try_into()
         .map_err(|_| anyhow!("Invalid account proxy public key"))?;
     let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(their_pk);
     let mut out = RendezvousMessage::new();
     out.set_key_exchange(KeyExchange {
-        keys: vec![asymmetric_value, symmetric_value], ..Default::default()
+        keys: vec![asymmetric_value, symmetric_value],
+        ..Default::default()
     });
-    conn.send(&out).await.map_err(|_| anyhow!("Account proxy key exchange failed"))?;
+    conn.send(&out)
+        .await
+        .map_err(|_| anyhow!("Account proxy key exchange failed"))?;
     conn.set_key(key);
     Ok(())
 }
@@ -407,54 +488,86 @@ fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbox::K
 async fn connect_proxy(route: &TcpRoute) -> ResultType<Stream> {
     let Some(proxy) = &route.proxy else {
         let stream = hbb_common::tcp::FramedStream::new(
-            &route.address, None, REQUEST_TIMEOUT.as_millis() as u64,
-        ).await.map_err(|_| anyhow!("Cannot connect to account proxy"))?;
+            &route.address,
+            None,
+            REQUEST_TIMEOUT.as_millis() as u64,
+        )
+        .await
+        .map_err(|_| anyhow!("Cannot connect to account proxy"))?;
         return Ok(Stream::Tcp(stream));
     };
     let (host, port, tls_host) = match &proxy.intercept {
         ProxyScheme::Http { host, .. } | ProxyScheme::Https { host, .. } => {
-            let scheme = if matches!(&proxy.intercept, ProxyScheme::Https { .. }) { "https" } else { "http" };
+            let scheme = if matches!(&proxy.intercept, ProxyScheme::Https { .. }) {
+                "https"
+            } else {
+                "http"
+            };
             let endpoint = Url::parse(&format!("{scheme}://{host}"))
                 .map_err(|_| anyhow!("Invalid account proxy configuration"))?;
-            let host = endpoint.host_str().ok_or_else(|| anyhow!("Invalid account proxy configuration"))?
-                .trim_matches(['[', ']']).to_owned();
-            let port = endpoint.port_or_known_default()
+            let host = endpoint
+                .host_str()
+                .ok_or_else(|| anyhow!("Invalid account proxy configuration"))?
+                .trim_matches(['[', ']'])
+                .to_owned();
+            let port = endpoint
+                .port_or_known_default()
                 .ok_or_else(|| anyhow!("Invalid account proxy configuration"))?;
             (host.clone(), port, Some(host))
         }
         ProxyScheme::Socks5 { addr, .. } => (addr.ip().to_string(), addr.port(), None),
     };
-    let socket = tokio::net::TcpStream::connect((host.as_str(), port)).await
+    let socket = tokio::net::TcpStream::connect((host.as_str(), port))
+        .await
         .map_err(|_| anyhow!("Cannot connect to configured account proxy"))?;
-    let local = socket.local_addr().map_err(|_| anyhow!("Cannot inspect account proxy connection"))?;
+    let local = socket
+        .local_addr()
+        .map_err(|_| anyhow!("Cannot inspect account proxy connection"))?;
     use hbb_common::IntoTargetAddr as _;
-    let target = route.address.as_str().into_target_addr()
+    let target = route
+        .address
+        .as_str()
+        .into_target_addr()
         .map_err(|_| anyhow!("Invalid account TCP proxy endpoint"))?;
     let framed = match &proxy.intercept {
         ProxyScheme::Http { .. } => {
-            let stream = proxy.http_connect(socket, &target).await
+            let stream = proxy
+                .http_connect(socket, &target)
+                .await
                 .map_err(|_| anyhow!("Account proxy CONNECT failed"))?;
             hbb_common::tcp::FramedStream::from(stream, local)
         }
         ProxyScheme::Https { .. } => {
-            let config = route.proxy_tls.as_ref()
+            let config = route
+                .proxy_tls
+                .as_ref()
                 .ok_or_else(|| anyhow!("Strict account proxy TLS unavailable"))?;
             let name = rustls::pki_types::ServerName::try_from(tls_host.unwrap_or_default())
                 .map_err(|_| anyhow!("Invalid account proxy TLS name"))?;
-            let stream = tokio_rustls::TlsConnector::from(config.clone()).connect(name, socket).await
+            let stream = tokio_rustls::TlsConnector::from(config.clone())
+                .connect(name, socket)
+                .await
                 .map_err(|_| anyhow!("Account proxy TLS authentication failed"))?;
-            let stream = proxy.http_connect(stream, &target).await
+            let stream = proxy
+                .http_connect(stream, &target)
+                .await
                 .map_err(|_| anyhow!("Account proxy CONNECT failed"))?;
             hbb_common::tcp::FramedStream::from(stream, local)
         }
         ProxyScheme::Socks5 { .. } => {
             let stream = if let Some(auth) = proxy.intercept.maybe_auth() {
                 hbb_common::tokio_socks::tcp::Socks5Stream::connect_with_password_and_socket(
-                    socket, target, auth.username(), auth.password(),
-                ).await
+                    socket,
+                    target,
+                    auth.username(),
+                    auth.password(),
+                )
+                .await
             } else {
-                hbb_common::tokio_socks::tcp::Socks5Stream::connect_with_socket(socket, target).await
-            }.map_err(|_| anyhow!("Account SOCKS proxy connection failed"))?;
+                hbb_common::tokio_socks::tcp::Socks5Stream::connect_with_socket(socket, target)
+                    .await
+            }
+            .map_err(|_| anyhow!("Account SOCKS proxy connection failed"))?;
             hbb_common::tcp::FramedStream::from(stream, local)
         }
     };
@@ -466,7 +579,8 @@ async fn tcp_proxy_request(route: &TcpRoute, mut request: Request) -> ResultType
     if !same_api_target(&parsed, &route.api) {
         bail!("Account proxy target does not match its authenticated context");
     }
-    hbb_common::sodiumoxide::init().map_err(|_| anyhow!("Account proxy cryptography unavailable"))?;
+    hbb_common::sodiumoxide::init()
+        .map_err(|_| anyhow!("Account proxy cryptography unavailable"))?;
     let mut conn = connect_proxy(route).await?;
     if let Stream::Tcp(stream) = &mut conn {
         stream.0.codec_mut().set_max_packet_length(MAX_HEADERS);
@@ -475,29 +589,51 @@ async fn tcp_proxy_request(route: &TcpRoute, mut request: Request) -> ResultType
     }
     secure_tcp_silent(&mut conn, &route.key).await?;
     if let Stream::Tcp(stream) = &mut conn {
-        stream.0.codec_mut().set_max_packet_length(MAX_BODY + MAX_HEADERS + 4096);
+        stream
+            .0
+            .codec_mut()
+            .set_max_packet_length(MAX_BODY + MAX_HEADERS + 4096);
     }
     let path = if let Some(query) = parsed.query() {
         format!("{}?{}", parsed.path(), query)
     } else {
         parsed.path().to_owned()
     };
-    let headers = request.headers.iter().map(|(name, value)| {
-        Ok(HeaderEntry {
-            name: name.as_str().to_owned(),
-            value: value.to_str().map_err(|_| anyhow!("Invalid HTTP header value"))?.to_owned(),
-            ..Default::default()
+    let headers = request
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            Ok(HeaderEntry {
+                name: name.as_str().to_owned(),
+                value: value
+                    .to_str()
+                    .map_err(|_| anyhow!("Invalid HTTP header value"))?
+                    .to_owned(),
+                ..Default::default()
+            })
         })
-    }).collect::<ResultType<Vec<_>>>()?;
-    let body = request.body.as_mut().map(|body| std::mem::take(&mut **body)).unwrap_or_default();
+        .collect::<ResultType<Vec<_>>>()?;
+    let body = request
+        .body
+        .as_mut()
+        .map(|body| std::mem::take(&mut **body))
+        .unwrap_or_default();
     let mut out = RendezvousMessage::new();
     out.set_http_proxy_request(HttpProxyRequest {
-        method: request.method.as_str().to_owned(), path,
-        headers, body: Bytes::from(body.into_bytes()), ..Default::default()
+        method: request.method.as_str().to_owned(),
+        path,
+        headers,
+        body: Bytes::from(body.into_bytes()),
+        ..Default::default()
     });
-    conn.send(&out).await.map_err(|_| anyhow!("Account proxy request failed"))?;
+    conn.send(&out)
+        .await
+        .map_err(|_| anyhow!("Account proxy request failed"))?;
     drop(out);
-    let bytes = conn.next().await.ok_or_else(|| anyhow!("Account proxy closed without a response"))?
+    let bytes = conn
+        .next()
+        .await
+        .ok_or_else(|| anyhow!("Account proxy closed without a response"))?
         .map_err(|_| anyhow!("Account proxy response read failed"))?;
     let msg = RendezvousMessage::parse_from_bytes(&bytes)
         .map_err(|_| anyhow!("Invalid account proxy response"))?;
@@ -508,22 +644,31 @@ async fn tcp_proxy_request(route: &TcpRoute, mut request: Request) -> ResultType
         bail!("Account proxy reported a transport failure");
     }
     let status_code = u16::try_from(response.status)
-        .ok().filter(|status| (100..600).contains(status))
+        .ok()
+        .filter(|status| (100..600).contains(status))
         .ok_or_else(|| anyhow!("Invalid account proxy HTTP status"))?;
     reject_redirect(status_code)?;
     if response.body.len() > MAX_BODY {
         bail!("Account HTTP response is too large");
     }
-    let mut result = HttpResponse { status_code, headers: HashMap::new(), body: String::new() };
+    let mut result = HttpResponse {
+        status_code,
+        headers: HashMap::new(),
+        body: String::new(),
+    };
     let mut header_bytes = 0usize;
     for entry in response.headers {
         header_bytes = header_bytes.saturating_add(entry.name.len() + entry.value.len());
         if header_bytes > MAX_HEADERS {
             bail!("Account HTTP response headers are too large");
         }
-        HeaderName::from_bytes(entry.name.as_bytes()).map_err(|_| anyhow!("Invalid proxy response header"))?;
-        HeaderValue::from_str(&entry.value).map_err(|_| anyhow!("Invalid proxy response header"))?;
-        result.headers.insert(entry.name.to_lowercase(), entry.value);
+        HeaderName::from_bytes(entry.name.as_bytes())
+            .map_err(|_| anyhow!("Invalid proxy response header"))?;
+        HeaderValue::from_str(&entry.value)
+            .map_err(|_| anyhow!("Invalid proxy response header"))?;
+        result
+            .headers
+            .insert(entry.name.to_lowercase(), entry.value);
     }
     result.body = String::from_utf8_lossy(&response.body).into_owned();
     Ok(result)
@@ -541,7 +686,9 @@ fn request_key(url: &str) -> [u8; 32] {
 }
 
 fn remove_request(key: &[u8; 32], id: u64) {
-    let mut requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut requests = REQUESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if requests.get(key).is_some_and(|entry| entry.id == id) {
         requests.remove(key);
     }
@@ -563,24 +710,37 @@ impl Drop for RequestLifetime {
 pub fn start(url: String, method: String, body: Option<String>, headers: String) -> ResultType<()> {
     let request = Request::new(url, &method, body, headers)?;
     let context = state::current_context()?;
-    let runtime = crate::executor::runtime().map_err(|_| anyhow!("Account HTTP executor unavailable"))?;
+    let runtime =
+        crate::executor::runtime().map_err(|_| anyhow!("Account HTTP executor unavailable"))?;
     let key = request_key(&request.url);
-    let id = NEXT_REQUEST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    let id = NEXT_REQUEST
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| anyhow!("Account HTTP request sequence exhausted"))?;
     let now = Instant::now();
     {
-        let mut requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        requests.retain(|_, entry| entry.expires > now
-            && (entry.context == context || entry.context.generation > context.generation));
+        let mut requests = REQUESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        requests.retain(|_, entry| {
+            entry.expires > now
+                && (entry.context == context || entry.context.generation > context.generation)
+        });
         if requests.contains_key(&key) {
             bail!("An account HTTP request for this URL is already pending or unconsumed");
         }
         if requests.len() >= MAX_REQUESTS {
             bail!("Too many account HTTP requests");
         }
-        requests.insert(key, PendingRequest {
-            id, context: context.clone(), expires: now + REQUEST_LIFETIME, result: None, job: None,
-        });
+        requests.insert(
+            key,
+            PendingRequest {
+                id,
+                context: context.clone(),
+                expires: now + REQUEST_LIFETIME,
+                result: None,
+                job: None,
+            },
+        );
     }
     if let Err(error) = ensure_current(&context) {
         remove_request(&key, id);
@@ -595,16 +755,22 @@ pub fn start(url: String, method: String, body: Option<String>, headers: String)
                 let response = transport.request(request).await?;
                 ensure_current(&context)?;
                 response.to_json().map(Zeroizing::new)
-            }).await.unwrap_or_else(|_| Err(anyhow!("HTTP request timed out")));
+            })
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("HTTP request timed out")));
             let current = state::context_is_current(&context);
-            let mut requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut requests = REQUESTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(entry) = requests.get_mut(&key).filter(|entry| entry.id == id) {
                 match current {
                     Ok(true) => {
                         entry.result = Some(outcome);
                         entry.expires = Instant::now() + RESULT_RETENTION;
                     }
-                    Ok(false) => { requests.remove(&key); }
+                    Ok(false) => {
+                        requests.remove(&key);
+                    }
                     Err(_) => {
                         entry.result = Some(Err(anyhow!("Account context unavailable")));
                         entry.expires = Instant::now() + RESULT_RETENTION;
@@ -621,13 +787,20 @@ pub fn start(url: String, method: String, body: Option<String>, headers: String)
                 remove_request(&key, id);
                 break;
             }
-            let current = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&key).is_some_and(|entry| entry.id == id);
-            if !current { break; }
+            let current = REQUESTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&key)
+                .is_some_and(|entry| entry.id == id);
+            if !current {
+                break;
+            }
         }
     });
     {
-        let mut requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut requests = REQUESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(entry) = requests.get_mut(&key).filter(|entry| entry.id == id) {
             entry.job = Some(job.abort_handle());
         } else {
@@ -642,16 +815,24 @@ pub fn start(url: String, method: String, body: Option<String>, headers: String)
 pub fn poll(url: &str) -> ResultType<Option<String>> {
     let key = request_key(url);
     let snapshot = {
-        let requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        requests.get(&key).map(|entry| (entry.id, entry.context.clone()))
+        let requests = REQUESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        requests
+            .get(&key)
+            .map(|entry| (entry.id, entry.context.clone()))
     };
-    let Some((id, context)) = snapshot else { return Ok(None) };
+    let Some((id, context)) = snapshot else {
+        return Ok(None);
+    };
     if !state::context_is_current(&context)? {
         remove_request(&key, id);
         bail!("Account context changed");
     }
     let outcome = {
-        let mut requests = REQUESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut requests = REQUESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(entry) = requests.get_mut(&key).filter(|entry| entry.id == id) else {
             return Ok(None);
         };

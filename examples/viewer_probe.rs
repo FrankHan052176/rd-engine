@@ -171,7 +171,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 response.set_test_delay(probe);
                 parts.writer.send(&response).await?;
             }
-            Some(message::Union::Misc(m)) if matches!(m.union, Some(misc::Union::CloseReason(_))) => {
+            Some(message::Union::Misc(m))
+                if matches!(m.union, Some(misc::Union::CloseReason(_))) =>
+            {
                 println!("peer closed the session");
                 break;
             }

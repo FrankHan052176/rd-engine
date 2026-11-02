@@ -54,7 +54,9 @@ pub unsafe trait SurfaceLease: Send + Sync + 'static {
     /// The typed owner of a Windows destination, never a surface ID or pointer.
     /// Returning an owner does not prove readiness, codec support or presentation;
     /// the decoder must check its live binding against `render_target`.
-    fn windows_presentation(&self) -> Option<Arc<crate::windows_presentation::WindowsPresentation>> {
+    fn windows_presentation(
+        &self,
+    ) -> Option<Arc<crate::windows_presentation::WindowsPresentation>> {
         None
     }
     /// A frame observer for the sinks that publish through a caller instead of a
@@ -114,21 +116,34 @@ pub enum DecoderError {
     InvalidAccessUnit,
     TimestampOverflow,
     Backpressure,
-    AccessUnitExceedsQueueLimit { size: usize, limit: usize },
+    AccessUnitExceedsQueueLimit {
+        size: usize,
+        limit: usize,
+    },
     Closed,
     EndOfStreamAlreadySubmitted,
     NoHardwareDecoder,
-    NativeReturnedNull { api: &'static str },
+    NativeReturnedNull {
+        api: &'static str,
+    },
     InvalidNativeBuffer,
-    InputTooLarge { size: usize, capacity: i32 },
-    Native { api: &'static str, code: i32 },
+    InputTooLarge {
+        size: usize,
+        capacity: i32,
+    },
+    Native {
+        api: &'static str,
+        code: i32,
+    },
     /// The Windows failure retains its status, native stage and HRESULT intact.
     WindowsNative(crate::windows_presentation::PresentationError),
     CallbackOverflow,
     DuplicateBufferIndex,
     OwnerLimit,
     QuarantinePresent,
-    DestroyFailed { code: i32 },
+    DestroyFailed {
+        code: i32,
+    },
     WorkerStartFailed,
     WorkerPanicked,
 }
@@ -721,11 +736,11 @@ mod engine {
 mod native {
     use super::{engine::*, *};
     use std::{
-        ffi::{c_char, c_void, CStr},
+        ffi::{CStr, c_char, c_void},
         ptr,
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Condvar, Mutex, OnceLock,
+            atomic::{AtomicUsize, Ordering},
         },
         thread,
     };

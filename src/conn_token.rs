@@ -298,9 +298,7 @@ fn password_source_value(value: Value) -> Option<PasswordSource> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ConnToken, PasswordSource, PasswordSourceKind, H1_BYTES, MAX_CONN_TOKEN_BYTES,
-    };
+    use super::{ConnToken, H1_BYTES, MAX_CONN_TOKEN_BYTES, PasswordSource, PasswordSourceKind};
 
     /// The 32 bytes of the fixture h1 in the array form serde writes.
     const H1_ARRAY: &str = "[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,\
@@ -377,7 +375,10 @@ mod tests {
             ConnToken::parse(&format!("{text} ")).is_none(),
             "one byte over the bound is refused"
         );
-        assert!(ConnToken::parse("").is_none(), "an empty string is no token");
+        assert!(
+            ConnToken::parse("").is_none(),
+            "an empty string is no token"
+        );
     }
 
     /// The shapes that are not this schema are refused, not reinterpreted.
@@ -398,8 +399,12 @@ mod tests {
                 r#"{{"password":{H1_ARRAY},"password_source":"Undefined","session_id":1,"extra":0}}"#
             ),
             // `password` must be a real h1: 32 byte-valued integers.
-            format!(r#"{{"password":[{thirty_one}],"password_source":"Undefined","session_id":1}}"#),
-            format!(r#"{{"password":[{thirty_three}],"password_source":"Undefined","session_id":1}}"#),
+            format!(
+                r#"{{"password":[{thirty_one}],"password_source":"Undefined","session_id":1}}"#
+            ),
+            format!(
+                r#"{{"password":[{thirty_three}],"password_source":"Undefined","session_id":1}}"#
+            ),
             r#"{"password":"Nw==","password_source":"Undefined","session_id":1}"#.to_owned(),
             r#"{"password":[256],"password_source":"Undefined","session_id":1}"#.to_owned(),
             r#"{"password":[-1],"password_source":"Undefined","session_id":1}"#.to_owned(),
@@ -414,8 +419,12 @@ mod tests {
             ),
             // `password_source` must be the external tagging serde writes.
             format!(r#"{{"password":{H1_ARRAY},"password_source":"undefined","session_id":1}}"#),
-            format!(r#"{{"password":{H1_ARRAY},"password_source":{{"Undefined":null}},"session_id":1}}"#),
-            format!(r#"{{"password":{H1_ARRAY},"password_source":{{"SharedAb":7}},"session_id":1}}"#),
+            format!(
+                r#"{{"password":{H1_ARRAY},"password_source":{{"Undefined":null}},"session_id":1}}"#
+            ),
+            format!(
+                r#"{{"password":{H1_ARRAY},"password_source":{{"SharedAb":7}},"session_id":1}}"#
+            ),
             format!(
                 r#"{{"password":{H1_ARRAY},"password_source":{{"PersonalAb":[1],"Other":[]}},"session_id":1}}"#
             ),

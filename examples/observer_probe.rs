@@ -9,8 +9,8 @@
 
 use rd_engine::surface::FrameObserver;
 use rd_engine::viewer::{SurfaceLease, Viewer, ViewerInputPolicy, ViewerOptions, ViewerTarget};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Counts what it is shown, in the terms the memory sink reports them.
@@ -25,7 +25,14 @@ struct Counter {
 }
 
 impl FrameObserver for Counter {
-    fn frame(&self, width: i32, height: i32, _stride: usize, bytes: &[u8], damage: rd_engine::protocol::rect::Rect) {
+    fn frame(
+        &self,
+        width: i32,
+        height: i32,
+        _stride: usize,
+        bytes: &[u8],
+        damage: rd_engine::protocol::rect::Rect,
+    ) {
         let seen = self.frames.fetch_add(1, Ordering::Relaxed);
         if seen == 0 {
             self.first.store(elapsed_millis(), Ordering::Relaxed);
@@ -72,7 +79,10 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     });
     let password = args.next().unwrap_or_default();
-    let seconds: u64 = args.next().and_then(|value| value.parse().ok()).unwrap_or(10);
+    let seconds: u64 = args
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10);
     let address = target
         .parse()
         .map_err(|_| anyhow::anyhow!("{target:?} is not a host:port"))?;

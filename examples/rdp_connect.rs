@@ -41,7 +41,9 @@ fn main() -> ProbeResult<()> {
     }
     let stdin = io::stdin();
     if stdin.is_terminal() {
-        return Err("Provide the password through piped standard input, not an echoed terminal".into());
+        return Err(
+            "Provide the password through piped standard input, not an echoed terminal".into(),
+        );
     }
     let mut password = Zeroizing::new(Vec::new());
     stdin.lock().take(4099).read_to_end(&mut password)?;
@@ -79,24 +81,32 @@ fn parse_fingerprint(value: &str) -> ProbeResult<[u8; 32]> {
 }
 
 async fn run(options: RdpOptions) -> ProbeResult<()> {
-    let mut session = tokio::time::timeout(Duration::from_secs(40), RdpSession::connect(options)).await??;
+    let mut session =
+        tokio::time::timeout(Duration::from_secs(40), RdpSession::connect(options)).await??;
     let (width, height) = session.desktop();
     let mut surface = MemorySurface::new(width, height)?;
     let received = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match session.pump(&mut surface).await? {
                 Some(RdpEvent::Painted) => return Ok::<(), Box<dyn Error>>(()),
-                Some(RdpEvent::Closed) => return Err("Peer closed before a decoded frame arrived".into()),
+                Some(RdpEvent::Closed) => {
+                    return Err("Peer closed before a decoded frame arrived".into());
+                }
                 _ => {}
             }
         }
-    }).await;
+    })
+    .await;
     let closed = session.close().await;
     received??;
     closed?;
     let (width, height) = surface.size();
     let digest = ring::digest::digest(&ring::digest::SHA256, surface.bytes());
-    let digest = digest.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let digest = digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     println!("decoded_frame width={width} height={height} bgra_sha256={digest}");
     Ok(())
 }

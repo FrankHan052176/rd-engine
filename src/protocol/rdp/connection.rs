@@ -9,7 +9,10 @@
 use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::credssp::CredsspSequence;
 use ironrdp_connector::sspi::generator::GeneratorState;
-use ironrdp_connector::{ClientConnector, ClientConnectorState, ConnectionResult, Credentials, Sequence, ServerName, Written};
+use ironrdp_connector::{
+    ClientConnector, ClientConnectorState, ConnectionResult, Credentials, Sequence, ServerName,
+    Written,
+};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
 use ironrdp_pdu::rdp::headers::ShareControlPdu;
@@ -50,21 +53,40 @@ pub(super) async fn finalize(
     if !connector.0.should_perform_credssp() {
         return Err(RdpError::Protocol("NLA was not negotiated"));
     }
-    authenticate(&mut connector.0, framed, network, &mut buffer, server_name, public_key).await?;
+    authenticate(
+        &mut connector.0,
+        framed,
+        network,
+        &mut buffer,
+        server_name,
+        public_key,
+    )
+    .await?;
 
     let mut input_flags = InputFlags::empty();
     loop {
         let observe_input = match &connector.0.state {
-            ClientConnectorState::CapabilitiesExchange { connection_activation } => {
-                matches!(connection_activation.connection_activation_state(), ConnectionActivationState::CapabilitiesExchange)
+            ClientConnectorState::CapabilitiesExchange {
+                connection_activation,
+            } => {
+                matches!(
+                    connection_activation.connection_activation_state(),
+                    ConnectionActivationState::CapabilitiesExchange
+                )
             }
             _ => false,
         };
-        let encoding_client_info = matches!(connector.0.state, ClientConnectorState::SecureSettingsExchange { .. });
+        let encoding_client_info = matches!(
+            connector.0.state,
+            ClientConnectorState::SecureSettingsExchange { .. }
+        );
         let written = step_read(
-            framed, &mut connector.0, &mut buffer,
+            framed,
+            &mut connector.0,
+            &mut buffer,
             observe_input.then_some(&mut input_flags),
-        ).await?;
+        )
+        .await?;
         if encoding_client_info {
             // SecureSettingsExchange has encoded ClientInfo into `buffer`.
             // The password is no longer needed by Config; wipe it before any
@@ -73,7 +95,10 @@ pub(super) async fn finalize(
             connector.clear_password();
         }
         if let Some(size) = written.size() {
-            framed.write_all(&buffer.filled()[..size]).await.map_err(transport_error)?;
+            framed
+                .write_all(&buffer.filled()[..size])
+                .await
+                .map_err(transport_error)?;
         }
         if encoding_client_info {
             // That ClientInfo PDU carries the password verbatim, protected only
@@ -125,12 +150,15 @@ fn demand_active_input_flags(pdu: &[u8]) -> Result<Option<InputFlags>, RdpError>
         .map_err(|_| RdpError::Protocol("DemandActive share control decode"))?;
     match control.pdu {
         ShareControlPdu::ServerDemandActive(active) => {
-            let flags = active.pdu.capability_sets.into_iter().find_map(|capability| {
-                match capability {
+            let flags = active
+                .pdu
+                .capability_sets
+                .into_iter()
+                .find_map(|capability| match capability {
                     CapabilitySet::Input(input) => Some(input.input_flags),
                     _ => None,
-                }
-            }).unwrap_or_else(InputFlags::empty);
+                })
+                .unwrap_or_else(InputFlags::empty);
             Ok(Some(flags))
         }
         // The upstream activation sequence permits repeated DeactivateAll
@@ -158,7 +186,8 @@ async fn authenticate(
         server_name,
         public_key,
         None,
-    ).map_err(connector_error)?;
+    )
+    .map_err(connector_error)?;
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(request);
@@ -176,15 +205,23 @@ async fn authenticate(
             }
         };
         buffer.clear();
-        let written = sequence.handle_process_result(client_state, buffer).map_err(connector_error)?;
+        let written = sequence
+            .handle_process_result(client_state, buffer)
+            .map_err(connector_error)?;
         if let Some(size) = written.size() {
-            framed.write_all(&buffer.filled()[..size]).await.map_err(transport_error)?;
+            framed
+                .write_all(&buffer.filled()[..size])
+                .await
+                .map_err(transport_error)?;
         }
         let Some(hint) = sequence.next_pdu_hint() else {
             break;
         };
         let pdu = framed.read_by_hint(hint).await.map_err(transport_error)?;
-        match sequence.decode_server_message(&pdu).map_err(connector_error)? {
+        match sequence
+            .decode_server_message(&pdu)
+            .map_err(connector_error)?
+        {
             Some(next_request) => request = next_request,
             None => break,
         }

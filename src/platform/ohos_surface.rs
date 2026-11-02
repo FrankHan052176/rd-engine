@@ -94,7 +94,10 @@ impl std::fmt::Display for SurfaceError {
                 write!(f, "the OHOS native window did not provide a usable buffer")
             }
             Self::LeaseInvalid => {
-                write!(f, "the Surface lease cannot be materialized into a native window")
+                write!(
+                    f,
+                    "the Surface lease cannot be materialized into a native window"
+                )
             }
             Self::DestroyFailed { code } => {
                 write!(f, "OHOS native-window teardown failed with code {code}")
@@ -602,11 +605,7 @@ mod native {
         // different opaque pointer types for one C symbol is a redeclaration
         // warning at best and a silent mismatch at worst.
         fn OH_NativeWindow_DestroyNativeWindow(window: *mut core::ffi::c_void);
-        fn OH_NativeWindow_NativeWindowHandleOpt(
-            window: *mut NativeWindow,
-            code: i32,
-            ...
-        ) -> i32;
+        fn OH_NativeWindow_NativeWindowHandleOpt(window: *mut NativeWindow, code: i32, ...) -> i32;
         fn OH_NativeWindow_NativeWindowRequestBuffer(
             window: *mut NativeWindow,
             buffer: *mut *mut NativeWindowBuffer,
@@ -916,7 +915,10 @@ mod native {
 
 #[cfg(test)]
 mod tests {
-    use super::{ownership::{MAX_OWNERS, OwnerBudget}, *};
+    use super::{
+        ownership::{MAX_OWNERS, OwnerBudget},
+        *,
+    };
 
     fn surface(width: i32, height: i32) -> MemorySurface {
         MemorySurface::new(width, height).unwrap()
@@ -930,10 +932,13 @@ mod tests {
 
     impl FrameObserver for RecordingObserver {
         fn frame(&self, width: i32, height: i32, stride: usize, bytes: &[u8], damage: Rect) {
-            self.seen
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((width, height, stride, bytes.len(), damage));
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).push((
+                width,
+                height,
+                stride,
+                bytes.len(),
+                damage,
+            ));
         }
     }
 
@@ -948,9 +953,20 @@ mod tests {
         // Nothing was written, so there is nothing to present and nothing to
         // report: a drain that answers None must not reach the observer.
         assert!(surface.take_damage().is_none());
-        assert!(observer.seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        assert!(
+            observer
+                .seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
 
-        let written = Rect { x: 1, y: 0, width: 2, height: 2 };
+        let written = Rect {
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
         {
             let mut window = surface
                 .rect_mut(written)
@@ -986,7 +1002,14 @@ mod tests {
         // Geometry is validated before the one allocation sized by peer input,
         // so an extreme DesktopSize is an error rather than an overflow or an
         // allocator abort.
-        for (width, height) in [(0, 4), (4, 0), (-1, 4), (4, -1), (i32::MIN, 4), (4, i32::MIN)] {
+        for (width, height) in [
+            (0, 4),
+            (4, 0),
+            (-1, 4),
+            (4, -1),
+            (i32::MIN, 4),
+            (4, i32::MIN),
+        ] {
             assert_eq!(
                 MemorySurface::new(width, height).err(),
                 Some(SurfaceError::InvalidGeometry),
@@ -1273,7 +1296,11 @@ mod tests {
 
     #[test]
     fn error_text_names_the_failure() {
-        assert!(SurfaceError::UnsupportedPlatform.to_string().contains("platform"));
+        assert!(
+            SurfaceError::UnsupportedPlatform
+                .to_string()
+                .contains("platform")
+        );
         assert_eq!(
             SurfaceError::NativeBufferUnavailable.to_string(),
             "the OHOS native window did not provide a usable buffer"

@@ -60,7 +60,9 @@ are unchanged and the HarmonyOS output keeps its platform media stack. A target
 where no libvpx resolves still builds and refuses VPx by name, with the reason in
 `RD_LIBVPX_PROVENANCE`; on Windows the install is the pinned static `vpx.lib`
 built by `native/frb/vcpkg-overlays/libvpx` (libvpx 1.15.2), named by
-`LIBVPX_PREFIX`.
+`LIBVPX_PREFIX`. That same static-md prefix must also supply the static Opus
+library and headers the non-optional `magnum-opus` dependency links
+(`lib/opus.lib`, `include/opus/opus_multistream.h`).
 
 The generator must be **flutter_rust_bridge_codegen 1.80.1**. Rust and Dart both
 pin the 1.80.1 runtime. `FRB_CODEGEN` can select that executable and `LLVM_PATH`
@@ -136,8 +138,9 @@ only to private build copies in their declared order; neither local handwritten
 Dart nor an installed client is changed.
 The build names its Windows Flutter, Rust, VS2022 and CMake inputs explicitly;
 `REMOTE_LIBVPX_PREFIX` and `REMOTE_CMAKE_TOOLCHAIN_FILE` select the target's
-isolated static-md libvpx/Zlib installation. Ambient Flutter or a prior SSH
-command's environment is not a valid toolchain selection.
+isolated static-md libvpx/Zlib/Opus installation, and `REMOTE_LIBCLANG_PATH` the
+directory holding the real `libclang.dll` bindgen loads. Ambient Flutter or a
+prior SSH command's environment is not a valid toolchain selection.
 
 Stock Flutter 3.24.5 chooses the wrong generator when its discovery selects the
 installed VS18 BuildTools. The explicit VS2022 CMake configuration preserves the
@@ -262,6 +265,17 @@ checks those three files on the host and exports the prefix for the bridge's
 cargo command alone. A missing or mismatched install fails the run before
 anything is copied; it never turns into a capability claim, and no local prefix
 is ever substituted for it.
+
+That prefix must also carry `lib/opus.lib` and `include/opus/opus_multistream.h`,
+because `magnum-opus` is non-optional and its `build.rs` reads only `VCPKG_ROOT`,
+linking from `<VCPKG_ROOT>/installed/x64-windows-static` on this target. The
+driver mirrors just those two Opus inputs into `<root>/deps/magnum-opus` - its own
+VCPKG_ROOT tree - and hash-compares them back to the static-md files, so a stale
+copy cannot satisfy the link; the supplied prefix itself is only read.
+`REMOTE_LIBCLANG_PATH` must name the directory containing the real
+`libclang.dll` that bindgen loads; a `clang.exe` on PATH is not that DLL. A
+missing value fails input validation and a missing DLL fails preflight with the
+path named, and no candidate LLVM install is thereby verified.
 
 ## Behavioral and ownership boundaries
 

@@ -220,7 +220,12 @@ mod tests {
     fn bare_targets_stay_rustdesk() {
         // The client only adds a scheme when the user picked another protocol,
         // so these must never be reinterpreted.
-        for raw in ["10.0.0.1", "10.0.0.1:21118", "100 001", "id@server:21116?key=abc"] {
+        for raw in [
+            "10.0.0.1",
+            "10.0.0.1:21118",
+            "100 001",
+            "id@server:21116?key=abc",
+        ] {
             let target = Target::parse(raw).unwrap();
             assert_eq!(target.protocol(), Protocol::RustDesk, "{raw}");
         }
@@ -232,7 +237,10 @@ mod tests {
 
     #[test]
     fn vnc_and_rdp_default_ports_match_the_client_comment() {
-        assert_eq!(Target::parse("vnc://1.2.3.4").unwrap(), vnc("1.2.3.4", 5900));
+        assert_eq!(
+            Target::parse("vnc://1.2.3.4").unwrap(),
+            vnc("1.2.3.4", 5900)
+        );
         assert_eq!(
             Target::parse("rdp://1.2.3.4").unwrap(),
             Target::Rdp(Endpoint {
@@ -269,7 +277,10 @@ mod tests {
             Target::parse("vnc://[fe80::1]:5901").unwrap(),
             vnc("fe80::1", 5901)
         );
-        assert_eq!(Target::parse("vnc://[fe80::1]").unwrap(), vnc("fe80::1", 5900));
+        assert_eq!(
+            Target::parse("vnc://[fe80::1]").unwrap(),
+            vnc("fe80::1", 5900)
+        );
         assert_eq!(
             Target::parse("vnc://[fe80::1").unwrap_err(),
             TargetError::InvalidHost
@@ -283,7 +294,10 @@ mod tests {
     #[test]
     fn malformed_targets_are_rejected_not_guessed() {
         assert_eq!(Target::parse("").unwrap_err(), TargetError::Empty);
-        assert_eq!(Target::parse("vnc://").unwrap_err(), TargetError::MissingHost);
+        assert_eq!(
+            Target::parse("vnc://").unwrap_err(),
+            TargetError::MissingHost
+        );
         assert_eq!(
             Target::parse("vnc://host/desktop").unwrap_err(),
             TargetError::UnexpectedPath

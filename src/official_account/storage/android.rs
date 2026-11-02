@@ -125,18 +125,17 @@ pub(super) fn create_key(root: &Path, namespace: &str, key: &Key) -> io::Result<
     }
 }
 
-fn call_key_method(
-    method: &str,
-    root: &Path,
-    namespace: &str,
-    key: &mut Key,
-) -> io::Result<jint> {
-    let root = root.to_str().ok_or_else(|| status_error(INVALID_ARGUMENT))?;
+fn call_key_method(method: &str, root: &Path, namespace: &str, key: &mut Key) -> io::Result<jint> {
+    let root = root
+        .to_str()
+        .ok_or_else(|| status_error(INVALID_ARGUMENT))?;
     if root.is_empty()
         || root.len() > 4096
         || root.contains('\0')
         || namespace.len() != 64
-        || !namespace.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err(status_error(INVALID_ARGUMENT));
     }
@@ -146,7 +145,10 @@ fn call_key_method(
             "Android account storage is unavailable: runner initialization is missing",
         )
     })?;
-    let mut env = storage.vm.attach_current_thread().map_err(|_| status_error(UNAVAILABLE))?;
+    let mut env = storage
+        .vm
+        .attach_current_thread()
+        .map_err(|_| status_error(UNAVAILABLE))?;
     let result = env.with_local_frame(8, |env| -> jni::errors::Result<jint> {
         let root = env.new_string(root)?;
         let namespace = env.new_string(namespace)?;
@@ -154,9 +156,8 @@ fn call_key_method(
         // its local frame. The recorded helper never retains, returns, queues or
         // shares the buffer, and copies only KEYBYTES. No Java reference to the
         // native allocation survives the local frame or the Key's lifetime.
-        let buffer = unsafe {
-            env.new_direct_byte_buffer(key.0.as_mut_ptr(), secretbox::KEYBYTES)?
-        };
+        let buffer =
+            unsafe { env.new_direct_byte_buffer(key.0.as_mut_ptr(), secretbox::KEYBYTES)? };
         env.call_method(
             storage.helper.as_obj(),
             method,

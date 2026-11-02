@@ -11,8 +11,8 @@
 //! the ArkTS toolbar read.
 
 use rd_engine::protocol::Endpoint;
-use rd_engine::surface::FrameObserver;
 use rd_engine::protocol::rect::Rect;
+use rd_engine::surface::FrameObserver;
 use rd_engine::viewer::{
     SurfaceLease, Viewer, ViewerError, ViewerInputPolicy, ViewerOptions, ViewerSnapshot,
     ViewerTarget,
@@ -139,7 +139,10 @@ async fn serve(listener: TcpListener, updates_rx: tokio::sync::mpsc::Sender<()>)
             return;
         }
         // LibVNCClient owns subsequent update requests.
-        if !matches!(timeout(LIMIT, stream.read_exact(&mut request)).await, Ok(Ok(_))) {
+        if !matches!(
+            timeout(LIMIT, stream.read_exact(&mut request)).await,
+            Ok(Ok(_))
+        ) {
             return;
         }
     }
@@ -251,7 +254,10 @@ async fn serve_observed(listener: TcpListener, events: tokio::sync::mpsc::Sender
     write_all(&mut stream, &init).await;
 
     let mut message_type = [0u8; 1];
-    if !matches!(timeout(LIMIT, stream.read_exact(&mut message_type)).await, Ok(Ok(_))) {
+    if !matches!(
+        timeout(LIMIT, stream.read_exact(&mut message_type)).await,
+        Ok(Ok(_))
+    ) {
         return;
     }
     loop {
@@ -326,7 +332,10 @@ async fn serve_observed(listener: TcpListener, events: tokio::sync::mpsc::Sender
             }
             _ => return,
         }
-        if !matches!(timeout(LIMIT, stream.read_exact(&mut message_type)).await, Ok(Ok(_))) {
+        if !matches!(
+            timeout(LIMIT, stream.read_exact(&mut message_type)).await,
+            Ok(Ok(_))
+        ) {
             return;
         }
     }
@@ -426,8 +435,13 @@ async fn a_vnc_target_drives_the_viewer_shell_end_to_end() {
         .expect("fixture channel");
 
     let (width, height, stride, bytes) = timeout(LIMIT, received_frames.recv())
-        .await.expect("presentation reaches the shared observer").expect("observer frame");
-    assert_eq!((width, height, stride), (i32::from(WIDTH), i32::from(HEIGHT), usize::from(WIDTH) * 4));
+        .await
+        .expect("presentation reaches the shared observer")
+        .expect("observer frame");
+    assert_eq!(
+        (width, height, stride),
+        (i32::from(WIDTH), i32::from(HEIGHT), usize::from(WIDTH) * 4)
+    );
     assert_eq!(bytes, RED.repeat(usize::from(WIDTH) * usize::from(HEIGHT)));
 
     // Closing proves reclamation rather than merely stopping.
@@ -474,16 +488,43 @@ async fn a_target_with_no_reachable_endpoint_is_refused() {
 #[test]
 fn rdp_requires_an_account_and_a_valid_endpoint_before_starting() {
     for endpoint in [
-        Endpoint { host: "127.0.0.1".into(), port: 3389, user: None },
-        Endpoint { host: "127.0.0.1".into(), port: 3389, user: Some(" \t".into()) },
-        Endpoint { host: "host/path".into(), port: 3389, user: Some("user".into()) },
-        Endpoint { host: "bad host".into(), port: 3389, user: Some("user".into()) },
-        Endpoint { host: "127.0.0.1".into(), port: 0, user: Some("user".into()) },
-        Endpoint { host: "127.0.0.1".into(), port: 3389, user: Some("user\0name".into()) },
+        Endpoint {
+            host: "127.0.0.1".into(),
+            port: 3389,
+            user: None,
+        },
+        Endpoint {
+            host: "127.0.0.1".into(),
+            port: 3389,
+            user: Some(" \t".into()),
+        },
+        Endpoint {
+            host: "host/path".into(),
+            port: 3389,
+            user: Some("user".into()),
+        },
+        Endpoint {
+            host: "bad host".into(),
+            port: 3389,
+            user: Some("user".into()),
+        },
+        Endpoint {
+            host: "127.0.0.1".into(),
+            port: 0,
+            user: Some("user".into()),
+        },
+        Endpoint {
+            host: "127.0.0.1".into(),
+            port: 3389,
+            user: Some("user\0name".into()),
+        },
     ] {
         let mut config = options(endpoint.clone());
         config.target = ViewerTarget::Rdp(endpoint);
-        assert!(matches!(Viewer::start(config, Arc::new(TestLease::new(1))), Err(ViewerError::InvalidOptions)));
+        assert!(matches!(
+            Viewer::start(config, Arc::new(TestLease::new(1))),
+            Err(ViewerError::InvalidOptions)
+        ));
     }
 }
 
@@ -508,15 +549,27 @@ async fn cancellation_joins_an_in_flight_surface_presentation() {
         entered: tokio::sync::Notify::new(),
         released: tokio::sync::Mutex::new(released),
     });
-    let viewer = Viewer::start(options(endpoint), Arc::new(TestLease::observing(1, observer.clone())))
-        .expect("start");
-    timeout(LIMIT, observer.entered.notified()).await.expect("a real frame entered presentation");
+    let viewer = Viewer::start(
+        options(endpoint),
+        Arc::new(TestLease::observing(1, observer.clone())),
+    )
+    .expect("start");
+    timeout(LIMIT, observer.entered.notified())
+        .await
+        .expect("a real frame entered presentation");
     viewer.request_close();
-    assert!(timeout(Duration::from_millis(100), viewer.close()).await.is_err(),
-        "close must await the worker that still owns the sink");
+    assert!(
+        timeout(Duration::from_millis(100), viewer.close())
+            .await
+            .is_err(),
+        "close must await the worker that still owns the sink"
+    );
     assert_eq!(viewer.reclamation_confirmed(), None);
     release.send(()).expect("release presentation");
-    timeout(LIMIT, viewer.close()).await.expect("close settles after presentation").expect("sink reclaimed");
+    timeout(LIMIT, viewer.close())
+        .await
+        .expect("close settles after presentation")
+        .expect("sink reclaimed");
     assert_eq!(viewer.reclamation_confirmed(), Some(true));
 }
 
@@ -525,7 +578,10 @@ async fn cancellation_before_surface_binding_closes_the_authenticated_vnc_sessio
     let (endpoint, _updates) = fixture().await;
     let viewer = Viewer::start(options(endpoint), Arc::new(TestLease::new(0))).expect("start");
     assert!(until_awaiting_surface(&viewer).await.authenticated);
-    timeout(LIMIT, viewer.close()).await.expect("native worker joins").expect("no surface leaked");
+    timeout(LIMIT, viewer.close())
+        .await
+        .expect("native worker joins")
+        .expect("no surface leaked");
     assert_eq!(viewer.reclamation_confirmed(), Some(true));
     assert!(viewer.snapshot().error.is_none());
 }

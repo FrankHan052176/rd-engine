@@ -5,16 +5,14 @@
 //! account state never uses the engine's persistent identity or media services.
 
 pub mod api;
+mod cache;
 pub mod http;
 pub mod oidc;
-mod cache;
 mod state;
 mod storage;
 
 pub use cache::access_scoped as access_cache_scoped;
-pub use state::{
-    change_server_configuration, get_local_option, set_local_option_scoped, snapshot,
-};
+pub use state::{change_server_configuration, get_local_option, set_local_option_scoped, snapshot};
 
 #[cfg(target_os = "android")]
 pub use storage::init_account_storage;

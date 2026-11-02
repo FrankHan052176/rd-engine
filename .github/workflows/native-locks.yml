@@ -1,0 +1,50 @@
+name: Resolve native dependency locks
+
+on:
+  push:
+    branches: [ci/audio-clipboard-locks]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.95.0'
+      - name: Resolve each independent workspace without compiling
+        run: |
+          set -euo pipefail
+          # Preserve unrelated locked dependencies; add the new manifest graph.
+          for manifest in Cargo.toml native/frb/Cargo.toml native/ohos_napi/Cargo.toml; do
+            cargo update --workspace --manifest-path "$manifest"
+            cargo metadata --locked --no-deps --format-version=1 --manifest-path "$manifest" > /dev/null
+          done
+      - name: Bind the lock artifacts to their source manifests
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          files = ['Cargo.toml', 'native/frb/Cargo.toml', 'native/ohos_napi/Cargo.toml',
+                   'Cargo.lock', 'native/frb/Cargo.lock', 'native/ohos_napi/Cargo.lock']
+          receipt = {'engine_sha': os.environ['GITHUB_SHA'],
+                     'sha256': {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files}}
+          Path('native-locks-source.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-locks-${{ github.sha }}
+          path: |
+            Cargo.lock
+            native/frb/Cargo.lock
+            native/ohos_napi/Cargo.lock
+            native-locks-source.json
+          if-no-files-found: error
+          retention-days: 7

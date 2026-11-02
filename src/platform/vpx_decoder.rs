@@ -447,7 +447,7 @@ mod engine {
         ffi::CStr,
         mem::MaybeUninit,
         os::raw::{c_int, c_long, c_uint},
-        panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
         ptr,
         sync::{Condvar, Mutex, MutexGuard, mpsc},
         thread::{self, JoinHandle},
@@ -482,7 +482,9 @@ mod engine {
     const BYTES_PER_PIXEL: usize = LAYOUT.bytes_per_pixel as usize;
 
     fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-        mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Serializes every `vpx_codec_dec_init_ver` call in this process.
@@ -512,7 +514,9 @@ mod engine {
         if text.is_null() {
             return format!("code {err}");
         }
-        unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn described(api: &'static str, err: ffi::vpx_codec_err_t) -> Error {
@@ -541,7 +545,9 @@ mod engine {
             major: (packed >> 16 & 0xff) as u32,
             minor: (packed >> 8 & 0xff) as u32,
             patch: (packed & 0xff) as u32,
-            text: unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned(),
+            text: unsafe { CStr::from_ptr(text) }
+                .to_string_lossy()
+                .into_owned(),
         };
         if packed <= 0 || (version.major, version.minor, version.patch) < MIN_VERSION {
             return Err(Error {
@@ -571,7 +577,7 @@ mod engine {
                     detail: Some(format!(
                         "{codec:?} belongs to the platform decoder backend, never here"
                     )),
-                })
+                });
             }
         };
         if iface.is_null() {
@@ -591,7 +597,9 @@ mod engine {
         }
         Ok((
             iface,
-            unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned(),
+            unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned(),
         ))
     }
 
@@ -1039,7 +1047,8 @@ mod engine {
             }
             let mut iter: ffi::vpx_codec_iter_t = ptr::null();
             loop {
-                let image = unsafe { ffi::vpx_codec_get_frame(self.codec.ctx.as_mut_ptr(), &mut iter) };
+                let image =
+                    unsafe { ffi::vpx_codec_get_frame(self.codec.ctx.as_mut_ptr(), &mut iter) };
                 if image.is_null() {
                     return Ok(());
                 }
@@ -1230,7 +1239,10 @@ mod engine {
                 if let Some(unit) = state.packets.pop_front() {
                     return Some(unit);
                 }
-                state = self.wake.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+                state = self
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
         }
 
@@ -1272,10 +1284,8 @@ mod engine {
 
         fn format_changed(&self) {
             let mut state = lock(&self.state);
-            state.counters.format_change_notifications = state
-                .counters
-                .format_change_notifications
-                .saturating_add(1);
+            state.counters.format_change_notifications =
+                state.counters.format_change_notifications.saturating_add(1);
         }
 
         fn end_of_stream(&self) {
@@ -1372,7 +1382,9 @@ mod engine {
             }
             match shared.submit(unit) {
                 Ok(()) => return Ok(()),
-                Err(rejected) if rejected.reason == DecoderError::Backpressure => unit = rejected.unit,
+                Err(rejected) if rejected.reason == DecoderError::Backpressure => {
+                    unit = rejected.unit
+                }
                 Err(rejected) => return Err(rejected),
             }
             tokio::select! {
@@ -1469,7 +1481,10 @@ mod engine {
     }
 
     impl Decoder {
-        pub fn open(config: DecoderConfig, lease: Arc<dyn SurfaceLease>) -> Result<Self, OpenFailure> {
+        pub fn open(
+            config: DecoderConfig,
+            lease: Arc<dyn SurfaceLease>,
+        ) -> Result<Self, OpenFailure> {
             Self::open_inner(config, lease).map_err(|error| OpenFailure {
                 error,
                 // Nothing this backend can fail with leaves native code able to
@@ -1738,8 +1753,9 @@ mod engine {
             let version =
                 super::version().expect("a linked library reports a release at or above the floor");
             for codec in [VideoCodec::Vp8, VideoCodec::Vp9] {
-                let probe = super::probe(codec)
-                    .unwrap_or_else(|error| panic!("{codec:?} must open in a linked build: {error}"));
+                let probe = super::probe(codec).unwrap_or_else(|error| {
+                    panic!("{codec:?} must open in a linked build: {error}")
+                });
                 assert_eq!(probe.codec, codec);
                 assert_eq!(probe.evidence, CapabilityEvidence::Opened);
                 assert_eq!(probe.version, version, "{codec:?} read another release");
@@ -1750,8 +1766,8 @@ mod engine {
             // The probe serves these two codecs and refuses the platform
             // decoder's own, so its answer cannot be read as a hardware claim.
             for codec in [VideoCodec::H264, VideoCodec::H265] {
-                let refused = super::probe(codec)
-                    .expect_err("the software backend never serves H264/H265");
+                let refused =
+                    super::probe(codec).expect_err("the software backend never serves H264/H265");
                 assert_eq!(refused.reason, DecoderError::UnsupportedCodec);
             }
         }
@@ -1957,9 +1973,7 @@ mod engine {
             let waiter = {
                 let shared = shared.clone();
                 let cancel = cancel.clone();
-                tokio::spawn(async move {
-                    submit_cancellable(&shared, unit(16), &cancel).await
-                })
+                tokio::spawn(async move { submit_cancellable(&shared, unit(16), &cancel).await })
             };
             // Give the waiter a chance to park on capacity, then cancel it.
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2011,12 +2025,12 @@ mod engine {
             let waiter = {
                 let shared = shared.clone();
                 let cancel = cancel.clone();
-                tokio::spawn(async move {
-                    submit_cancellable(&shared, unit(16), &cancel).await
-                })
+                tokio::spawn(async move { submit_cancellable(&shared, unit(16), &cancel).await })
             };
             let observer_wait = {
-                let observer = Observer { shared: shared.clone() };
+                let observer = Observer {
+                    shared: shared.clone(),
+                };
                 tokio::spawn(async move { observer.wait_stopped().await })
             };
             // Give both waiters a chance to park, then publish the terminal
@@ -2076,7 +2090,10 @@ mod engine {
     }
 
     impl Decoder {
-        pub fn open(_config: DecoderConfig, _lease: Arc<dyn SurfaceLease>) -> Result<Self, OpenFailure> {
+        pub fn open(
+            _config: DecoderConfig,
+            _lease: Arc<dyn SurfaceLease>,
+        ) -> Result<Self, OpenFailure> {
             Err(OpenFailure {
                 error: unavailable(),
                 cleanup: CleanupVerdict::Confirmed,

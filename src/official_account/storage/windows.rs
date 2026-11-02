@@ -16,7 +16,10 @@ use std::{
     ffi::c_void,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
-    os::windows::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt}},
+    os::windows::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     ptr,
 };
@@ -119,7 +122,10 @@ impl Drop for ProtectedBuffer {
 }
 
 fn corrupt() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "Invalid account master-key data")
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Invalid account master-key data",
+    )
 }
 
 fn with_cleanup<T>(result: io::Result<T>, cleanup: io::Result<()>) -> io::Result<T> {
@@ -145,7 +151,9 @@ fn entropy(namespace: &str) -> io::Result<String> {
             "Invalid account storage namespace",
         ));
     }
-    Ok(format!("rd-engine.official-account.master-key.v1:{namespace}"))
+    Ok(format!(
+        "rd-engine.official-account.master-key.v1:{namespace}"
+    ))
 }
 
 fn crypt(entropy: &str, bytes: &[u8], protect: bool) -> io::Result<ProtectedBuffer> {
@@ -256,22 +264,29 @@ pub(super) fn load_key(root: &Path, namespace: &str) -> io::Result<Option<secret
 
 fn publish_add_only(temporary: &Path, destination: &Path) -> io::Result<()> {
     let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     // Both names are in the same canonicalized directory. No REPLACE_EXISTING or
     // COPY_ALLOWED: publication is a rename, cannot clobber an existing entry,
     // and cannot fall back to a partially written copy. WRITE_THROUGH requests
     // completion on disk, after the staging file's checked sync_all below.
-    if unsafe { MoveFileExW(temporary.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+    if unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(())
 }
 
-pub(super) fn create_key(
-    root: &Path,
-    namespace: &str,
-    key: &secretbox::Key,
-) -> io::Result<bool> {
+pub(super) fn create_key(root: &Path, namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
     let entropy = entropy(namespace)?;
     let path = key_path(root)?;
     // A directory, corrupt envelope, wrong user's key, or denied read is an

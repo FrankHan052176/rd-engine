@@ -6,6 +6,11 @@
 //! A native consumer is joined even when cancellation wins its creation, and a
 //! reclamation that cannot be confirmed fails `Viewer::close` rather than only
 //! appearing as a session error.
+//!
+//! Audio is one optional worker on that same reader: the peer's format and
+//! frames are handed to a shared, bounded audio owner and never decoded, copied
+//! or awaited here. Its device failures stay its own, and its own reclamation
+//! fact is reported separately from the video pipeline's.
 
 mod auth;
 use auth::authenticate;
@@ -14,30 +19,32 @@ use auth::authenticate_loop;
 
 #[path = "platform/decoder.rs"]
 pub mod decoder;
+use crate::video::{self, Decoders, Geometry};
 use crate::{
-    conn_token::ConnToken,
     clipboard::{
         ClipboardError, ClipboardImage, ClipboardMetadata, ClipboardPayload, ClipboardState,
         PeerClipboardSupport,
     },
+    conn_token::ConnToken,
     handshake::ViewerIdentity,
     protocol::Protocol,
-    session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
     rendezvous::RendezvousConfig,
     session::{AuthenticatedParts, PeerCloseReason, SessionMode},
+    session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
     transport::{WireReader, WireWriter},
 };
-pub use decoder::SurfaceLease;
-use decoder::{DecoderError, DecoderObserver, DecoderProjection, RenderTiming, VideoCodec};
-use crate::video::{self, Decoders, Geometry};
 use base::message_proto::{
     self as proto, KeyEvent, Message, MouseEvent, OptionMessage, message, misc,
     option_message::BoolOption, permission_info::Permission,
 };
+pub use decoder::SurfaceLease;
+use decoder::{DecoderError, DecoderObserver, DecoderProjection, RenderTiming, VideoCodec};
 use ironrdp_pdu::input::{
-    fast_path::{FastPathInputEvent, KeyboardFlags},
-    mouse::PointerFlags, mouse_rel::PointerRelFlags, mouse_x::PointerXFlags,
     MousePdu, MouseRelPdu, MouseXPdu,
+    fast_path::{FastPathInputEvent, KeyboardFlags},
+    mouse::PointerFlags,
+    mouse_rel::PointerRelFlags,
+    mouse_x::PointerXFlags,
 };
 use ironrdp_pdu::rdp::capability_sets::InputFlags as RdpInputFlags;
 use std::{
@@ -301,6 +308,17 @@ pub struct ViewerSnapshot {
     pub render_timing: Option<RenderTiming>,
     /// Units admitted but not yet pushed into the decoder at this snapshot.
     pub queued_units: u64,
+    /// This session's audio playback, or `None` when the session never had an
+    /// audio owner (anything but an authenticated RustDesk desktop session).
+    ///
+    /// Every field is the audio core's own reading, kept apart on purpose:
+    /// `active` is the platform sink's answer and never an assumption,
+    /// `played_samples` is what a device callback really consumed, and
+    /// `queued_samples` is what still waits in the sink. `received_packets` is
+    /// what this session admitted, so it stays zero while the local option or
+    /// the peer's own grant refuses playback — a live peer sending audio is not
+    /// evidence that anything was heard.
+    pub audio: Option<crate::audio::AudioSnapshot>,
     pub keyboard_allowed: bool,
     /// The generation of the local policy and the peer's grant this snapshot
     /// was read under.
@@ -613,6 +631,14 @@ struct State {
     /// grants it again.
     peer_clipboard: AtomicBool,
     peer_file: AtomicBool,
+    /// The peer's own audio grant, mirrored like the clipboard's: it is the
+    /// peer's channel, never raised from this side, so a grant the peer
+    /// withdrew stays withdrawn until the peer grants it again.
+    peer_audio: AtomicBool,
+    /// This session's shared audio handle: the one path the peer's format and
+    /// frames take. It exists only for an authenticated RustDesk desktop
+    /// session, and is never replaced by a second owner.
+    audio: Mutex<Option<Arc<crate::audio::AudioHandle>>>,
     cliprdr: Mutex<Option<Arc<crate::cliprdr::CliprdrHandle>>>,
     /// The way an encoded clipboard payload reaches this session's one writer.
     /// A second channel into the same writer, not a second writer: the same
@@ -927,7 +953,8 @@ impl InputGate {
     /// Reserve a bounded typed-input batch atomically with its generation.
     fn own_many(&self, stamped: u64, adds: u64, facts: &Facts) -> bool {
         let mut state = lock(&self.state);
-        if stamped != state.generation || !facts.admits(state.view())
+        if stamped != state.generation
+            || !facts.admits(state.view())
             || adds > MAX_HELD_INPUTS.saturating_sub(state.owed)
             || (facts.protocol == Protocol::Rdp && state.retired != 0)
         {
@@ -1147,6 +1174,83 @@ impl State {
         }
         self.clipboard_in.offer(generation, message);
     }
+
+    /// Whether this viewer may play the peer's audio right now: the AND of every
+    /// fact that has to hold, collected in one place like the clipboard's.
+    ///
+    /// A desktop session on the wire that carries audio, its authenticated
+    /// state, the peer's own audio grant, the local option that asks for audio,
+    /// and the cancellation that ends it. The operator's read-only switch is
+    /// deliberately not a term: it stops what this viewer *sends*, and listening
+    /// sends nothing.
+    ///
+    /// Nothing here raises the peer's grant. Turning the local option off and on
+    /// again can only restore an allowance the peer still holds; a grant the
+    /// peer withdrew is not recoverable from this side.
+    fn audio_facts(&self) -> bool {
+        self.mode == SessionMode::Desktop
+            && self.authenticated.load(Ordering::Acquire)
+            && !self.cancel.is_cancelled()
+            && self.peer_audio.load(Ordering::Acquire)
+            && lock(&self.session_options).audio_enabled()
+    }
+
+    /// Publishes the combined audio answer to this session's audio owner.
+    ///
+    /// Read facts while holding the handle lock: two refreshes cannot apply an
+    /// old grant after a newer withdrawal. Option callers release their lock
+    /// before entering here. An unchanged allowance leaves the generation alone.
+    fn refresh_audio(&self) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            handle.set_allowed(self.audio_facts());
+        }
+    }
+
+    /// Hands one peer format declaration to this session's audio owner.
+    ///
+    /// A refusal is the core's own answer (`Closed`, `InvalidFormat`) and is
+    /// already recorded in its snapshot; no other wire message is affected.
+    fn offer_audio_format(&self, format: proto::AudioFormat) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            let _ = handle.offer_format(format);
+        }
+    }
+
+    /// Hands one encoded peer packet to this session's audio owner, without
+    /// copying it and without waiting.
+    ///
+    /// The offer is bounded inside the core: the packet's buffer moves into an
+    /// eight-deep queue, a full queue answers with `Backpressure` and the packet
+    /// is dropped and counted there. The reader therefore never waits for the
+    /// audio device, and a refused packet cannot delay video, clipboard or input.
+    fn offer_audio_frame(&self, frame: proto::AudioFrame) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            let _ = handle.offer_frame(frame);
+        }
+    }
+
+    /// This session's audio reading, or nothing when it never had an owner.
+    fn audio_snapshot(&self) -> Option<crate::audio::AudioSnapshot> {
+        lock(&self.audio).as_ref().map(|handle| handle.snapshot())
+    }
+
+    /// Whether this session's audio owner has a native resource it could not
+    /// confirm released, read from the audio core's own flag.
+    ///
+    /// It is asked separately from the video pipeline's flag: one release never
+    /// clears the other's failure, and a session with no audio owner has nothing
+    /// unconfirmed here.
+    fn audio_unconfirmed(&self) -> bool {
+        self.audio_snapshot()
+            .is_some_and(|audio| audio.resources_unconfirmed)
+    }
+
+    /// Whether any native resource this session created may still exist: the
+    /// video pipeline's own answer or the audio owner's.
+    fn resources_unconfirmed_any(&self) -> bool {
+        self.resources_unconfirmed.load(Ordering::Acquire) || self.audio_unconfirmed()
+    }
+
     fn snapshot(&self) -> ViewerSnapshot {
         let inner = lock(&self.inner);
         let mut out = inner.snapshot.clone();
@@ -1192,6 +1296,9 @@ impl State {
                 }
             }
         }
+        // The audio owner's own reading, beside the video pipeline's: neither is
+        // derived from the other, and `None` says this session never had one.
+        out.audio = self.audio_snapshot();
         out
     }
     fn request_close(&self) {
@@ -1206,6 +1313,11 @@ impl State {
         if let Some(handle) = lock(&self.cliprdr).as_ref() {
             handle.revoke();
         }
+        // Audio is withdrawn with the session in the same way: the cancellation
+        // already ends the owner, and publishing the answer advances its
+        // generation, so nothing admitted under the allowance in force before
+        // this point can reach the sink after it.
+        self.refresh_audio();
         let mut inner = lock(&self.inner);
         inner.conn_token = None;
         if !inner.snapshot.closed {
@@ -1225,7 +1337,14 @@ impl State {
         if let Some(handle) = lock(&self.cliprdr).as_ref() {
             handle.revoke();
         }
-        let reclamation = if self.resources_unconfirmed.load(Ordering::Acquire) {
+        // The audio allowance is withdrawn here too, for a session that ends
+        // without `request_close`.
+        self.refresh_audio();
+        // The audio owner's own reclamation fact is joined with the video
+        // pipeline's, and neither can clear the other: an audio device that could
+        // not confirm its release fails the close exactly like a Surface that
+        // could not.
+        let reclamation = if self.resources_unconfirmed_any() {
             Err(match &result {
                 Err(error @ ViewerError::Decoder(DecoderError::DestroyFailed { .. })) => {
                     error.clone()
@@ -1251,12 +1370,12 @@ impl State {
         // this session is finished the terminal answer is the category above, so
         // a mid-flight reason is not published beside a closed session.
         inner.snapshot.password_failure = None;
-        inner.snapshot.peer_close_reason = if reclamation.is_ok()
-            && matches!(&result, Err(ViewerError::RemoteClosed)) {
-            inner.observed_peer_close_reason
-        } else {
-            None
-        };
+        inner.snapshot.peer_close_reason =
+            if reclamation.is_ok() && matches!(&result, Err(ViewerError::RemoteClosed)) {
+                inner.observed_peer_close_reason
+            } else {
+                None
+            };
         // A peer's terminal request cannot hide a failed native reclamation.
         inner.snapshot.error = reclamation
             .as_ref()
@@ -1291,7 +1410,12 @@ impl video::VideoOwner for State {
     fn video_received(&self, units: u64) {
         lock(&self.inner).snapshot.received_units += units;
     }
-    fn video_decoder_opened(&self, codec: VideoCodec, geometry: Geometry, observer: DecoderObserver) {
+    fn video_decoder_opened(
+        &self,
+        codec: VideoCodec,
+        geometry: Geometry,
+        observer: DecoderObserver,
+    ) {
         self.geometry(geometry);
         let mut inner = lock(&self.inner);
         inner.decoder = Some(observer);
@@ -1332,12 +1456,25 @@ fn runtime() -> Result<&'static Runtime, ViewerError> {
     crate::executor::runtime().map_err(|_| ViewerError::RuntimeUnavailable)
 }
 
-fn validate_rdp_options(endpoint: &crate::protocol::Endpoint, password: &str) -> Result<(), ViewerError> {
-    let user = endpoint.user.as_deref().ok_or(ViewerError::InvalidOptions)?;
-    if endpoint.port == 0 || endpoint.host.is_empty() || endpoint.host.len() > 255
-        || endpoint.host.chars().any(|c| c.is_whitespace() || c.is_control())
+fn validate_rdp_options(
+    endpoint: &crate::protocol::Endpoint,
+    password: &str,
+) -> Result<(), ViewerError> {
+    let user = endpoint
+        .user
+        .as_deref()
+        .ok_or(ViewerError::InvalidOptions)?;
+    if endpoint.port == 0
+        || endpoint.host.is_empty()
+        || endpoint.host.len() > 255
+        || endpoint
+            .host
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
         || rustls::pki_types::ServerName::try_from(endpoint.host.as_str()).is_err()
-        || user.trim().is_empty() || user.len() > 128 || user.chars().any(char::is_control)
+        || user.trim().is_empty()
+        || user.len() > 128
+        || user.chars().any(char::is_control)
         || password.contains('\0')
     {
         return Err(ViewerError::InvalidOptions);
@@ -1428,8 +1565,7 @@ impl Viewer {
             || options.local_name.len() > 512
             || options.password.len() > 4096
             || (options.conn_token.is_some() && options.target.protocol() != Protocol::RustDesk)
-            || (options.mode == SessionMode::Desktop
-                && !(1..=240).contains(&options.requested_fps))
+            || (options.mode == SessionMode::Desktop && !(1..=240).contains(&options.requested_fps))
             || (options.mode == SessionMode::FileTransfer
                 && options.target.protocol() != Protocol::RustDesk)
         {
@@ -1475,6 +1611,11 @@ impl Viewer {
             clipboard: ClipboardState::new(),
             peer_clipboard: AtomicBool::new(false),
             peer_file: AtomicBool::new(false),
+            // Audio follows the clipboard's shape: the peer's grant mirrored
+            // beside the local option, and one owner that only an authenticated
+            // desktop session starts.
+            peer_audio: AtomicBool::new(false),
+            audio: Mutex::new(None),
             cliprdr: Mutex::new(None),
             clipboard_out: Mutex::new(None),
             clipboard_in: ClipboardDecoder::default(),
@@ -1565,22 +1706,34 @@ impl Viewer {
         if !self.state.authenticated.load(Ordering::Acquire) {
             return Err(ViewerError::SessionOption(OptionError::SessionNotStarted));
         }
-        let mut requested = lock(&self.state.session_options);
+        // Snapshot reads the audio handle. Do not hold the option lock across
+        // it: allowance refresh takes the handle lock before reading options.
         let snapshot = self.snapshot();
+        let mut requested = lock(&self.state.session_options);
         let advertised = lock(&self.state.advertised_decoding)
-            .clone().ok_or(ViewerError::SessionOption(OptionError::SessionNotStarted))?;
-        let prepared = requested.prepare(change, &OptionContext {
-            protocol: self.state.protocol,
-            peer_version: &snapshot.version,
-            advertised_decoding: &advertised,
-            displays: &snapshot.displays,
-            current_display: snapshot.current_display,
-        }).map_err(ViewerError::SessionOption)?;
-        let sender = lock(&self.state.control).clone().ok_or(ViewerError::Closed)?;
-        sender.try_send(prepared.messages).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
-            mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
-        })?;
+            .clone()
+            .ok_or(ViewerError::SessionOption(OptionError::SessionNotStarted))?;
+        let prepared = requested
+            .prepare(
+                change,
+                &OptionContext {
+                    protocol: self.state.protocol,
+                    peer_version: &snapshot.version,
+                    advertised_decoding: &advertised,
+                    displays: &snapshot.displays,
+                    current_display: snapshot.current_display,
+                },
+            )
+            .map_err(ViewerError::SessionOption)?;
+        let sender = lock(&self.state.control)
+            .clone()
+            .ok_or(ViewerError::Closed)?;
+        sender
+            .try_send(prepared.messages)
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+                mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+            })?;
         *requested = prepared.next;
         drop(requested);
         // `disable-clipboard` is one of the facts the clipboard fence is the AND
@@ -1588,6 +1741,11 @@ impl Viewer {
         // only on the wire: the option and the mailbox can never disagree about
         // whether this session exchanges clipboard content.
         self.state.refresh_clipboard();
+        // `disable-audio` is one of the facts the audio answer is the AND of, so
+        // it reaches the audio owner here as well: the option this session holds
+        // and what it is willing to play cannot disagree, and a withdrawal stops
+        // playback without waiting for the next packet.
+        self.state.refresh_audio();
         Ok(())
     }
 
@@ -1635,11 +1793,15 @@ impl Viewer {
         // The file owner closes its source handles and emits the protocol's
         // TryEmpty; otherwise the peer could keep requesting an obsolete offer.
         if let Some(handle) = self.cliprdr_handle() {
-            handle.submit(crate::cliprdr::CliprdrCommand::ClearLocalOffer)
+            handle
+                .submit(crate::cliprdr::CliprdrCommand::ClearLocalOffer)
                 .map_err(ViewerError::FileClipboard)?;
         }
         sender
-            .try_send(QueuedClipboard { generation, message })
+            .try_send(QueuedClipboard {
+                generation,
+                message,
+            })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
                 mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
@@ -2120,15 +2282,19 @@ async fn run_rustdesk(
     let transfer_root = options.transfer_root.clone();
     // A file connection does not probe a decoder or promise desktop codecs.
     let caps = if mode == SessionMode::Desktop {
-        Some(tokio::task::spawn_blocking(video::capabilities)
-            .await
-            .map_err(|_| ViewerError::TaskFailed)??)
+        Some(
+            tokio::task::spawn_blocking(video::capabilities)
+                .await
+                .map_err(|_| ViewerError::TaskFailed)??,
+        )
     } else {
         None
     };
     let advertised = caps.map(Decoders::supported_decoding).unwrap_or_default();
     if mode == SessionMode::Desktop {
-        options.session_options.validate_advertisement(&advertised)
+        options
+            .session_options
+            .validate_advertisement(&advertised)
             .map_err(ViewerError::SessionOption)?;
         *lock(&state.advertised_decoding) = Some(advertised.clone());
     }
@@ -2174,7 +2340,11 @@ async fn run_rustdesk(
     }
     let media = if let Some(caps) = caps {
         let source = Geometry::of_peer(
-            parts.context.peer_info.as_ref().ok_or(ViewerError::InvalidPeerGeometry)?,
+            parts
+                .context
+                .peer_info
+                .as_ref()
+                .ok_or(ViewerError::InvalidPeerGeometry)?,
         )?;
         state.geometry(source);
         Some(video::pipeline(state.clone(), caps, source))
@@ -2185,7 +2355,9 @@ async fn run_rustdesk(
     // the same permission channel a later message changes, so it is published
     // under the lock that stamps input, and turning it off and on again cannot
     // leave input admitted under either of the older states.
-    state.input.grant(mode == SessionMode::Desktop && parts.context.permissions.keyboard);
+    state
+        .input
+        .grant(mode == SessionMode::Desktop && parts.context.permissions.keyboard);
     // The handshake's own proof, recorded before the session is authorized so
     // an admitted event can never be raced ahead of the evidence that admits it.
     // A direct dial to a peer this client has no key for reads `false` here,
@@ -2207,9 +2379,19 @@ async fn run_rustdesk(
         mode == SessionMode::Desktop && parts.context.permissions.clipboard,
         Ordering::Release,
     );
-    state.peer_file.store(parts.context.permissions.file, Ordering::Release);
-    let file_clipboard = (mode == SessionMode::Desktop)
-        .then(|| crate::cliprdr::start(state.cancel.clone()));
+    state
+        .peer_file
+        .store(parts.context.permissions.file, Ordering::Release);
+    // The handshake's own audio grant, mirrored in the same shape. The audio
+    // owner started below plays only the AND of this grant with the local
+    // option, so a peer that merely has audio enabled is not heard until this
+    // session asks for it, and this side never raises the peer's grant itself.
+    state.peer_audio.store(
+        mode == SessionMode::Desktop && parts.context.permissions.audio,
+        Ordering::Release,
+    );
+    let file_clipboard =
+        (mode == SessionMode::Desktop).then(|| crate::cliprdr::start(state.cancel.clone()));
     if let Some(start) = &file_clipboard {
         *lock(&state.cliprdr) = Some(Arc::clone(&start.handle));
     }
@@ -2219,7 +2401,11 @@ async fn run_rustdesk(
     } else {
         "authenticated"
     });
-    let info = parts.context.peer_info.as_ref().ok_or(ViewerError::AuthenticationFailed)?;
+    let info = parts
+        .context
+        .peer_info
+        .as_ref()
+        .ok_or(ViewerError::AuthenticationFailed)?;
     let transfer = crate::transfer::start(
         crate::transfer::TransferConfig::new(transfer_root, &info.platform, &info.version),
         state.cancel.clone(),
@@ -2227,6 +2413,17 @@ async fn run_rustdesk(
     let transfer_handle = Arc::new(transfer.handle);
     transfer_handle.set_enabled(parts.context.permissions.file);
     *lock(&state.transfer) = Some(transfer_handle);
+    // This session's audio playback: one shared handle for the wire and one
+    // owner for the device. It is started only here — after authentication and
+    // after the last fallible step of the handshake — and only on the wire that
+    // carries audio, so a session that never plays audio never creates one.
+    let audio = (mode == SessionMode::Desktop).then(|| crate::audio::start(state.cancel.clone()));
+    if let Some(start) = &audio {
+        *lock(&state.audio) = Some(Arc::clone(&start.handle));
+    }
+    // Published from the facts that arrived above: a session whose option or
+    // whose peer refuses audio starts an owner that waits, not one that plays.
+    state.refresh_audio();
     let (control_tx, control_rx) = mpsc::channel(COMMANDS);
     *lock(&state.control) = Some(control_tx.clone());
     // The clipboard reaches the wire through this same writer, on its own
@@ -2244,7 +2441,13 @@ async fn run_rustdesk(
         Some((admission, feed)) => (Some(admission), Some(feed)),
         None => (None, None),
     };
-    tasks.spawn(receive(state.clone(), parts.reader, admission, control_tx, transfer.inbound));
+    tasks.spawn(receive(
+        state.clone(),
+        parts.reader,
+        admission,
+        control_tx,
+        transfer.inbound,
+    ));
     tasks.spawn(write(
         state.clone(),
         parts.writer,
@@ -2259,6 +2462,33 @@ async fn run_rustdesk(
     // over, so a close cannot be acknowledged over a decode still in flight, and
     // the reader only ever hands the message over.
     tasks.spawn(clipboard_decode(state.clone()));
+    if let Some(start) = audio {
+        // The sink this owner drives is not `Send`: it is created, run and
+        // destroyed on one blocking worker of this same runtime — never
+        // `tokio::spawn`, never a second runtime, never a detached thread.
+        //
+        // Its answer is a worker's, not the session's. An audio device that
+        // cannot be opened, or a native stream whose release cannot be
+        // confirmed, must not end a live remote-control wire, so the result is
+        // held here and joined only once this session itself has ended. What it
+        // reports then is the one fact the final close has to see — an
+        // unconfirmed reclamation — read from the audio core's own flag instead
+        // of assumed, so a failure cannot be swallowed into a clean close.
+        let runtime = tokio::runtime::Handle::current();
+        let cancel = state.cancel.clone();
+        let reclamation = Arc::clone(&start.handle);
+        let owner = start.owner;
+        tasks.spawn_blocking(move || {
+            let outcome = runtime.block_on(owner.run());
+            if !cancel.is_cancelled() {
+                runtime.block_on(cancel.cancelled());
+            }
+            match outcome {
+                Ok(()) if !reclamation.snapshot().resources_unconfirmed => Ok(()),
+                _ => Err(ViewerError::ReclamationUnconfirmed),
+            }
+        });
+    }
     if let Some(owner) = file_clipboard_owner {
         // This owner performs bounded synchronous filesystem work. Keep that
         // work off the IO workers, but join it in this same session set using
@@ -2290,15 +2520,20 @@ async fn run_rustdesk(
     // Reader drop closes the paired writer, so its TransportFailed/Closed may
     // join before the reader's observed close. Only that narrow fallout can be
     // replaced by the explicit request; any substantive failure keeps priority.
-    let mut only_close_fallout = matches!(&first, Ok(())
-        | Err(ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed));
+    let mut only_close_fallout = matches!(
+        &first,
+        Ok(())
+            | Err(ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed)
+    );
     let mut result = first;
     // Never abort the feeder: it owns the native decoder and its blocking join.
     while let Some(joined) = tasks.join_next().await {
         let next = joined.unwrap_or(Err(ViewerError::TaskFailed));
         if let Err(error) = next {
-            only_close_fallout &= matches!(&error,
-                ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed);
+            only_close_fallout &= matches!(
+                &error,
+                ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed
+            );
             // A teardown failure must reach HAR even when localClose was first.
             if result.is_ok()
                 || matches!(
@@ -2306,17 +2541,29 @@ async fn run_rustdesk(
                     ViewerError::Decoder(DecoderError::DestroyFailed { .. })
                 )
                 || (matches!(&error, ViewerError::ReclamationUnconfirmed)
-                    && !matches!(&result, Err(ViewerError::Decoder(DecoderError::DestroyFailed { .. }))))
-                || (matches!(&result, Err(ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed))
-                    && !matches!(&error, ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed)
-                    && lock(&state.inner).observed_peer_close_reason == Some(PeerCloseReason::ManualRequest))
+                    && !matches!(
+                        &result,
+                        Err(ViewerError::Decoder(DecoderError::DestroyFailed { .. }))
+                    ))
+                || (matches!(
+                    &result,
+                    Err(ViewerError::RemoteClosed
+                        | ViewerError::TransportFailed
+                        | ViewerError::Closed)
+                ) && !matches!(
+                    &error,
+                    ViewerError::RemoteClosed | ViewerError::TransportFailed | ViewerError::Closed
+                ) && lock(&state.inner).observed_peer_close_reason
+                    == Some(PeerCloseReason::ManualRequest))
             {
                 result = Err(error);
             }
         }
     }
-    if only_close_fallout && !state.resources_unconfirmed.load(Ordering::Acquire)
-        && lock(&state.inner).observed_peer_close_reason == Some(PeerCloseReason::ManualRequest) {
+    if only_close_fallout
+        && !state.resources_unconfirmed_any()
+        && lock(&state.inner).observed_peer_close_reason == Some(PeerCloseReason::ManualRequest)
+    {
         return Err(ViewerError::RemoteClosed);
     }
     result
@@ -2342,6 +2589,14 @@ async fn receive(
                         return Ok(());
                     }
                 }
+            }
+            // The peer's audio goes to this session's own audio owner and
+            // nowhere else: no decode, no copy, no per-packet task and no wait
+            // here. A refused packet — muted, no format yet, or a full queue —
+            // is the owner's to count, and it cannot affect video, clipboard or
+            // input.
+            Some(message::Union::AudioFrame(frame)) => {
+                state.offer_audio_frame(frame);
             }
             Some(message::Union::FileAction(action)) => {
                 tokio::select! {
@@ -2404,7 +2659,9 @@ async fn receive(
                         // and emitted under the previous one. The gate wakes the
                         // writer itself when the grant moves; a writer that is
                         // busy when it does still releases on its next event.
-                        state.input.grant(state.mode == SessionMode::Desktop && permission.enabled);
+                        state
+                            .input
+                            .grant(state.mode == SessionMode::Desktop && permission.enabled);
                     }
                     if permission.permission.enum_value().ok() == Some(Permission::File) {
                         state.peer_file.store(permission.enabled, Ordering::Release);
@@ -2426,6 +2683,28 @@ async fn receive(
                         );
                         state.refresh_clipboard();
                     }
+                    if permission.permission.enum_value().ok() == Some(Permission::Audio) {
+                        // The peer's own audio grant, mirrored and then combined
+                        // with the local facts. A withdrawal stops playback where
+                        // it is: the owner closes its sink, and nothing decoded
+                        // under the previous allowance can be pushed afterwards.
+                        // This side never re-grants on its own either, so turning
+                        // the local option off and on again cannot recover what
+                        // the peer took away.
+                        state.peer_audio.store(
+                            state.mode == SessionMode::Desktop && permission.enabled,
+                            Ordering::Release,
+                        );
+                        state.refresh_audio();
+                    }
+                }
+                Some(misc::Union::AudioFormat(format)) => {
+                    // The format the peer declares for the audio it is about to
+                    // send, handed to the same owner the frames go to. It is
+                    // stored rather than queued inside that core, so a full
+                    // packet queue cannot lose it, and an impossible format is
+                    // refused and recorded there instead of being decoded.
+                    state.offer_audio_format(format);
                 }
                 Some(misc::Union::CloseReason(reason)) => {
                     lock(&state.inner).observed_peer_close_reason = PeerCloseReason::of(&reason);
@@ -2438,9 +2717,9 @@ async fn receive(
                 }
                 _ => {}
             },
-            // Audio is not rendered here, and cursor/informational messages
-            // neither authorize input nor fake video state. The clipboard is not
-            // in this arm: it has its own arms above and its own owner.
+            // Cursor and informational messages neither authorize input nor fake
+            // video state. The clipboard and the audio are not in this arm: both
+            // have their own arms above and their own owners.
             _ => {}
         }
     }
@@ -3158,7 +3437,10 @@ async fn rfb_input(
     match queued.event {
         ViewerInput::Mouse { kind, button, x, y } => {
             let (px, py) = if kind <= 2 {
-                (x.clamp(0, i32::from(u16::MAX)) as u16, y.clamp(0, i32::from(u16::MAX)) as u16)
+                (
+                    x.clamp(0, i32::from(u16::MAX)) as u16,
+                    y.clamp(0, i32::from(u16::MAX)) as u16,
+                )
             } else {
                 // Wheel/relative payloads are deltas, never framebuffer
                 // coordinates (the migrated adapter validates the latter).
@@ -3391,7 +3673,8 @@ async fn run_rfb(
         let sink = sink.ok_or(ViewerError::ReclamationUnconfirmed)?;
         close_sink(&state, sink).await?;
         outcome
-    }.await;
+    }
+    .await;
     state.input.stopped();
     let closed = session.close().await.map_err(rfb_error);
     finish_rectangle(&state, streaming, closed)
@@ -3399,7 +3682,13 @@ async fn run_rfb(
 
 fn rectangle_authenticated(state: &State, (width, height): (i32, i32)) {
     state.route("direct_tcp");
-    state.desktop_geometry(Geometry { display: 0, x: 0, y: 0, width, height });
+    state.desktop_geometry(Geometry {
+        display: 0,
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
     // Both adapters return only after their actual authentication/activation.
     // Neither exposes a later peer input-permission channel.
     if state.protocol != Protocol::Rdp {
@@ -3591,7 +3880,9 @@ fn rfb_error(error: crate::protocol::rfb::RfbError) -> ViewerError {
     use crate::protocol::rfb::RfbError;
     match error {
         RfbError::AuthenticationFailed(_) => ViewerError::AuthenticationFailed,
-        RfbError::PasswordTooLong | RfbError::CredentialUnavailable | RfbError::NoUsableSecurityType => {
+        RfbError::PasswordTooLong
+        | RfbError::CredentialUnavailable
+        | RfbError::NoUsableSecurityType => {
             ViewerError::UnsupportedProtocol("RFB authentication is not usable")
         }
         RfbError::BadServerVersion => {
@@ -3619,7 +3910,11 @@ enum RdpKey {
 
 impl RdpKey {
     fn event(self, down: bool) -> FastPathInputEvent {
-        let release = if down { KeyboardFlags::empty() } else { KeyboardFlags::RELEASE };
+        let release = if down {
+            KeyboardFlags::empty()
+        } else {
+            KeyboardFlags::RELEASE
+        };
         match self {
             Self::Scan(code, flags) => FastPathInputEvent::KeyboardEvent(flags | release, code),
             Self::Unicode(code) => FastPathInputEvent::UnicodeKeyboardEvent(release, code),
@@ -3628,7 +3923,9 @@ impl RdpKey {
 
     fn identity(self) -> u32 {
         match self {
-            Self::Scan(code, flags) => 0x8000_0000 | (u32::from(flags.bits()) << 8) | u32::from(code),
+            Self::Scan(code, flags) => {
+                0x8000_0000 | (u32::from(flags.bits()) << 8) | u32::from(code)
+            }
             Self::Unicode(code) => u32::from(code),
         }
     }
@@ -3652,17 +3949,31 @@ impl RdpHold {
         match self {
             Self::Key { key, .. } => key.event(down),
             Self::Button(button) if button >= 8 => FastPathInputEvent::MouseEventEx(MouseXPdu {
-                flags: (if button == 8 { PointerXFlags::BUTTON1 } else { PointerXFlags::BUTTON2 })
-                    | if down { PointerXFlags::DOWN } else { PointerXFlags::empty() },
-                x_position: x, y_position: y,
+                flags: (if button == 8 {
+                    PointerXFlags::BUTTON1
+                } else {
+                    PointerXFlags::BUTTON2
+                }) | if down {
+                    PointerXFlags::DOWN
+                } else {
+                    PointerXFlags::empty()
+                },
+                x_position: x,
+                y_position: y,
             }),
             Self::Button(button) => FastPathInputEvent::MouseEvent(MousePdu {
                 flags: (match button {
                     1 => PointerFlags::LEFT_BUTTON,
                     2 => PointerFlags::RIGHT_BUTTON,
                     _ => PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
-                }) | if down { PointerFlags::DOWN } else { PointerFlags::empty() },
-                number_of_wheel_rotation_units: 0, x_position: x, y_position: y,
+                }) | if down {
+                    PointerFlags::DOWN
+                } else {
+                    PointerFlags::empty()
+                },
+                number_of_wheel_rotation_units: 0,
+                x_position: x,
+                y_position: y,
             }),
         }
     }
@@ -3678,13 +3989,20 @@ struct RdpHeld {
 
 impl Default for RdpHeld {
     fn default() -> Self {
-        Self { entries: [(0, RdpHold::Button(0)); MAX_HELD_INPUTS as usize], len: 0, pointer: (0, 0), relative: false }
+        Self {
+            entries: [(0, RdpHold::Button(0)); MAX_HELD_INPUTS as usize],
+            len: 0,
+            pointer: (0, 0),
+            relative: false,
+        }
     }
 }
 
 impl RdpHeld {
     fn position(&self, identity: u32) -> Option<usize> {
-        self.entries[..self.len].iter().position(|(_, hold)| hold.identity() == identity)
+        self.entries[..self.len]
+            .iter()
+            .position(|(_, hold)| hold.identity() == identity)
     }
 
     fn remove(&mut self, index: usize) -> u64 {
@@ -3696,16 +4014,21 @@ impl RdpHeld {
 
     fn release_event(&self, index: usize) -> FastPathInputEvent {
         match self.entries[index].1 {
-            RdpHold::Button(button) if self.relative => FastPathInputEvent::MouseEventRel(MouseRelPdu {
-                // After relative motion the old absolute point is not the
-                // server's current pointer. Release in place, without a warp.
-                flags: match button {
-                    1 => PointerRelFlags::BUTTON1, 2 => PointerRelFlags::BUTTON2,
-                    4 => PointerRelFlags::BUTTON3, 8 => PointerRelFlags::XBUTTON1,
-                    _ => PointerRelFlags::XBUTTON2,
-                },
-                x_delta: 0, y_delta: 0,
-            }),
+            RdpHold::Button(button) if self.relative => {
+                FastPathInputEvent::MouseEventRel(MouseRelPdu {
+                    // After relative motion the old absolute point is not the
+                    // server's current pointer. Release in place, without a warp.
+                    flags: match button {
+                        1 => PointerRelFlags::BUTTON1,
+                        2 => PointerRelFlags::BUTTON2,
+                        4 => PointerRelFlags::BUTTON3,
+                        8 => PointerRelFlags::XBUTTON1,
+                        _ => PointerRelFlags::XBUTTON2,
+                    },
+                    x_delta: 0,
+                    y_delta: 0,
+                })
+            }
             hold => hold.event(false, self.pointer),
         }
     }
@@ -3722,13 +4045,20 @@ struct RdpBatch {
 impl RdpBatch {
     fn new(held: &RdpHeld, generation: u64) -> Self {
         Self {
-            events: [FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0); RDP_INPUT_EVENTS],
-            len: 0, held: *held, peak: held.len, generation,
+            events: [FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0);
+                RDP_INPUT_EVENTS],
+            len: 0,
+            held: *held,
+            peak: held.len,
+            generation,
         }
     }
 
     fn push(&mut self, event: FastPathInputEvent) -> Result<(), ViewerError> {
-        let slot = self.events.get_mut(self.len).ok_or(ViewerError::InputNotAllowed)?;
+        let slot = self
+            .events
+            .get_mut(self.len)
+            .ok_or(ViewerError::InputNotAllowed)?;
         *slot = event;
         self.len += 1;
         Ok(())
@@ -3746,12 +4076,18 @@ impl RdpBatch {
         self.push(hold.event(down, self.held.pointer))?;
         match (down, existing) {
             (true, None) => {
-                let slot = self.held.entries.get_mut(self.held.len).ok_or(ViewerError::Backpressure)?;
+                let slot = self
+                    .held
+                    .entries
+                    .get_mut(self.held.len)
+                    .ok_or(ViewerError::Backpressure)?;
                 *slot = (self.generation, hold);
                 self.held.len += 1;
                 self.peak = self.peak.max(self.held.len);
             }
-            (false, Some(index)) => { self.held.remove(index); }
+            (false, Some(index)) => {
+                self.held.remove(index);
+            }
             _ => {}
         }
         Ok(())
@@ -3763,31 +4099,76 @@ impl RdpBatch {
 }
 
 fn rdp_scan(code: u8, extended: bool) -> RdpKey {
-    RdpKey::Scan(code, if extended { KeyboardFlags::EXTENDED } else { KeyboardFlags::empty() })
+    RdpKey::Scan(
+        code,
+        if extended {
+            KeyboardFlags::EXTENDED
+        } else {
+            KeyboardFlags::empty()
+        },
+    )
 }
 
 fn rdp_control(key: proto::ControlKey) -> Result<RdpKey, ViewerError> {
     use proto::ControlKey as C;
     let (code, extended) = match key {
-        C::Escape => (0x01, false), C::Backspace => (0x0e, false), C::Tab => (0x0f, false),
-        C::Return => (0x1c, false), C::Control => (0x1d, false), C::Shift => (0x2a, false),
-        C::RShift => (0x36, false), C::Alt => (0x38, false), C::Space => (0x39, false),
-        C::CapsLock => (0x3a, false), C::F1 => (0x3b, false), C::F2 => (0x3c, false),
-        C::F3 => (0x3d, false), C::F4 => (0x3e, false), C::F5 => (0x3f, false),
-        C::F6 => (0x40, false), C::F7 => (0x41, false), C::F8 => (0x42, false),
-        C::F9 => (0x43, false), C::F10 => (0x44, false), C::F11 => (0x57, false),
-        C::F12 => (0x58, false), C::NumLock => (0x45, false), C::Scroll => (0x46, false),
-        C::Numpad7 => (0x47, false), C::Numpad8 => (0x48, false), C::Numpad9 => (0x49, false),
-        C::Numpad4 => (0x4b, false), C::Numpad5 => (0x4c, false), C::Numpad6 => (0x4d, false),
-        C::Numpad1 => (0x4f, false), C::Numpad2 => (0x50, false), C::Numpad3 => (0x51, false),
-        C::Numpad0 => (0x52, false), C::Decimal => (0x53, false), C::Multiply => (0x37, false),
-        C::Subtract => (0x4a, false), C::Add => (0x4e, false), C::Equals => (0x0d, false),
-        C::NumpadEnter => (0x1c, true), C::RControl => (0x1d, true), C::Divide => (0x35, true),
-        C::Snapshot => (0x37, true), C::RAlt => (0x38, true), C::Home => (0x47, true),
-        C::UpArrow => (0x48, true), C::PageUp => (0x49, true), C::LeftArrow => (0x4b, true),
-        C::RightArrow => (0x4d, true), C::End => (0x4f, true), C::DownArrow => (0x50, true),
-        C::PageDown => (0x51, true), C::Insert => (0x52, true), C::Delete => (0x53, true),
-        C::Meta => (0x5b, true), C::RWin => (0x5c, true), C::Apps => (0x5d, true),
+        C::Escape => (0x01, false),
+        C::Backspace => (0x0e, false),
+        C::Tab => (0x0f, false),
+        C::Return => (0x1c, false),
+        C::Control => (0x1d, false),
+        C::Shift => (0x2a, false),
+        C::RShift => (0x36, false),
+        C::Alt => (0x38, false),
+        C::Space => (0x39, false),
+        C::CapsLock => (0x3a, false),
+        C::F1 => (0x3b, false),
+        C::F2 => (0x3c, false),
+        C::F3 => (0x3d, false),
+        C::F4 => (0x3e, false),
+        C::F5 => (0x3f, false),
+        C::F6 => (0x40, false),
+        C::F7 => (0x41, false),
+        C::F8 => (0x42, false),
+        C::F9 => (0x43, false),
+        C::F10 => (0x44, false),
+        C::F11 => (0x57, false),
+        C::F12 => (0x58, false),
+        C::NumLock => (0x45, false),
+        C::Scroll => (0x46, false),
+        C::Numpad7 => (0x47, false),
+        C::Numpad8 => (0x48, false),
+        C::Numpad9 => (0x49, false),
+        C::Numpad4 => (0x4b, false),
+        C::Numpad5 => (0x4c, false),
+        C::Numpad6 => (0x4d, false),
+        C::Numpad1 => (0x4f, false),
+        C::Numpad2 => (0x50, false),
+        C::Numpad3 => (0x51, false),
+        C::Numpad0 => (0x52, false),
+        C::Decimal => (0x53, false),
+        C::Multiply => (0x37, false),
+        C::Subtract => (0x4a, false),
+        C::Add => (0x4e, false),
+        C::Equals => (0x0d, false),
+        C::NumpadEnter => (0x1c, true),
+        C::RControl => (0x1d, true),
+        C::Divide => (0x35, true),
+        C::Snapshot => (0x37, true),
+        C::RAlt => (0x38, true),
+        C::Home => (0x47, true),
+        C::UpArrow => (0x48, true),
+        C::PageUp => (0x49, true),
+        C::LeftArrow => (0x4b, true),
+        C::RightArrow => (0x4d, true),
+        C::End => (0x4f, true),
+        C::DownArrow => (0x50, true),
+        C::PageDown => (0x51, true),
+        C::Insert => (0x52, true),
+        C::Delete => (0x53, true),
+        C::Meta => (0x5b, true),
+        C::RWin => (0x5c, true),
+        C::Apps => (0x5d, true),
         // Pause/IME/system actions require more than an ordinary make/break;
         // refuse them rather than guess an encoding or silently ignore them.
         _ => return Err(ViewerError::InputNotAllowed),
@@ -3827,15 +4208,41 @@ fn rdp_keysym(keysym: u32) -> Result<(u32, RdpKey, bool), ViewerError> {
         return Ok((keysym, key, shift));
     }
     let key = rdp_control(match keysym {
-        0xff08 => C::Backspace, 0xff09 => C::Tab, 0xff0d => C::Return, 0xff1b => C::Escape,
-        0xff50 => C::Home, 0xff51 => C::LeftArrow, 0xff52 => C::UpArrow, 0xff53 => C::RightArrow,
-        0xff54 => C::DownArrow, 0xff55 => C::PageUp, 0xff56 => C::PageDown, 0xff57 => C::End,
-        0xff63 => C::Insert, 0xffff => C::Delete, 0xffe1 => C::Shift, 0xffe2 => C::RShift,
-        0xffe3 => C::Control, 0xffe4 => C::RControl, 0xffe5 => C::CapsLock,
-        0xffe9 => C::Alt, 0xffea => C::RAlt, 0xffeb => C::Meta, 0xffec => C::RWin,
-        0xffbe => C::F1, 0xffbf => C::F2, 0xffc0 => C::F3, 0xffc1 => C::F4,
-        0xffc2 => C::F5, 0xffc3 => C::F6, 0xffc4 => C::F7, 0xffc5 => C::F8,
-        0xffc6 => C::F9, 0xffc7 => C::F10, 0xffc8 => C::F11, 0xffc9 => C::F12,
+        0xff08 => C::Backspace,
+        0xff09 => C::Tab,
+        0xff0d => C::Return,
+        0xff1b => C::Escape,
+        0xff50 => C::Home,
+        0xff51 => C::LeftArrow,
+        0xff52 => C::UpArrow,
+        0xff53 => C::RightArrow,
+        0xff54 => C::DownArrow,
+        0xff55 => C::PageUp,
+        0xff56 => C::PageDown,
+        0xff57 => C::End,
+        0xff63 => C::Insert,
+        0xffff => C::Delete,
+        0xffe1 => C::Shift,
+        0xffe2 => C::RShift,
+        0xffe3 => C::Control,
+        0xffe4 => C::RControl,
+        0xffe5 => C::CapsLock,
+        0xffe9 => C::Alt,
+        0xffea => C::RAlt,
+        0xffeb => C::Meta,
+        0xffec => C::RWin,
+        0xffbe => C::F1,
+        0xffbf => C::F2,
+        0xffc0 => C::F3,
+        0xffc1 => C::F4,
+        0xffc2 => C::F5,
+        0xffc3 => C::F6,
+        0xffc4 => C::F7,
+        0xffc5 => C::F8,
+        0xffc6 => C::F9,
+        0xffc7 => C::F10,
+        0xffc8 => C::F11,
+        0xffc9 => C::F12,
         _ => return Err(ViewerError::InputNotAllowed),
     })?;
     Ok((key.identity(), key, false))
@@ -3844,7 +4251,9 @@ fn rdp_keysym(keysym: u32) -> Result<(u32, RdpKey, bool), ViewerError> {
 fn rdp_modifier(key: proto::ControlKey) -> Result<RdpKey, ViewerError> {
     use proto::ControlKey as C;
     match key {
-        C::Shift | C::RShift | C::Control | C::RControl | C::Alt | C::RAlt | C::Meta | C::RWin => rdp_control(key),
+        C::Shift | C::RShift | C::Control | C::RControl | C::Alt | C::RAlt | C::Meta | C::RWin => {
+            rdp_control(key)
+        }
         _ => Err(ViewerError::InputNotAllowed),
     }
 }
@@ -3904,11 +4313,17 @@ fn rdp_legacy_admission(state: &State, event: &KeyEvent) -> Result<(), ViewerErr
     // The structural rules the writer applies, at the same boundary: a mode
     // this side does not speak, a modifier it cannot resolve and a key it
     // cannot name never become queued, whatever the event goes on to release.
-    if event.mode.enum_value().ok() != Some(proto::KeyboardMode::Legacy) || event.modifiers.len() > 8 {
+    if event.mode.enum_value().ok() != Some(proto::KeyboardMode::Legacy)
+        || event.modifiers.len() > 8
+    {
         return Err(ViewerError::InputNotAllowed);
     }
     for modifier in &event.modifiers {
-        rdp_modifier(modifier.enum_value().map_err(|_| ViewerError::InputNotAllowed)?)?;
+        rdp_modifier(
+            modifier
+                .enum_value()
+                .map_err(|_| ViewerError::InputNotAllowed)?,
+        )?;
     }
     if !legacy_release(event) {
         let batch = rdp_legacy(event, &RdpHeld::default())?;
@@ -3926,7 +4341,9 @@ fn rdp_legacy_admission(state: &State, event: &KeyEvent) -> Result<(), ViewerErr
 
 fn rdp_legacy(event: &KeyEvent, held: &RdpHeld) -> Result<RdpBatch, ViewerError> {
     use proto::key_event::Union;
-    if event.mode.enum_value().ok() != Some(proto::KeyboardMode::Legacy) || event.modifiers.len() > 8 {
+    if event.mode.enum_value().ok() != Some(proto::KeyboardMode::Legacy)
+        || event.modifiers.len() > 8
+    {
         return Err(ViewerError::InputNotAllowed);
     }
     let mut batch = RdpBatch::new(held, 0);
@@ -3935,16 +4352,22 @@ fn rdp_legacy(event: &KeyEvent, held: &RdpHeld) -> Result<RdpBatch, ViewerError>
             return Err(ViewerError::InputNotAllowed);
         }
         for unit in text.encode_utf16() {
-            if unit == 0 { return Err(ViewerError::InputNotAllowed); }
+            if unit == 0 {
+                return Err(ViewerError::InputNotAllowed);
+            }
             // Text must stay Unicode even if a physical shortcut key with the
             // same character identity is held. If this Unicode key itself is
             // held, its tap really releases it and the ledger records that.
-            let identity = batch.held.entries[..batch.held.len].iter().find_map(|(_, hold)| {
-                match hold {
-                    RdpHold::Key { identity, key: RdpKey::Unicode(value) } if *value == unit => Some(*identity),
+            let identity = batch.held.entries[..batch.held.len]
+                .iter()
+                .find_map(|(_, hold)| match hold {
+                    RdpHold::Key {
+                        identity,
+                        key: RdpKey::Unicode(value),
+                    } if *value == unit => Some(*identity),
                     _ => None,
-                }
-            }).unwrap_or(0x2000_0000 | u32::from(unit));
+                })
+                .unwrap_or(0x2000_0000 | u32::from(unit));
             batch.key(identity, RdpKey::Unicode(unit), true)?;
             batch.key(identity, RdpKey::Unicode(unit), false)?;
         }
@@ -3956,7 +4379,8 @@ fn rdp_legacy(event: &KeyEvent, held: &RdpHeld) -> Result<RdpBatch, ViewerError>
             (key.identity(), key, false)
         }
         Some(Union::Chr(value)) | Some(Union::Unicode(value)) => {
-            let character = char::from_u32(*value).filter(|c| !c.is_control())
+            let character = char::from_u32(*value)
+                .filter(|c| !c.is_control())
                 .ok_or(ViewerError::InputNotAllowed)?;
             let unit = u16::try_from(character as u32).map_err(|_| ViewerError::InputNotAllowed)?;
             if event.modifiers.is_empty() {
@@ -3978,28 +4402,48 @@ fn rdp_legacy(event: &KeyEvent, held: &RdpHeld) -> Result<RdpBatch, ViewerError>
     };
     let mut temporary = [None; 9];
     for (index, modifier) in event.modifiers.iter().enumerate() {
-        let key = rdp_modifier(modifier.enum_value().map_err(|_| ViewerError::InputNotAllowed)?)?;
-        if (event.down || event.press) && key.identity() != identity && batch.held.position(key.identity()).is_none() {
+        let key = rdp_modifier(
+            modifier
+                .enum_value()
+                .map_err(|_| ViewerError::InputNotAllowed)?,
+        )?;
+        if (event.down || event.press)
+            && key.identity() != identity
+            && batch.held.position(key.identity()).is_none()
+        {
             batch.key(key.identity(), key, true)?;
             temporary[index] = Some(key);
         }
     }
     let shift_key = rdp_scan(0x2a, false);
-    if (event.down || event.press) && shift && batch.held.position(shift_key.identity()).is_none()
-        && batch.held.position(rdp_scan(0x36, false).identity()).is_none()
+    if (event.down || event.press)
+        && shift
+        && batch.held.position(shift_key.identity()).is_none()
+        && batch
+            .held
+            .position(rdp_scan(0x36, false).identity())
+            .is_none()
     {
         batch.key(shift_key.identity(), shift_key, true)?;
         temporary[8] = Some(shift_key);
     }
     batch.key(identity, key, event.down || event.press)?;
-    if event.press { batch.key(identity, key, false)?; }
+    if event.press {
+        batch.key(identity, key, false)?;
+    }
     for key in temporary.into_iter().rev().flatten() {
         batch.key(key.identity(), key, false)?;
     }
     Ok(batch)
 }
 
-fn rdp_mouse(kind: u32, button: u32, x: i32, y: i32, pointer: (u16, u16)) -> Result<RdpBatch, ViewerError> {
+fn rdp_mouse(
+    kind: u32,
+    button: u32,
+    x: i32,
+    y: i32,
+    pointer: (u16, u16),
+) -> Result<RdpBatch, ViewerError> {
     let mut batch = RdpBatch::new(&RdpHeld::default(), 0);
     batch.held.pointer = pointer;
     match kind {
@@ -4009,12 +4453,16 @@ fn rdp_mouse(kind: u32, button: u32, x: i32, y: i32, pointer: (u16, u16)) -> Res
             batch.held.pointer = (px, py);
             if kind == 0 && button == 0 {
                 batch.push(FastPathInputEvent::MouseEvent(MousePdu {
-                    flags: PointerFlags::MOVE, number_of_wheel_rotation_units: 0,
-                    x_position: px, y_position: py,
+                    flags: PointerFlags::MOVE,
+                    number_of_wheel_rotation_units: 0,
+                    x_position: px,
+                    y_position: py,
                 }))?;
             } else if kind != 0 && matches!(button, 1 | 2 | 4 | 8 | 16) {
                 batch.transition(RdpHold::Button(button), kind == 1)?;
-            } else { return Err(ViewerError::InvalidMouse); }
+            } else {
+                return Err(ViewerError::InvalidMouse);
+            }
         }
         3 | 4 if button == 0 && (x != 0 || y != 0) => {
             // Original wheel units are notches; trackpad units are eighths.
@@ -4022,16 +4470,23 @@ fn rdp_mouse(kind: u32, button: u32, x: i32, y: i32, pointer: (u16, u16)) -> Res
             let scale = if kind == 3 { 120 } else { 15 };
             let horizontal = x.checked_mul(scale).ok_or(ViewerError::InvalidMouse)?;
             let vertical = y.checked_mul(-scale).ok_or(ViewerError::InvalidMouse)?;
-            let count = |value: i32| u64::from(value.unsigned_abs()).div_ceil(if value < 0 { 256 } else { 255 });
+            let count = |value: i32| {
+                u64::from(value.unsigned_abs()).div_ceil(if value < 0 { 256 } else { 255 })
+            };
             if count(horizontal) + count(vertical) > RDP_INPUT_EVENTS as u64 {
                 return Err(ViewerError::InvalidMouse);
             }
-            for (mut units, flags) in [(horizontal, PointerFlags::HORIZONTAL_WHEEL), (vertical, PointerFlags::VERTICAL_WHEEL)] {
+            for (mut units, flags) in [
+                (horizontal, PointerFlags::HORIZONTAL_WHEEL),
+                (vertical, PointerFlags::VERTICAL_WHEEL),
+            ] {
                 while units != 0 {
                     let part = units.clamp(-256, 255);
                     batch.push(FastPathInputEvent::MouseEvent(MousePdu {
-                        flags, number_of_wheel_rotation_units: part as i16,
-                        x_position: pointer.0, y_position: pointer.1,
+                        flags,
+                        number_of_wheel_rotation_units: part as i16,
+                        x_position: pointer.0,
+                        y_position: pointer.1,
                     }))?;
                     units -= part;
                 }
@@ -4051,7 +4506,8 @@ fn rdp_mouse(kind: u32, button: u32, x: i32, y: i32, pointer: (u16, u16)) -> Res
 
 fn rdp_preflight(state: &State, events: &[FastPathInputEvent]) -> Result<(), ViewerError> {
     let flags = RdpInputFlags::from_bits_retain(state.rdp_input_flags.load(Ordering::Acquire));
-    crate::protocol::rdp::validate_input_flags(flags, events).map_err(|_| ViewerError::InputNotAllowed)
+    crate::protocol::rdp::validate_input_flags(flags, events)
+        .map_err(|_| ViewerError::InputNotAllowed)
 }
 
 fn rdp_input_capabilities(state: &State, session: &crate::protocol::rdp::RdpSession) {
@@ -4059,8 +4515,14 @@ fn rdp_input_capabilities(state: &State, session: &crate::protocol::rdp::RdpSess
     state.rdp_input_flags.store(flags.bits(), Ordering::Release);
     // Reuse the adapter's actual checks rather than treating the client-side
     // advertised flags as a grant. Unknown/reactivating input retires old holds.
-    let keyboard = crate::protocol::rdp::validate_input_flags(flags, &[rdp_scan(0x1e, false).event(true)]).is_ok()
-        || crate::protocol::rdp::validate_input_flags(flags, &[RdpKey::Unicode(0x61).event(true)]).is_ok();
+    let keyboard =
+        crate::protocol::rdp::validate_input_flags(flags, &[rdp_scan(0x1e, false).event(true)])
+            .is_ok()
+            || crate::protocol::rdp::validate_input_flags(
+                flags,
+                &[RdpKey::Unicode(0x61).event(true)],
+            )
+            .is_ok();
     state.input.grant(keyboard);
 }
 
@@ -4089,8 +4551,13 @@ async fn rdp_release_unadmitted(
     let mut index = 0;
     while index < held.len {
         let generation = held.entries[index].0;
-        if admitted && generation == gate.generation { index += 1; continue; }
-        if !rdp_send(state, session, &[held.release_event(index)]).await? { return Ok(()); }
+        if admitted && generation == gate.generation {
+            index += 1;
+            continue;
+        }
+        if !rdp_send(state, session, &[held.release_event(index)]).await? {
+            return Ok(());
+        }
         state.input.released(held.remove(index));
     }
     Ok(())
@@ -4105,7 +4572,9 @@ async fn rdp_input(
     let batch = loop {
         rdp_release_unadmitted(state, session, held).await?;
         let gate = state.input.read();
-        if queued.generation != gate.generation || !Facts::of(state).admits(gate) { return Ok(()); }
+        if queued.generation != gate.generation || !Facts::of(state).admits(gate) {
+            return Ok(());
+        }
         let batch = match rdp_batch(held, &queued) {
             Ok(batch) => batch,
             // Like the other writers, never emit a hold the ledger cannot
@@ -4117,18 +4586,31 @@ async fn rdp_input(
         // write: a reactivation publishes a new DemandActive. What they no
         // longer carry is dropped here instead of being written as a batch the
         // adapter would refuse, and nothing is held, so nothing is owed.
-        if rdp_preflight(state, &batch.events[..batch.len]).is_err() { return Ok(()); }
+        if rdp_preflight(state, &batch.events[..batch.len]).is_err() {
+            return Ok(());
+        }
         let adds = batch.peak - held.len;
-        if state.input.own_many(queued.generation, adds as u64, &Facts::of(state)) { break batch; }
+        if state
+            .input
+            .own_many(queued.generation, adds as u64, &Facts::of(state))
+        {
+            break batch;
+        }
         // A revoke/regrant can race the release pass itself. Never adopt a
         // retired hold: settle it and prepare the still-current event again.
-        if state.input.read().retired == 0 { return Ok(()); }
+        if state.input.read().retired == 0 {
+            return Ok(());
+        }
     };
-    if !rdp_send(state, session, &batch.events[..batch.len]).await? { return Ok(()); }
+    if !rdp_send(state, session, &batch.events[..batch.len]).await? {
+        return Ok(());
+    }
     // A cancelled/failed write keeps the reservation unconfirmed on stop.
     let released = batch.peak - batch.held.len;
     *held = batch.held;
-    for _ in 0..released { state.input.released(queued.generation); }
+    for _ in 0..released {
+        state.input.released(queued.generation);
+    }
     Ok(())
 }
 
@@ -4139,23 +4621,38 @@ fn rdp_batch(held: &RdpHeld, queued: &QueuedInput) -> Result<RdpBatch, ViewerErr
             let (identity, key, shift) = rdp_keysym(*keysym)?;
             let mut batch = RdpBatch::new(held, queued.generation);
             let shift_key = rdp_scan(0x2a, false);
-            let temporary_shift = *down && shift && batch.held.position(shift_key.identity()).is_none()
-                && batch.held.position(rdp_scan(0x36, false).identity()).is_none();
-            if temporary_shift { batch.key(shift_key.identity(), shift_key, true)?; }
+            let temporary_shift = *down
+                && shift
+                && batch.held.position(shift_key.identity()).is_none()
+                && batch
+                    .held
+                    .position(rdp_scan(0x36, false).identity())
+                    .is_none();
+            if temporary_shift {
+                batch.key(shift_key.identity(), shift_key, true)?;
+            }
             batch.key(identity, key, *down)?;
-            if temporary_shift { batch.key(shift_key.identity(), shift_key, false)?; }
+            if temporary_shift {
+                batch.key(shift_key.identity(), shift_key, false)?;
+            }
             batch
         }
         ViewerInput::Mouse { kind, button, x, y } => {
             let mouse = rdp_mouse(*kind, *button, *x, *y, held.pointer)?;
             let mut batch = RdpBatch::new(held, queued.generation);
             batch.held.pointer = mouse.held.pointer;
-            if *kind <= 2 { batch.held.relative = false; }
-            if *kind == 5 { batch.held.relative = true; }
+            if *kind <= 2 {
+                batch.held.relative = false;
+            }
+            if *kind == 5 {
+                batch.held.relative = true;
+            }
             if matches!(*kind, 1 | 2) {
                 batch.transition(RdpHold::Button(*button), *kind == 1)?;
             } else {
-                for event in &mouse.events[..mouse.len] { batch.push(*event)?; }
+                for event in &mouse.events[..mouse.len] {
+                    batch.push(*event)?;
+                }
             }
             batch
         }
@@ -4163,7 +4660,9 @@ fn rdp_batch(held: &RdpHeld, queued: &QueuedInput) -> Result<RdpBatch, ViewerErr
     // Preparation may have used generation zero for synchronous validation;
     // only newly added holds get this event's actual (never refreshed) stamp.
     for (generation, _) in &mut batch.held.entries[..batch.held.len] {
-        if *generation == 0 { *generation = queued.generation; }
+        if *generation == 0 {
+            *generation = queued.generation;
+        }
     }
     Ok(batch)
 }
@@ -4208,7 +4707,8 @@ async fn run_rdp(
         let sink = surface.ok_or(ViewerError::ReclamationUnconfirmed)?;
         close_sink(&state, sink).await?;
         outcome
-    }.await;
+    }
+    .await;
     state.input.stopped();
     // Consume every established session, including cancellation during sink
     // creation/presentation. Its own bounded graceful shutdown drops the socket.
@@ -4249,7 +4749,13 @@ async fn rdp_stream(
         match event.map_err(rdp_error)? {
             Some(RdpEvent::Painted) => present_sink(surface).await?,
             Some(RdpEvent::Desktop { width, height }) => {
-                state.desktop_geometry(Geometry { display: 0, x: 0, y: 0, width, height });
+                state.desktop_geometry(Geometry {
+                    display: 0,
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                });
             }
             Some(RdpEvent::Closed) => return Ok(()),
             // Control progress is not EOF; clipboard delivery is not a frame.

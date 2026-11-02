@@ -143,7 +143,61 @@ jobs:
             throw 'The installed vpx.pc does not report the pinned libvpx 1.15.2.'
           }
           "LIBVPX_PREFIX=$libvpx" >> $env:GITHUB_ENV
+      - name: Build target Opus and select a real libclang for bindgen
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Join-Path $env:GITHUB_WORKSPACE '.build-deps/vcpkg'
+          # magnum-opus (Cargo.toml pin 588c6e1f) links Opus from the directory
+          # its own build.rs derives from the target: <VCPKG_ROOT>/installed/
+          # x64-windows-static/lib for x86_64-pc-windows-msvc. This job's ABI is
+          # x64-windows-static-md, so install the built-in port once at the real
+          # triplet and mirror only its Opus library and headers into the
+          # directory magnum hardcodes. Nothing else is copied and
+          # VCPKG_TARGET_TRIPLET is unchanged.
+          & (Join-Path $vcpkg 'vcpkg.exe') install opus:x64-windows-static-md --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw 'Target Opus build failed.' }
+          $opus = Join-Path $vcpkg 'installed/x64-windows-static-md'
+          if (!(Test-Path (Join-Path $opus 'lib/opus.lib')) -or
+              !(Test-Path (Join-Path $opus 'include/opus/opus_multistream.h'))) {
+            throw 'The built-in Opus port installed no static Opus library or opus_multistream.h.'
+          }
+          $compat = Join-Path $vcpkg 'installed/x64-windows-static'
+          New-Item -ItemType Directory -Force -Path (Join-Path $compat 'lib') | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $compat 'include') | Out-Null
+          Copy-Item -LiteralPath (Join-Path $opus 'lib/opus.lib') -Destination (Join-Path $compat 'lib/opus.lib') -Force
+          Copy-Item -LiteralPath (Join-Path $opus 'include/opus') -Destination (Join-Path $compat 'include') -Recurse -Force
+          if (!(Test-Path (Join-Path $compat 'include/opus/opus_multistream.h')) -or
+              !(Test-Path (Join-Path $compat 'lib/opus.lib'))) {
+            throw 'The isolated Opus mirror is incomplete.'
+          }
+          # bindgen dlopen()s the libclang shared library; a clang executable on
+          # PATH is not that library. Use one this runner actually ships.
+          $candidates = @()
+          foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if (!$base) { continue }
+            $candidates += Join-Path $base 'LLVM/bin'
+            foreach ($edition in @('Enterprise', 'Professional', 'Community', 'BuildTools')) {
+              $candidates += Join-Path $base "Microsoft Visual Studio/2022/$edition/VC/Tools/Llvm/x64/bin"
+            }
+          }
+          $libclang = $null
+          foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath (Join-Path $candidate 'libclang.dll') -PathType Leaf) {
+              $libclang = $candidate
+              break
+            }
+          }
+          if (!$libclang) {
+            "::error::no libclang.dll for bindgen; searched: $($candidates -join '; ')"
+            throw 'bindgen needs a real libclang.dll.'
+          }
+          "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=$libclang" >> $env:GITHUB_ENV
+          Write-Host "Opus static-md: $opus ; isolated mirror: $compat"
+          Write-Host "bindgen libclang: $libclang/libclang.dll"
       - name: Check formatting
+        # Published dependency sources are excluded by the owning workspace.
         run: cargo fmt --check
       - name: Check FRB kernel formatting
         # The bridge crate is an independent workspace (native/frb/Cargo.toml),
@@ -372,6 +426,18 @@ jobs:
           set -euo pipefail
           dart --version
           bash native/frb/generate-bindings.sh
+      - name: Preserve the regenerated pair for review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: frb-regenerated-${{ github.sha }}
+          path: |
+            native/frb/src/bridge_generated.rs
+            native/frb/src/bridge_generated.io.rs
+            native/frb/dart/lib/generated_bridge.dart
+            native/frb/dart/lib/generated_bridge.freezed.dart
+            native/frb/dart/pubspec.lock
+          if-no-files-found: error
+          retention-days: 7
       - name: Reject any generated binding difference
         # Exact match, no tolerance: a formatting-only or dependency-driven diff
         # is a different artifact than the committed one.

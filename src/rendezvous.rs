@@ -668,18 +668,20 @@ mod tests {
 
     fn hbbs_relay_role(config: &RendezvousConfig, mode: SessionMode) -> ConnType {
         match relay_request(config, "127.0.0.1:21117", "uuid", mode).union {
-            Some(rendezvous_message::Union::RequestRelay(request)) => {
-                request.conn_type.enum_value().expect("a known hbbs relay role")
-            }
+            Some(rendezvous_message::Union::RequestRelay(request)) => request
+                .conn_type
+                .enum_value()
+                .expect("a known hbbs relay role"),
             _ => panic!("hbbs relay request builder produced another message"),
         }
     }
 
     fn hbbr_join_role(config: &RendezvousConfig, mode: SessionMode) -> ConnType {
         match relay_join_request(config, "uuid".to_owned(), mode).union {
-            Some(rendezvous_message::Union::RequestRelay(request)) => {
-                request.conn_type.enum_value().expect("a known hbbr join role")
-            }
+            Some(rendezvous_message::Union::RequestRelay(request)) => request
+                .conn_type
+                .enum_value()
+                .expect("a known hbbr join role"),
             _ => panic!("hbbr join builder produced another message"),
         }
     }

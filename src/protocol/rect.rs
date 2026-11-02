@@ -116,7 +116,9 @@ impl PixelLayout {
     /// little-/big-endian integer. Only the 8/8/8 layouts above are accepted;
     /// anything else would need a per-pixel conversion on the hot path.
     pub fn pack(&self, red: u8, green: u8, blue: u8) -> Option<u32> {
-        if self.bytes_per_pixel != 4 || self.red_shift % 8 != 0 || self.green_shift % 8 != 0
+        if self.bytes_per_pixel != 4
+            || self.red_shift % 8 != 0
+            || self.green_shift % 8 != 0
             || self.blue_shift % 8 != 0
             || self.red_shift > 24
             || self.green_shift > 24
@@ -183,7 +185,9 @@ impl<'a> RectBuf<'a> {
         if y < 0 || y >= self.rect.height {
             return None;
         }
-        let start = self.base.checked_add((y as usize).checked_mul(self.stride)?)?;
+        let start = self
+            .base
+            .checked_add((y as usize).checked_mul(self.stride)?)?;
         let end = start.checked_add(self.rect.width as usize * self.bytes_per_pixel)?;
         self.pixels.get_mut(start..end)
     }
@@ -193,7 +197,9 @@ impl<'a> RectBuf<'a> {
         if x < 0 || y < 0 || x >= self.rect.width || y >= self.rect.height {
             return None;
         }
-        let row = self.base.checked_add((y as usize).checked_mul(self.stride)?)?;
+        let row = self
+            .base
+            .checked_add((y as usize).checked_mul(self.stride)?)?;
         let offset = row.checked_add((x as usize).checked_mul(self.bytes_per_pixel)?)?;
         (offset + self.bytes_per_pixel <= self.pixels.len()).then_some(offset)
     }
@@ -266,8 +272,14 @@ mod tests {
     #[test]
     fn rect_rejects_and_unions() {
         assert!(Rect::new(0, 0, 1, 1).validate().is_ok());
-        assert_eq!(Rect::new(-1, 0, 1, 1).validate(), Err(PixelError::InvalidRect));
-        assert_eq!(Rect::new(0, 0, 0, 1).validate(), Err(PixelError::InvalidRect));
+        assert_eq!(
+            Rect::new(-1, 0, 1, 1).validate(),
+            Err(PixelError::InvalidRect)
+        );
+        assert_eq!(
+            Rect::new(0, 0, 0, 1).validate(),
+            Err(PixelError::InvalidRect)
+        );
         let a = Rect::new(4, 4, 8, 8);
         let b = Rect::new(0, 0, 3, 3);
         assert_eq!(a.union(&b), Rect::new(0, 0, 12, 12));

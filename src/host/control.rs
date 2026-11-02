@@ -1,10 +1,15 @@
 //! Windows main-process control owner. CM and bridge code observe this owner;
 //! neither observations nor subscriptions initialize configuration or native work.
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::{mpsc, oneshot, watch};
-mod owner;
 mod configuration;
+mod owner;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceSnapshot {
@@ -49,13 +54,36 @@ pub enum HostCommand {
     RefreshConfiguration,
     RotateTemporaryPassword,
     GetTemporaryPassword,
-    SetPermanentPassword { password: String },
-    SetOption { key: String, value: String },
-    SetOptions { options: HashMap<String, String> },
-    Approve { run_epoch: u64, conn_id: i32, approval_epoch: u64, policy_revision: u64, allow: bool },
-    Disconnect { run_epoch: u64, conn_id: i32 },
-    SetKeyboard { run_epoch: u64, conn_id: i32, enabled: bool },
-    RemoveDisconnected { run_epoch: u64, conn_id: i32 },
+    SetPermanentPassword {
+        password: String,
+    },
+    SetOption {
+        key: String,
+        value: String,
+    },
+    SetOptions {
+        options: HashMap<String, String>,
+    },
+    Approve {
+        run_epoch: u64,
+        conn_id: i32,
+        approval_epoch: u64,
+        policy_revision: u64,
+        allow: bool,
+    },
+    Disconnect {
+        run_epoch: u64,
+        conn_id: i32,
+    },
+    SetKeyboard {
+        run_epoch: u64,
+        conn_id: i32,
+        enabled: bool,
+    },
+    RemoveDisconnected {
+        run_epoch: u64,
+        conn_id: i32,
+    },
     ReadActivity,
 }
 
@@ -64,7 +92,11 @@ impl Drop for HostCommand {
         match self {
             Self::SetPermanentPassword { password } => configuration::wipe(password),
             Self::SetOption { value, .. } => configuration::wipe(value),
-            Self::SetOptions { options } => { for value in options.values_mut() { configuration::wipe(value); } }
+            Self::SetOptions { options } => {
+                for value in options.values_mut() {
+                    configuration::wipe(value);
+                }
+            }
             _ => {}
         }
     }
@@ -80,10 +112,11 @@ pub enum HostReply {
 // on the value so both channel buffers and canceled futures scrub it as well.
 impl Drop for HostReply {
     fn drop(&mut self) {
-        if let Self::TemporaryPassword(value) = self { configuration::wipe(value); }
+        if let Self::TemporaryPassword(value) = self {
+            configuration::wipe(value);
+        }
     }
 }
-
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ActivitySnapshot {
@@ -96,7 +129,9 @@ pub struct ActivitySnapshot {
 #[derive(Clone, Copy, Debug)]
 pub struct ControlError(pub(crate) &'static str);
 impl fmt::Display for ControlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
 }
 impl std::error::Error for ControlError {}
 
@@ -117,21 +152,39 @@ impl HostController {
     pub fn initialize() -> Result<Arc<Self>, ControlError> {
         owner::initialize()
     }
-    pub fn snapshot(&self) -> ServiceSnapshot { self.states.borrow().clone() }
-    pub fn subscribe_state(&self) -> watch::Receiver<ServiceSnapshot> { self.states.clone() }
+    pub fn snapshot(&self) -> ServiceSnapshot {
+        self.states.borrow().clone()
+    }
+    pub fn subscribe_state(&self) -> watch::Receiver<ServiceSnapshot> {
+        self.states.clone()
+    }
     /// Main-process native caller only; never included in snapshots or CM IPC.
-    pub fn registration_uuid(&self) -> &[u8] { &self.registration_uuid }
+    pub fn registration_uuid(&self) -> &[u8] {
+        &self.registration_uuid
+    }
     pub async fn execute(&self, command: HostCommand) -> Result<HostReply, ControlError> {
-        let deadline = Instant::now().checked_add(Duration::from_secs(45))
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(45))
             .ok_or(ControlError("Host command deadline is unavailable"))?;
         self.execute_with_deadline(command, deadline).await
     }
     /// Native bridge only: preserve the request's original monotonic deadline.
     /// Expiry never rolls back completed storage or abandons admitted cleanup.
-    pub async fn execute_with_deadline(&self, command: HostCommand, deadline: Instant) -> Result<HostReply, ControlError> {
+    pub async fn execute_with_deadline(
+        &self,
+        command: HostCommand,
+        deadline: Instant,
+    ) -> Result<HostReply, ControlError> {
         let (reply, result) = oneshot::channel();
-        self.commands.try_send(Request { command, deadline, reply })
+        self.commands
+            .try_send(Request {
+                command,
+                deadline,
+                reply,
+            })
             .map_err(|_| ControlError("Host control owner unavailable or busy"))?;
-        result.await.map_err(|_| ControlError("Host control owner unavailable"))?
+        result
+            .await
+            .map_err(|_| ControlError("Host control owner unavailable"))?
     }
 }

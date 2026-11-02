@@ -40,10 +40,10 @@ use security_framework_sys::{
     keychain_item::SecItemAdd,
 };
 
-#[cfg(target_os = "macos")]
-use self::macos as platform;
 #[cfg(target_os = "ios")]
 use self::ios as platform;
+#[cfg(target_os = "macos")]
+use self::macos as platform;
 
 // The service is a private item identity, not a device UUID or account credential.
 // The account attribute is the common owner's stable application/profile digest.
@@ -56,11 +56,7 @@ pub(super) fn load_key(_root: &Path, namespace: &str) -> io::Result<Option<secre
     platform::load(namespace)
 }
 
-pub(super) fn create_key(
-    _root: &Path,
-    namespace: &str,
-    key: &secretbox::Key,
-) -> io::Result<bool> {
+pub(super) fn create_key(_root: &Path, namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
     validate_namespace(namespace)?;
     platform::create(namespace, key)
 }
@@ -129,11 +125,16 @@ fn add_key(mut query: KeyQuery, key: &secretbox::Key) -> io::Result<bool> {
 fn status_error(operation: &'static str, status: i32) -> io::Error {
     // OSStatus is not an errno. Preserve its number without attaching a query,
     // application path, key bytes, or a potentially secret-bearing description.
-    io::Error::other(format!("Apple Keychain {operation} failed (OSStatus {status})"))
+    io::Error::other(format!(
+        "Apple Keychain {operation} failed (OSStatus {status})"
+    ))
 }
 
 fn invalid_key() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "invalid Apple Keychain master key")
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid Apple Keychain master key",
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -143,9 +144,7 @@ mod macos {
     use hbb_common::sodiumoxide::utils::memzero;
     use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
     use security_framework_sys::{
-        base::SecKeychainRef,
-        item::kSecUseKeychain,
-        keychain::SecKeychainFindGenericPassword,
+        base::SecKeychainRef, item::kSecUseKeychain, keychain::SecKeychainFindGenericPassword,
         keychain_item::SecKeychainItemFreeContent,
     };
 
@@ -181,7 +180,10 @@ mod macos {
 
     pub(super) fn load(namespace: &str) -> io::Result<Option<secretbox::Key>> {
         let keychain = user_keychain()?;
-        let mut password = PasswordBuffer { data: ptr::null_mut(), len: 0 };
+        let mut password = PasswordBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
         // Use the maintained low-level Find API for this explicitly selected
         // file keychain. Unlike the SecItem legacy search shim, it propagates
         // lookup errors directly and returns an owned, erasable byte buffer.
@@ -202,7 +204,7 @@ mod macos {
         };
         match status {
             errSecItemNotFound => return Ok(None),
-            errSecSuccess => {},
+            errSecSuccess => {}
             _ => return Err(status_error("load master key", status)),
         }
         if password.data.is_null() || password.len as usize != secretbox::KEYBYTES {
@@ -211,7 +213,9 @@ mod macos {
         // SAFETY: A successful Find returned this owned allocation, and its
         // checked length is exactly the secretbox key size, not an unbounded read.
         let bytes = unsafe { slice::from_raw_parts(password.data.cast(), secretbox::KEYBYTES) };
-        secretbox::Key::from_slice(bytes).map(Some).ok_or_else(invalid_key)
+        secretbox::Key::from_slice(bytes)
+            .map(Some)
+            .ok_or_else(invalid_key)
     }
 
     pub(super) fn create(namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
@@ -242,7 +246,10 @@ mod macos {
                 // it is freed exactly once with the matching Keychain API. u32
                 // fits the slice-size bound on the supported 64-bit macOS targets.
                 unsafe {
-                    memzero(slice::from_raw_parts_mut(self.data.cast(), self.len as usize));
+                    memzero(slice::from_raw_parts_mut(
+                        self.data.cast(),
+                        self.len as usize,
+                    ));
                     SecKeychainItemFreeContent(ptr::null_mut(), self.data);
                 }
             }
@@ -254,7 +261,7 @@ mod macos {
 mod ios {
     use objc2::{
         extern_class, extern_methods,
-        rc::{autoreleasepool, Retained},
+        rc::{Retained, autoreleasepool},
         runtime::NSObject,
     };
     use security_framework::access_control::{ProtectionMode, SecAccessControl};
@@ -329,10 +336,11 @@ mod ios {
             };
             match status {
                 errSecItemNotFound => return Ok(None),
-                errSecSuccess => {},
+                errSecSuccess => {}
                 _ => return Err(status_error("load master key", status)),
             }
-            let data = result.and_then(|value| value.downcast_into::<CFData>())
+            let data = result
+                .and_then(|value| value.downcast_into::<CFData>())
                 .ok_or_else(invalid_key)?;
             if data.len() != secretbox::KEYBYTES as isize {
                 return Err(invalid_key());
@@ -340,7 +348,9 @@ mod ios {
             // No intermediate Vec or unbounded copy. The returned key owns and
             // erases its bytes. Security's immutable CFData is released promptly,
             // but cannot safely be overwritten by casting away its immutability.
-            secretbox::Key::from_slice(data.bytes()).map(Some).ok_or_else(invalid_key)
+            secretbox::Key::from_slice(data.bytes())
+                .map(Some)
+                .ok_or_else(invalid_key)
         })
     }
 
@@ -350,7 +360,8 @@ mod ios {
             let access = SecAccessControl::create_with_protection(
                 Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
                 0,
-            ).map_err(|error| status_error("configure key protection", error.code()))?;
+            )
+            .map_err(|error| status_error("configure key protection", error.code()))?;
             // No user-presence/biometry/password flags or access-group override.
             // SAFETY: This is the documented SecAccessControl value type.
             unsafe {

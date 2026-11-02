@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // RustDesk contributors; pin 092a961b629d318fe290eeafac0cd214a1e9deeb.
 // Modified 2026-09-23: shared derive import; no Debug/Clone or upstream tests.
+use hbb_common::serde_derive::{Deserialize, Serialize};
 use hbb_common::{
-    bail,
+    ResultType, bail,
     base64::{
-        engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
         Engine as _,
+        engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
     },
     sodiumoxide::crypto::sign,
-    ResultType,
 };
-use hbb_common::serde_derive::{Deserialize, Serialize};
 
 #[derive(PartialEq, Default, Serialize, Deserialize)]
 pub struct CustomServer {
@@ -114,4 +113,3 @@ pub fn get_custom_server_from_string(s: &str) -> ResultType<CustomServer> {
     }
     bail!("Failed to parse");
 }
-

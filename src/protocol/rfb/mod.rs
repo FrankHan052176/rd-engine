@@ -6,8 +6,8 @@
 //! NativeSurface buffers are never retained by the native decoder.
 
 pub mod auth;
-pub mod session;
 mod native;
+pub mod session;
 mod worker;
 
 use crate::protocol::rect::PixelError;
@@ -56,8 +56,12 @@ impl fmt::Display for RfbError {
 }
 impl std::error::Error for RfbError {}
 impl From<std::io::Error> for RfbError {
-    fn from(_: std::io::Error) -> Self { Self::Transport }
+    fn from(_: std::io::Error) -> Self {
+        Self::Transport
+    }
 }
 impl From<PixelError> for RfbError {
-    fn from(_: PixelError) -> Self { Self::Geometry }
+    fn from(_: PixelError) -> Self {
+        Self::Geometry
+    }
 }

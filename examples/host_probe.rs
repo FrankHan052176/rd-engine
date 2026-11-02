@@ -59,7 +59,10 @@ fn parse() -> Result<Cli, Box<dyn Error>> {
     let mut cli = Cli::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        let mut value = || args.next().ok_or_else(|| format!("missing value for {arg}"));
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("missing value for {arg}"))
+        };
         match arg.as_str() {
             "--listen" => cli.listen = value()?.parse()?,
             "--id" => cli.id = value()?,
@@ -148,45 +151,63 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let salt = hbb_common::config::Config::get_auto_password(32);
     let mut password = cli.password.unwrap_or_default();
-    let policy = if password.is_empty() { rd_engine::authentication::PrimaryPolicy::ClickOnly }
-        else { rd_engine::authentication::PrimaryPolicy::PasswordOrClick };
-    let values = if password.is_empty() { Vec::new() }
-        else { vec![rd_engine::authentication::salted_password(password.as_bytes(), &salt)] };
-    unsafe { hbb_common::sodiumoxide::utils::memzero(password.as_bytes_mut()); }
+    let policy = if password.is_empty() {
+        rd_engine::authentication::PrimaryPolicy::ClickOnly
+    } else {
+        rd_engine::authentication::PrimaryPolicy::PasswordOrClick
+    };
+    let values = if password.is_empty() {
+        Vec::new()
+    } else {
+        vec![rd_engine::authentication::salted_password(
+            password.as_bytes(),
+            &salt,
+        )]
+    };
+    unsafe {
+        hbb_common::sodiumoxide::utils::memzero(password.as_bytes_mut());
+    }
     let credentials = std::sync::Arc::new(rd_engine::host::HostCredentials::new(
-        1, salt, rd_engine::authentication::Passwords::from_salted(values), policy,
+        1,
+        salt,
+        rd_engine::authentication::Passwords::from_salted(values),
+        policy,
     ));
-    let host = Host::start(HostOptions {
-        listen: Some(cli.listen),
-        allow_legacy_plain: true,
-        id: cli.id.clone(),
-        display_name: cli.id.clone(),
-        signing_key,
-        width,
-        height,
-        bitrate: cli.bitrate,
-        platform: std::env::consts::OS.into(),
-        credentials,
-        security: None,
-        publisher_backend: PublisherBackend::Auto,
-        #[cfg(all(
-            any(target_os = "windows", dsh_windows_typecheck),
-            feature = "windows-modern-producer"
-        ))]
-        output_key,
-        #[cfg(not(all(
-            any(target_os = "windows", dsh_windows_typecheck),
-            feature = "windows-modern-producer"
-        )))]
-        output_index: 0,
-        // A console host never grants remote input; only a local product
-        // surface may turn that on explicitly.
-        allow_input: false,
-        codec_selection: cli.codec,
-    }, None)?;
+    let host = Host::start(
+        HostOptions {
+            listen: Some(cli.listen),
+            allow_legacy_plain: true,
+            id: cli.id.clone(),
+            display_name: cli.id.clone(),
+            signing_key,
+            width,
+            height,
+            bitrate: cli.bitrate,
+            platform: std::env::consts::OS.into(),
+            credentials,
+            security: None,
+            publisher_backend: PublisherBackend::Auto,
+            #[cfg(all(
+                any(target_os = "windows", dsh_windows_typecheck),
+                feature = "windows-modern-producer"
+            ))]
+            output_key,
+            #[cfg(not(all(
+                any(target_os = "windows", dsh_windows_typecheck),
+                feature = "windows-modern-producer"
+            )))]
+            output_index: 0,
+            // A console host never grants remote input; only a local product
+            // surface may turn that on explicitly.
+            allow_input: false,
+            codec_selection: cli.codec,
+        },
+        None,
+    )?;
     println!("display: {width}x{height}");
 
-    let deadline = (cli.seconds > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(cli.seconds));
+    let deadline =
+        (cli.seconds > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(cli.seconds));
     let mut last = String::new();
     loop {
         let snapshot = host.snapshot();

@@ -47,8 +47,8 @@
 use crate::protocol::Protocol;
 use crate::viewer::PeerDisplayInfo;
 use base::message_proto::{
-    option_message::BoolOption, supported_decoding::PreferCodec, DisplayResolution, ImageQuality,
-    Message, Misc, OptionMessage, Resolution, SupportedDecoding, SwitchDisplay,
+    DisplayResolution, ImageQuality, Message, Misc, OptionMessage, Resolution, SupportedDecoding,
+    SwitchDisplay, option_message::BoolOption, supported_decoding::PreferCodec,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -86,9 +86,12 @@ pub enum SessionOptionChange {
     CodecPreference(PreferCodec),
     /// Whether the peer may exchange clipboard content with this session.
     ClipboardEnabled(bool),
-    /// Whether the peer should send desktop audio at all. This is the option
-    /// only: this engine has no audio renderer, so enabling it does not make
-    /// audio play.
+    /// Whether this session asks the peer to send desktop audio and plays it.
+    ///
+    /// It is this viewer's own switch, not a grant: the audio owner plays only
+    /// the AND of this option, the peer's own audio grant and the live desktop
+    /// session, so asking for audio here cannot make a peer that withheld it
+    /// heard.
     AudioEnabled(bool),
     /// Whether the peer should include its own cursor in the video it sends.
     ShowRemoteCursor(bool),
@@ -211,7 +214,10 @@ impl fmt::Display for OptionError {
                 "this peer's version cannot address display {display}; only the display being shown can be resized"
             ),
             Self::SessionNotStarted => {
-                write!(f, "this change needs a running session and the peer's own report")
+                write!(
+                    f,
+                    "this change needs a running session and the peer's own report"
+                )
             }
         }
     }
@@ -223,11 +229,13 @@ impl std::error::Error for OptionError {}
 ///
 /// This is what a change produces and what a login advertises, so the same value
 /// can be frozen into a session's start options and later replaced by the answer
-/// the running session gives. Its default is this engine's own desktop default
-/// rather than the peer's: no quality request, clipboard enabled, audio off
-/// (there is not yet an audio renderer), no remote cursor, display 0, and no
-/// remembered custom resolution. Clipboard admission still requires the live
-/// authenticated desktop, the peer grant and a non-view-only local policy.
+/// the running session gives. Its default is this engine's own desktop default,
+/// which now matches the official viewer's own: no quality request, clipboard
+/// enabled, audio on (the operator's switch turns it off), no remote cursor,
+/// display 0, and no remembered custom resolution. Clipboard admission still
+/// requires the live authenticated desktop, the peer grant and a non-view-only
+/// local policy; audio playback likewise requires the peer's own audio grant
+/// beside this option, so a peer that withholds audio is never heard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOptions {
     /// The named preset asked for, if any.
@@ -255,7 +263,11 @@ impl Default for SessionOptions {
             custom_image_quality: None,
             codec_preference: PreferCodec::Auto,
             clipboard_enabled: true,
-            audio_enabled: false,
+            // The official viewer's own default: a desktop session receives the
+            // peer's audio unless the operator turns it off. Playback still
+            // needs the peer's own audio grant on a live authenticated session,
+            // and this switch never starts a microphone or loopback capture.
+            audio_enabled: true,
             show_remote_cursor: false,
             display: 0,
             requested_resolutions: BTreeMap::new(),
@@ -306,9 +318,14 @@ impl SessionOptions {
         self.clipboard_enabled
     }
 
-    /// Whether the peer was asked to send desktop audio.
+    /// Whether this session asks the peer to send desktop audio.
     ///
-    /// This is the option, not the renderer: no audio is played in this engine.
+    /// The switch this viewer holds, not the answer to "did something play":
+    /// the running session's own snapshot reports the audio owner's real state
+    /// (format, whether the device is active, packets and samples), and a peer
+    /// that withheld its audio grant plays nothing however this option is set.
+    /// It is on by default, which is the official viewer's own desktop default;
+    /// only an explicit off states `disable_audio` to the peer.
     pub fn audio_enabled(&self) -> bool {
         self.audio_enabled
     }
@@ -339,11 +356,18 @@ impl SessionOptions {
     ///
     /// The disable flags follow the pinned client's own login habit: a flag is
     /// stated when it is on, and left `NotSet` when it is off, so "off" means the
-    /// peer's default rather than an argument with it. `enable_file_transfer`
+    /// peer's default rather than an argument with it. Audio is therefore left
+    /// `NotSet` while this session asks for it — the pinned client sends
+    /// `disable_audio: Yes` only when its own config has audio off
+    /// (`src/client.rs:3386`) — and becomes `Yes` as soon as the operator turns
+    /// the switch off. `enable_file_transfer`
     /// enables the Desktop's real file clipboard owner; it does not select the
     /// separate FileTransfer login role or grant a permission the peer withheld.
     /// Camera viewing remains explicitly disabled.
-    pub fn validate_advertisement(&self, advertised_decoding: &SupportedDecoding) -> Result<(), OptionError> {
+    pub fn validate_advertisement(
+        &self,
+        advertised_decoding: &SupportedDecoding,
+    ) -> Result<(), OptionError> {
         if advertised(advertised_decoding, self.codec_preference) {
             Ok(())
         } else {
@@ -354,9 +378,7 @@ impl SessionOptions {
     pub fn login_options(&self, advertised: &SupportedDecoding) -> OptionMessage {
         OptionMessage {
             image_quality: self.image_quality.unwrap_or(ImageQuality::NotSet).into(),
-            custom_image_quality: self
-                .custom_image_quality
-                .map_or(0, |quality| quality << 8),
+            custom_image_quality: self.custom_image_quality.map_or(0, |quality| quality << 8),
             disable_audio: login_disable(!self.audio_enabled).into(),
             disable_clipboard: login_disable(!self.clipboard_enabled).into(),
             show_remote_cursor: login_disable(self.show_remote_cursor).into(),
@@ -411,9 +433,8 @@ impl SessionOptions {
                 next.show_remote_cursor = enabled;
                 Ok(next)
             }
-            SessionOptionChange::SwitchDisplay(_) | SessionOptionChange::ChangeResolution { .. } => {
-                Err(OptionError::SessionNotStarted)
-            }
+            SessionOptionChange::SwitchDisplay(_)
+            | SessionOptionChange::ChangeResolution { .. } => Err(OptionError::SessionNotStarted),
         }
     }
 
@@ -745,11 +766,25 @@ mod tests {
     fn login_advertises_only_the_controls_this_default_holds() {
         let advertised = decoding(true, false, false, false);
         let option = SessionOptions::default().login_options(&advertised);
-        // The clipboard owner is available by default; audio has no renderer.
+        // Audio is asked for by default, which is the pinned client's own
+        // desktop default: it states `disable_audio: Yes` only when its config
+        // has audio off, so an enabled session leaves the flag unset and the
+        // peer's own default decides. The peer's audio grant still bounds
+        // playback, so asking here never overrides a peer that withheld it.
         assert_eq!(
             option.disable_audio.enum_value().unwrap(),
+            BoolOption::NotSet,
+            "the default desktop session asks for the peer's audio"
+        );
+        // Only this session's own switch can state the flag.
+        let muted = SessionOptions::default()
+            .request(SessionOptionChange::AudioEnabled(false))
+            .expect("audio can be turned off")
+            .login_options(&advertised);
+        assert_eq!(
+            muted.disable_audio.enum_value().unwrap(),
             BoolOption::Yes,
-            "audio is disabled unless this session asks for it"
+            "an explicit off is stated to the peer at login too"
         );
         assert_eq!(
             option.disable_clipboard.enum_value().unwrap(),
@@ -919,10 +954,7 @@ mod tests {
             .prepare(SessionOptionChange::AudioEnabled(false), &context)
             .expect("audio can be withdrawn");
         assert_eq!(
-            sent_option(&disabled)
-                .disable_audio
-                .enum_value()
-                .unwrap(),
+            sent_option(&disabled).disable_audio.enum_value().unwrap(),
             BoolOption::Yes
         );
         assert!(!disabled.next.audio_enabled());

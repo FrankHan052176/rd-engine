@@ -5,7 +5,9 @@
 
 use base::config::keys;
 use hbb_common::{
-    ResultType, anyhow::anyhow, bail,
+    ResultType,
+    anyhow::anyhow,
+    bail,
     base64::{Engine as _, engine::general_purpose::STANDARD},
     config::{self, Config, RENDEZVOUS_PORT},
     serde_derive::Serialize,
@@ -26,7 +28,9 @@ static DEVICE_NAME: Mutex<String> = Mutex::new(String::new());
 /// The existing official `main_device_name` bridge supplies the mobile name.
 /// This is not another public bridge method or a persisted account option.
 pub fn set_device_name(name: String) {
-    *DEVICE_NAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = name;
+    *DEVICE_NAME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = name;
 }
 
 #[cfg(target_os = "windows")]
@@ -137,9 +141,10 @@ fn key() -> String {
 }
 
 pub(super) fn public_key() -> ResultType<sign::PublicKey> {
-    let bytes = STANDARD.decode(key()).map_err(|_| anyhow!("Invalid account server public key"))?;
-    sign::PublicKey::from_slice(&bytes)
-        .ok_or_else(|| anyhow!("Invalid account server public key"))
+    let bytes = STANDARD
+        .decode(key())
+        .map_err(|_| anyhow!("Invalid account server public key"))?;
+    sign::PublicKey::from_slice(&bytes).ok_or_else(|| anyhow!("Invalid account server public key"))
 }
 
 pub(super) fn rendezvous_server() -> String {
@@ -155,25 +160,34 @@ pub(super) fn rendezvous_server() -> String {
 fn parse_endpoint(value: &str) -> ResultType<Url> {
     // Url::parse intentionally repairs some input; do not admit that ambiguity
     // at the credential boundary, or allow userinfo to become part of a scope.
-    if value.is_empty() || value.len() > 16 * 1024
-        || value.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    if value.is_empty()
+        || value.len() > 16 * 1024
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
     {
         bail!("Invalid account endpoint");
     }
     let parsed = Url::parse(value).map_err(|_| anyhow!("Invalid account endpoint"))?;
-    let authority = value.split_once("://")
+    let authority = value
+        .split_once("://")
         .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default())
         .ok_or_else(|| anyhow!("Invalid account endpoint"))?;
-    if !parsed.has_host() || parsed.cannot_be_a_base()
-        || !parsed.username().is_empty() || parsed.password().is_some()
-        || authority.contains('@') || parsed.port() == Some(0)
+    if !parsed.has_host()
+        || parsed.cannot_be_a_base()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || authority.contains('@')
+        || parsed.port() == Some(0)
     {
         bail!("Invalid account endpoint");
     }
     let bytes = value.as_bytes();
     for (i, byte) in bytes.iter().enumerate() {
-        if *byte == b'%' && (i + 2 >= bytes.len()
-            || !bytes[i + 1].is_ascii_hexdigit() || !bytes[i + 2].is_ascii_hexdigit())
+        if *byte == b'%'
+            && (i + 2 >= bytes.len()
+                || !bytes[i + 1].is_ascii_hexdigit()
+                || !bytes[i + 2].is_ascii_hexdigit())
         {
             bail!("Invalid account endpoint");
         }
@@ -183,7 +197,8 @@ fn parse_endpoint(value: &str) -> ResultType<Url> {
 
 pub(super) fn http_url(value: &str, base: bool) -> ResultType<Url> {
     let parsed = parse_endpoint(value)?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.fragment().is_some()
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.fragment().is_some()
         || (base && parsed.query().is_some())
     {
         bail!("Invalid account HTTP endpoint");
@@ -192,11 +207,17 @@ pub(super) fn http_url(value: &str, base: bool) -> ResultType<Url> {
 }
 
 fn canonical_endpoint(url: &Url, default_port: u16) -> ResultType<String> {
-    let host = url.host_str().ok_or_else(|| anyhow!("Invalid account endpoint"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("Invalid account endpoint"))?;
     // Tuple serialization separates IPv6, path and port without ambiguous joins.
     serde_json::to_string(&(
-        url.scheme(), host, url.port_or_known_default().unwrap_or(default_port), url.path(),
-    )).map_err(|_| anyhow!("Cannot encode account scope"))
+        url.scheme(),
+        host,
+        url.port_or_known_default().unwrap_or(default_port),
+        url.path(),
+    ))
+    .map_err(|_| anyhow!("Cannot encode account scope"))
 }
 
 /// Non-secret identity for the effective API plus its rendezvous/key trust.
@@ -210,7 +231,8 @@ pub fn scope() -> ResultType<String> {
         parse_endpoint(&format!("tcp://{rendezvous}"))?
     };
     if !matches!(rendezvous.scheme(), "tcp" | "ws" | "wss")
-        || rendezvous.query().is_some() || rendezvous.fragment().is_some()
+        || rendezvous.query().is_some()
+        || rendezvous.fragment().is_some()
         || (rendezvous.scheme() == "tcp" && !matches!(rendezvous.path(), "" | "/"))
     {
         bail!("Invalid account rendezvous endpoint");
@@ -223,7 +245,8 @@ pub fn scope() -> ResultType<String> {
         trust_key.as_ref(),
         builtin(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y",
         config::use_ws(),
-    )).map_err(|_| anyhow!("Cannot encode account scope"))?;
+    ))
+    .map_err(|_| anyhow!("Cannot encode account scope"))?;
     let digest = Sha256::digest(&value);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(64);
@@ -244,8 +267,8 @@ struct LoginDeviceInfo {
 fn hostname() -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let mut name = hbb_common::whoami::fallible::hostname()
-            .unwrap_or_else(|_| "localhost".to_owned());
+        let mut name =
+            hbb_common::whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_owned());
         name.make_ascii_lowercase();
         #[cfg(target_os = "macos")]
         if name.ends_with(".local") {
@@ -255,7 +278,10 @@ fn hostname() -> String {
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        DEVICE_NAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        DEVICE_NAME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -264,5 +290,6 @@ pub fn device_info() -> ResultType<String> {
         os: std::env::consts::OS,
         r#type: "client",
         name: hostname(),
-    }).map_err(|_| anyhow!("Cannot encode login device information"))
+    })
+    .map_err(|_| anyhow!("Cannot encode login device information"))
 }

@@ -13,24 +13,24 @@
 //! IronRDP owns its decoded image, so their damage is presented without a
 //! compressed-record queue.
 
+#[cfg(target_env = "ohos")]
+use crate::media_capability::{self, AdvertisedCodec, CapabilityError};
 use crate::viewer::{
+    SURFACE_POLL, SURFACE_WAIT, ViewerError,
     decoder::{
         AccessUnit, AccessUnitKind, CleanupVerdict, DecoderConfig, DecoderError, DecoderObserver,
         DecoderProjection, SurfaceDecoder, SurfaceLease, VideoCodec,
     },
-    ViewerError, SURFACE_POLL, SURFACE_WAIT,
 };
-#[cfg(target_env = "ohos")]
-use crate::media_capability::{self, AdvertisedCodec, CapabilityError};
 use base::message_proto::{
-    self as proto, supported_decoding::PreferCodec, video_frame, EncodedVideoFrame, PeerInfo,
-    SupportedDecoding, SwitchDisplay, VideoFrame,
+    self as proto, EncodedVideoFrame, PeerInfo, SupportedDecoding, SwitchDisplay, VideoFrame,
+    supported_decoding::PreferCodec, video_frame,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 // End-to-end low-latency budget: one record may be feeding while one waits.
@@ -207,7 +207,9 @@ pub fn capabilities() -> Result<Decoders, ViewerError> {
         // feature, link or runtime gate refused — instead of being started for a
         // stream whose first record would already have no decoder.
         if let (Some(vp8), Some(vp9)) = (&vp8, &vp9) {
-            return Err(ViewerError::NoSoftwareVpx(format!("VP8: {vp8}; VP9: {vp9}")));
+            return Err(ViewerError::NoSoftwareVpx(format!(
+                "VP8: {vp8}; VP9: {vp9}"
+            )));
         }
         Ok(Decoders {
             h264: false,
@@ -299,7 +301,11 @@ pub fn pipeline<H: VideoOwner>(
             slots: Arc::new(Semaphore::new(VIDEO_RECORDS)),
             bytes: Arc::new(Semaphore::new(VIDEO_BYTES)),
         },
-        VideoFeed { owner, video: feed, caps },
+        VideoFeed {
+            owner,
+            video: feed,
+            caps,
+        },
     )
 }
 
@@ -337,17 +343,13 @@ impl<H: VideoOwner> VideoAdmission<H> {
             // below instead of reaching a decoder that cannot take it, so a host
             // that sends VP8 to a viewer that advertised only VP9 is refused as
             // VP8.
-            Some(video_frame::Union::Vp8s(frames)) if caps.vp8 => {
-                (VideoCodec::Vp8, frames.frames)
-            }
-            Some(video_frame::Union::Vp9s(frames)) if caps.vp9 => {
-                (VideoCodec::Vp9, frames.frames)
-            }
+            Some(video_frame::Union::Vp8s(frames)) if caps.vp8 => (VideoCodec::Vp8, frames.frames),
+            Some(video_frame::Union::Vp9s(frames)) if caps.vp9 => (VideoCodec::Vp9, frames.frames),
             // Named instead of left to the catch-all, so a VPx record is refused
             // as VPx and can never be mistaken for a codec this viewer
             // advertised.
             Some(video_frame::Union::Vp8s(_)) | Some(video_frame::Union::Vp9s(_)) => {
-                return Err(ViewerError::UnsupportedCodec)
+                return Err(ViewerError::UnsupportedCodec);
             }
             _ => return Err(ViewerError::UnsupportedCodec),
         };
@@ -452,7 +454,9 @@ async fn close_decoder<H: VideoOwner>(
         // succeeded. The worker's final ownership state is the reclamation proof,
         // and the seam states it as one verdict rather than as a pair of fields a
         // caller re-reads.
-        owner.reclamation_unconfirmed().store(false, Ordering::Release);
+        owner
+            .reclamation_unconfirmed()
+            .store(false, Ordering::Release);
     }
     owner.video_decoder_closed(stats.ok());
     closed?.map(|_| ()).map_err(ViewerError::Decoder)
@@ -514,13 +518,17 @@ async fn feed_loop<H: VideoOwner>(
                     true
                 };
                 if tokio::time::timeout(SURFACE_WAIT, waiting).await != Ok(true) {
-                    owner.reclamation_unconfirmed().store(false, Ordering::Release);
+                    owner
+                        .reclamation_unconfirmed()
+                        .store(false, Ordering::Release);
                     return Err(ViewerError::Decoder(DecoderError::InvalidConfig));
                 }
                 owner.video_phase("opening_decoder");
             }
             let lease = lease.clone();
-            owner.reclamation_unconfirmed().store(true, Ordering::Release);
+            owner
+                .reclamation_unconfirmed()
+                .store(true, Ordering::Release);
             let opened = tokio::task::spawn_blocking(move || {
                 SurfaceDecoder::open(
                     DecoderConfig {
@@ -547,7 +555,9 @@ async fn feed_loop<H: VideoOwner>(
                     // quarantining teardown or a worker that did not return may
                     // still own the codec, its buffers and the lease.
                     if failure.cleanup == CleanupVerdict::Confirmed {
-                        owner.reclamation_unconfirmed().store(false, Ordering::Release);
+                        owner
+                            .reclamation_unconfirmed()
+                            .store(false, Ordering::Release);
                     }
                     return Err(ViewerError::Decoder(failure.error));
                 }

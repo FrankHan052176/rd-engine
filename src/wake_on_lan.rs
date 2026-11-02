@@ -26,7 +26,10 @@
 //! interface name (`SO_BINDTODEVICE`) is not implemented: it needs a native
 //! binding this crate does not depend on.
 
-use std::{fmt, io, net::{Ipv4Addr, SocketAddrV4}};
+use std::{
+    fmt, io,
+    net::{Ipv4Addr, SocketAddrV4},
+};
 use tokio::net::UdpSocket;
 
 const MAC_OCTETS: usize = 6;
@@ -200,7 +203,10 @@ impl fmt::Display for WakeError {
             }
             Self::Bind(err) => write!(f, "Wake-on-LAN source address could not be bound: {err}"),
             Self::SetBroadcast(err) => {
-                write!(f, "Wake-on-LAN socket could not be allowed to broadcast: {err}")
+                write!(
+                    f,
+                    "Wake-on-LAN socket could not be allowed to broadcast: {err}"
+                )
             }
             Self::Send(err) => write!(f, "Wake-on-LAN datagram was not submitted: {err}"),
         }

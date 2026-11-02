@@ -26,9 +26,10 @@
 //!
 //! Not served here, deliberately: `sessionSetSize` takes the local renderer's
 //! size and has no wire message, so it must not be answered as a remote
-//! resolution change; and this engine has no audio renderer, so
-//! `sessionGetRemoteAudioState` reports the option state and states that no
-//! frame is played rather than reporting a renderer that does not exist.
+//! resolution change. `sessionGetRemoteAudioState` is served, but not from this
+//! module's own option store: it reads the session's audio owner
+//! (`ViewerSnapshot::audio`) for what really became of the peer's audio, and
+//! keeps that apart from the local `disable-audio` request.
 use super::{error_json, mutable_snapshot, with_sessions};
 use base::message_proto::{supported_decoding::PreferCodec, ImageQuality};
 use napi_derive_ohos::napi;
@@ -336,12 +337,54 @@ pub fn session_toggle_option(session_id: String, option: String) -> String {
     })
 }
 
-/// The audio option this session asked for, without claiming a renderer.
+/// One audio owner's own reading, in the shape the client reads beside
+/// `available`, `muted`, `rendererActive` and `errorText`.
 ///
-/// `available` and `rendererActive` are false because this engine really has no
-/// desktop audio output; `muted` is the requested disable-audio state, which is a
-/// real wire option. A client that reads this sees the option it set and the
-/// reason no sound follows, rather than a renderer that does not exist.
+/// Every value here is the audio core's: the counters it kept, the generation it
+/// stamped, and the format the peer declared for that generation. `generation` is
+/// a string because it is a `u64` a JavaScript number cannot hold exactly. The
+/// owner's `last_error` is not repeated here — it is the `errorText` beside these
+/// fields, so one fact keeps one name.
+fn audio_facts(audio: &rd_engine::audio::AudioSnapshot) -> Value {
+    json!({
+        "allowed": audio.allowed,
+        "generation": audio.generation.to_string(),
+        "active": audio.active,
+        "format": audio.format.as_ref().map(|format| json!({
+            "sample_rate": format.sample_rate,
+            "channels": format.channels,
+        })),
+        "received_packets": audio.received_packets,
+        "decoded_packets": audio.decoded_packets,
+        "dropped_packets": audio.dropped_packets,
+        "stale_packets": audio.stale_packets,
+        "rejected_packets": audio.rejected_packets,
+        "queued_samples": audio.queued_samples,
+        "played_samples": audio.played_samples,
+        "resources_unconfirmed": audio.resources_unconfirmed,
+    })
+}
+
+/// The peer's audio, as this session's own audio owner measures it.
+///
+/// Four answers are kept apart on purpose, because each is a different fact:
+///
+///  * `available` is whether this session holds a receiving audio owner at all
+///    (`ViewerSnapshot::audio` carries an `AudioSnapshot`), not whether a device
+///    happened to open for it;
+///  * `muted` is only this session's own request (`disable-audio`), never the
+///    peer's grant — a peer that refuses audio is not a local mute;
+///  * `rendererActive` is the audio core's own `active`: the platform sink was
+///    confirmed started and has not failed or closed since;
+///  * `errorText` is the audio core's real `last_error`, empty when there is
+///    none, so a client shows a device's own refusal instead of a guess made
+///    here.
+///
+/// The counters beside them are the audio core's own too, and `generation` is a
+/// string because it is a `u64` that a JavaScript number cannot hold exactly. A
+/// session with no audio owner reports neither availability nor activity: that is
+/// a fact about this session, and it is not answered as "audio is not
+/// implemented".
 #[napi]
 pub fn session_get_remote_audio_state(session_id: String) -> String {
     with_sessions(|sessions| match sessions.get(&session_id) {
@@ -350,17 +393,42 @@ pub fn session_get_remote_audio_state(session_id: String) -> String {
                 Some(viewer) => viewer.session_options_snapshot(),
                 None => record.session_options.clone(),
             };
+            // The audio owner's own reading, and only when this session has one:
+            // a session that never dialled, a file session or a session without
+            // audio has nothing to report, so nothing is invented for it.
+            let audio = record
+                .viewer
+                .as_ref()
+                .and_then(|viewer| viewer.snapshot().audio);
+            let mut state = json!({
+                "available": audio.is_some(),
+                "muted": !requested.audio_enabled(),
+                "rendererActive": audio.as_ref().is_some_and(|audio| audio.active),
+                "errorText": audio.as_ref()
+                    .and_then(|audio| audio.last_error.as_deref())
+                    .unwrap_or_default(),
+            });
+            // The counters are this owner's own reading and are added only when
+            // an owner exists, so a session without one reports the four answers
+            // it can really give and no invented zeroes.
+            if let Some(audio) = &audio {
+                if let (Some(fields), Value::Object(facts)) =
+                    (state.as_object_mut(), audio_facts(audio))
+                {
+                    fields.extend(facts);
+                }
+            }
             json!({
                 "ok": true,
                 "action": "sessionGetRemoteAudioState",
-                "audio": {
-                    "available": false,
-                    "muted": !requested.audio_enabled(),
-                    "rendererActive": false,
-                    "errorText": "this engine has no desktop audio renderer: the option tells \
-                                  the peer whether to send audio, and no frame is played",
-                },
+                "audio": state,
                 "requested": requested_json(&requested),
+                "note": match &audio {
+                    Some(_) => "the audio fields are this session's audio owner's own reading",
+                    None => {
+                        "this session has no audio owner, so nothing receives the peer's audio"
+                    }
+                },
             })
             .to_string()
         }
