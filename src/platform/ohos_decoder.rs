@@ -37,6 +37,10 @@ use std::sync::Arc;
 /// owner must not invalidate resources still reachable by the decoder.
 pub unsafe trait SurfaceLease: Send + Sync + 'static {
     fn surface_id(&self) -> u64;
+    /// Local HAR presentation controls, absent for other kernel consumers.
+    fn local_presentation(&self) -> Option<Arc<crate::presentation::LocalPresentation>> {
+        None
+    }
     /// Whether this lease can be presented into right now.
     ///
     /// The default is the id itself: a lease whose Surface exists has a non-zero
@@ -171,6 +175,8 @@ pub struct DecoderStats {
     /// The worst single observation behind `render_ns` since this decoder opened.
     pub render_peak_ns: u64,
     pub non_frame_outputs: u64,
+    /// Decoded pictures freed without rendering by the local presentation gate.
+    pub suppressed_outputs: u64,
     pub format_change_notifications: u64,
     pub cancelled_units: u64,
     /// Units admitted but not yet pushed into the decoder at this snapshot.
@@ -448,7 +454,7 @@ mod engine {
     pub enum Event {
         Input(Buffer),
         Output(Buffer),
-        StreamChanged,
+        StreamChanged { width: i32, height: i32 },
     }
     pub enum Action {
         Event(Event),
@@ -568,7 +574,7 @@ mod engine {
                 let duplicate = match event {
                     Event::Input(b) => !state.input_indices.insert(b.index),
                     Event::Output(b) => !state.output_indices.insert(b.index),
-                    Event::StreamChanged => false,
+                    Event::StreamChanged { .. } => false,
                 };
                 if duplicate {
                     state.stats.failure = Some(DecoderError::DuplicateBufferIndex);
@@ -638,7 +644,7 @@ mod engine {
             }
             self.capacity.notify_waiters();
         }
-        pub fn output(&self, frame: bool, eos: bool) {
+        pub fn output(&self, frame: bool, presented: bool, eos: bool) {
             let mut s = lock(&self.state);
             // Every output retires one pushed unit, including the end-of-stream
             // flush, so a later frame is never measured against a stale push.
@@ -646,13 +652,15 @@ mod engine {
                 .push_times
                 .pop_front()
                 .map(|at| u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
-            if frame {
+            if presented {
                 s.stats.render_submissions += 1;
                 if let Some(elapsed) = elapsed {
                     s.stats.render_samples = s.stats.render_samples.saturating_add(1);
                     s.stats.render_ns = s.stats.render_ns.saturating_add(elapsed);
                     s.stats.render_peak_ns = s.stats.render_peak_ns.max(elapsed);
                 }
+            } else if frame {
+                s.stats.suppressed_outputs += 1;
             } else {
                 s.stats.non_frame_outputs += 1;
             }
@@ -808,12 +816,15 @@ mod native {
     #[link(name = "native_media_core")]
     unsafe extern "C" {
         static OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY: *const c_char;
+        static OH_MD_KEY_VIDEO_PIC_WIDTH: *const c_char;
+        static OH_MD_KEY_VIDEO_PIC_HEIGHT: *const c_char;
         fn OH_AVFormat_CreateVideoFormat(
             mime: *const c_char,
             width: i32,
             height: i32,
         ) -> *mut Format;
         fn OH_AVFormat_SetIntValue(format: *mut Format, key: *const c_char, value: i32) -> bool;
+        fn OH_AVFormat_GetIntValue(format: *mut Format, key: *const c_char, value: *mut i32) -> bool;
         fn OH_AVFormat_Destroy(format: *mut Format);
         fn OH_AVBuffer_GetAddr(buffer: *mut NativeBuffer) -> *mut u8;
         fn OH_AVBuffer_GetCapacity(buffer: *mut NativeBuffer) -> i32;
@@ -910,9 +921,23 @@ mod native {
             })
         };
     }
-    unsafe extern "C" fn on_changed(_: *mut Codec, _: *mut Format, data: *mut c_void) {
-        // Format pointer expires when this callback returns: never enqueue it.
-        unsafe { callback(data, |s| s.post(Event::StreamChanged)) };
+    unsafe extern "C" fn on_changed(_: *mut Codec, format: *mut Format, data: *mut c_void) {
+        // PIC dimensions are visible decoded pixels, not the configured buffer
+        // hint. The format expires at callback return; copy only its metadata.
+        unsafe {
+            callback(data, |s| {
+                let (mut width, mut height) = (0, 0);
+                if !format.is_null()
+                    && OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_PIC_WIDTH, &mut width)
+                    && OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_PIC_HEIGHT, &mut height)
+                    && width > 0 && height > 0
+                {
+                    s.post(Event::StreamChanged { width, height });
+                } else {
+                    s.fail(DecoderError::InvalidNativeBuffer);
+                }
+            })
+        };
     }
     unsafe extern "C" fn on_input(
         _: *mut Codec,
@@ -1215,7 +1240,11 @@ mod native {
         })
     }
 
-    fn render(codec: *mut Codec, buffer: Buffer, shared: &Shared) -> Result<(), DecoderError> {
+    fn render(
+        codec: *mut Codec, buffer: Buffer, shared: &Shared,
+        presentation: Option<&crate::presentation::LocalPresentation>,
+        size: (i32, i32),
+    ) -> Result<(), DecoderError> {
         let native = buffer.address as *mut NativeBuffer;
         if native.is_null() {
             return Err(DecoderError::InvalidNativeBuffer);
@@ -1230,8 +1259,10 @@ mod native {
         // Surface output need not expose a CPU byte size. Classification uses
         // flags, never a pixel readback or size>0 as a fake presentation proof.
         let (frame, eos) = output_flags(attr.flags);
+        let ticket = presentation.and_then(|owner| owner.begin_output(size.0, size.1));
+        let present = frame && (presentation.is_none() || ticket.is_some());
         shared.returning_output(buffer.index);
-        if frame {
+        if present {
             // Timestamped rendering lets the surface coalesce multiple decoded
             // frames targeting one VSYNC and discard stale frames. The plain
             // RenderOutputBuffer API never drops for display-rate mismatch and
@@ -1246,7 +1277,12 @@ mod native {
             })?;
         }
         // No retry-Free after a failed Render: consumption is not proven.
-        shared.output(frame, eos);
+        shared.output(frame, present, eos);
+        if present {
+            if let (Some(owner), Some(ticket)) = (presentation, ticket) {
+                owner.submitted(ticket);
+            }
+        }
         Ok(())
     }
 
@@ -1275,6 +1311,9 @@ mod native {
             shared.request_close();
         }
         let codec = owner.0.as_ref().unwrap().codec as *mut Codec;
+        let presentation = owner.0.as_ref().and_then(|a| a._lease.local_presentation());
+        // Only the actual stream callback may publish visible output dimensions.
+        let mut output_size = (0, 0);
         loop {
             let result = match shared.next() {
                 Action::Stop => break,
@@ -1282,8 +1321,11 @@ mod native {
                     shared.input_available(buffer);
                     Ok(())
                 }
-                Action::Event(Event::Output(buffer)) => render(codec, buffer, &shared),
-                Action::Event(Event::StreamChanged) => {
+                Action::Event(Event::Output(buffer)) => {
+                    render(codec, buffer, &shared, presentation.as_deref(), output_size)
+                }
+                Action::Event(Event::StreamChanged { width, height }) => {
+                    output_size = (width, height);
                     shared.stream_changed();
                     Ok(())
                 }
@@ -1347,7 +1389,7 @@ mod tests {
             }))
         ));
         shared.returning_output(7);
-        shared.output(true, false);
+        shared.output(true, true, false);
         shared.request_close();
         assert!(matches!(shared.next(), Action::Stop));
         shared.closed();
@@ -1388,11 +1430,49 @@ mod tests {
     }
 
     #[test]
+    fn local_pause_frees_outputs_without_cancelling_ordered_decoder_input() {
+        let shared = Shared::new(config()).unwrap();
+        let presentation = crate::presentation::LocalPresentation::default();
+        presentation.set_paused(true).unwrap();
+        for pts in 1..=3 {
+            let mut unit = packet();
+            unit.pts_us = pts;
+            shared.submit(unit).unwrap();
+            shared.post(Event::Input(Buffer { index: 2, address: 1 }));
+            let Action::Event(Event::Input(buffer)) = shared.next() else { panic!() };
+            shared.input_available(buffer);
+            let Action::Submit(buffer, unit) = shared.next() else { panic!() };
+            assert_eq!(unit.pts_us, pts);
+            assert_eq!(unit.kind, AccessUnitKind::Frame { key: false });
+            shared.returning_input(buffer.index);
+            shared.submitted(unit.bytes.len(), true);
+            if pts == 3 {
+                presentation.set_paused(false).unwrap();
+            }
+            let ticket = presentation.begin_output(640, 480);
+            shared.output(true, ticket.is_some(), false);
+            if let Some(ticket) = ticket {
+                presentation.submitted(ticket);
+            } else {
+                assert!(presentation.snapshot().ready.is_none());
+            }
+        }
+        let stats = shared.stats();
+        assert_eq!(stats.accepted_units, 3);
+        assert_eq!(stats.pushed_units, 3);
+        assert_eq!(stats.cancelled_units, 0);
+        assert_eq!(stats.suppressed_outputs, 2);
+        assert_eq!(stats.render_submissions, 1);
+        assert!(presentation.snapshot().ready.is_some());
+        shared.request_close();
+    }
+
+    #[test]
     fn callback_overflow_and_quarantine_are_bounded_and_fail_closed() {
         let shared = Shared::new(config()).unwrap();
         shared.stream_changed();
         for _ in 0..=MAX_CALLBACKS {
-            shared.post(Event::StreamChanged);
+            shared.post(Event::StreamChanged { width: 640, height: 480 });
         }
         assert_eq!(shared.stats().failure, Some(DecoderError::CallbackOverflow));
         assert!(matches!(shared.next(), Action::Stop));

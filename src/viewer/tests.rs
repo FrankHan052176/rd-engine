@@ -60,6 +60,7 @@ fn granted(policy: ViewerInputPolicy) -> InputGate {
 /// time.
 fn writer_state() -> Arc<State> {
     Arc::new(State {
+        presentation: None,
         inner: Mutex::new(Inner {
             conn_token: None,
             snapshot: ViewerSnapshot::default(),
@@ -98,6 +99,57 @@ fn writer_state() -> Arc<State> {
         session_options: Mutex::new(crate::session_options::SessionOptions::default()),
         advertised_decoding: Mutex::new(None),
     })
+}
+
+#[cfg(not(target_env = "ohos"))]
+#[tokio::test]
+async fn local_pause_preserves_rectangle_updates_and_resumes_latest_damage() {
+    use crate::protocol::rect::{PixelTarget, Rect};
+    use crate::presentation::LocalPresentation;
+    let owner = Arc::new(LocalPresentation::default());
+    let mut state = writer_state();
+    Arc::get_mut(&mut state).unwrap().presentation = Some(owner.clone());
+    let peer_before = state.snapshot();
+    let mut surface = Some(super::Sink::Memory(crate::surface::MemorySurface::new(2, 1).unwrap()));
+    let left = Rect::new(0, 0, 1, 1);
+    surface.as_mut().unwrap().rect_mut(left).unwrap().put_pixel(0, 0, 0x01020304);
+    surface.as_mut().unwrap().damage(left);
+    super::present_sink(&state, &mut surface).await.unwrap();
+    assert!(owner.snapshot().ready.is_some());
+
+    owner.set_paused(true).unwrap();
+    surface.as_mut().unwrap().rect_mut(left).unwrap().put_pixel(0, 0, 0x05060708);
+    surface.as_mut().unwrap().damage(left);
+    // CopyRect depends on the update made while paused, not the last image shown.
+    surface.as_mut().unwrap().copy_rect(Rect::new(1, 0, 1, 1), 0, 0).unwrap();
+    super::present_sink(&state, &mut surface).await.unwrap();
+    let super::Sink::Memory(memory) = surface.as_ref().unwrap();
+    assert_eq!(memory.present_count(), 1);
+    assert_eq!(&memory.bytes()[0..4], &memory.bytes()[4..8]);
+    assert!(owner.snapshot().ready.is_none());
+
+    owner.set_paused(false).unwrap();
+    // The stored wake works even with a static upstream framebuffer.
+    super::presentation_changed(&state).await;
+    super::present_sink(&state, &mut surface).await.unwrap();
+    let super::Sink::Memory(memory) = surface.as_ref().unwrap();
+    assert_eq!(memory.present_count(), 2);
+    assert_eq!(memory.bytes(), &[8, 7, 6, 5, 8, 7, 6, 5]);
+    assert!(owner.snapshot().ready.is_some());
+    owner.rearm().unwrap();
+    super::present_sink(&state, &mut surface).await.unwrap();
+    assert!(owner.snapshot().ready.is_none()); // no new damage, no fake first image
+
+    owner.set_size(0, 3, 1).unwrap();
+    surface.as_mut().unwrap().damage(left);
+    super::present_sink(&state, &mut surface).await.unwrap();
+    assert!(owner.snapshot().ready.is_none());
+    owner.set_size(0, 2, 1).unwrap();
+    super::present_sink(&state, &mut surface).await.unwrap();
+    assert!(owner.snapshot().ready.is_some());
+    assert_eq!(state.snapshot().width, peer_before.width);
+    assert_eq!(state.snapshot().current_display, peer_before.current_display);
+    assert!(lock(&state.control).is_none()); // local sizing did not need a writer
 }
 
 /// One parsed record from the peer's end of a test wire.

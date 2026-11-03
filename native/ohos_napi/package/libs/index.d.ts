@@ -92,6 +92,19 @@ export declare function sessionPollEvents(sessionId: string, limit: number): str
 
 export declare function sessionRefresh(sessionId: string, display: number): string
 
+/**
+ * Local expected-image geometry, never ChangeResolution. JSON effect=local_applied.
+ * native_render_ready reports new matching native submission, not physical scanout;
+ * presentation_generation is an opaque decimal string.
+ */
+export declare function sessionSetSize(sessionId: string, display: number, width: number, height: number): string
+
+/** Decode/receive continue; already admitted native submissions may still finish. */
+export declare function sessionSetVideoPaused(sessionId: string, paused: boolean): string
+
+/** Rearms native_render_ready; historical counters cannot satisfy this generation. */
+export declare function sessionOnWaitingForImageDialogShow(sessionId: string): string
+
 export declare function sessionGetFrameRateSnapshot(sessionId: string, display: number): string
 
 export declare function sessionSendMouse(sessionId: string, mouseJson: string, inputGeneration: number): string

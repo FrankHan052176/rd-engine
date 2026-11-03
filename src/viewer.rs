@@ -584,6 +584,7 @@ struct Inner {
 }
 struct State {
     inner: Mutex<Inner>,
+    presentation: Option<Arc<crate::presentation::LocalPresentation>>,
     cancel: CancellationToken,
     done: Notify,
     result: Mutex<Option<Result<(), ViewerError>>>,
@@ -1595,6 +1596,7 @@ impl Viewer {
         let runtime = runtime()?;
         let (mouse, mouse_rx) = mpsc::channel(COMMANDS);
         let state = Arc::new(State {
+            presentation: lease.local_presentation(),
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
             password: Mutex::new(PasswordGate::default()),
@@ -2744,6 +2746,16 @@ async fn receive(
                 Some(misc::Union::SwitchDisplay(display)) => {
                     if let Some(admission) = admission.as_mut() {
                         admission.switch_display(&display)?;
+                        // Only a real peer confirmation changes peer geometry.
+                        // Local renderer sizing never enters this branch.
+                        let mut inner = lock(&state.inner);
+                        let peer = inner.snapshot.displays.get_mut(display.display as usize)
+                            .ok_or(ViewerError::InvalidPeerGeometry)?;
+                        peer.width = display.width;
+                        peer.height = display.height;
+                        peer.x = display.x;
+                        peer.y = display.y;
+                        inner.snapshot.current_display = display.display;
                     }
                 }
                 _ => {}
@@ -3303,14 +3315,13 @@ impl Sink {
         }
     }
 
-    fn present(&mut self) -> Result<(), crate::surface::SurfaceError> {
+    fn present(&mut self) -> Result<bool, crate::surface::SurfaceError> {
         match self {
             #[cfg(target_env = "ohos")]
             Self::Surface(surface) => surface.present(),
             #[cfg(not(target_env = "ohos"))]
             Self::Memory(surface) => {
-                surface.take_damage();
-                Ok(())
+                Ok(surface.take_damage().is_some())
             }
         }
     }
@@ -3818,17 +3829,36 @@ async fn close_sink(state: &State, sink: Sink) -> Result<(), ViewerError> {
     }
 }
 
-async fn present_sink(surface: &mut Option<Sink>) -> Result<(), ViewerError> {
+async fn present_sink(state: &State, surface: &mut Option<Sink>) -> Result<(), ViewerError> {
     // Never cancel this worker: it temporarily owns the native sink. A panic
     // leaves None and the owner's reclamation flag remains unconfirmed.
     let mut taken = surface.take().ok_or(ViewerError::TaskFailed)?;
+    let presentation = state.presentation.clone();
     let returning = tokio::task::spawn_blocking(move || {
+        let (width, height) = crate::protocol::rect::PixelTarget::size(&taken);
+        let ticket = presentation.as_ref().and_then(|owner| owner.begin_output(width, height));
+        if presentation.is_some() && ticket.is_none() {
+            // Keep the same upstream framebuffer AND its accumulated damage.
+            return (taken, Ok(false));
+        }
         let result = taken.present();
+        if matches!(result, Ok(true)) {
+            if let (Some(owner), Some(ticket)) = (presentation, ticket) {
+                owner.submitted(ticket);
+            }
+        }
         (taken, result)
     });
     let (returned, presented) = returning.await.map_err(|_| ViewerError::TaskFailed)?;
     *surface = Some(returned);
-    presented.map_err(|_| ViewerError::UnsupportedPlatform)
+    presented.map(|_| ()).map_err(|_| ViewerError::UnsupportedPlatform)
+}
+
+async fn presentation_changed(state: &State) {
+    match &state.presentation {
+        Some(owner) => owner.changed().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn rfb_loop(
@@ -3862,6 +3892,10 @@ async fn rfb_stream(
         let event = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
+            _ = presentation_changed(state) => {
+                present_sink(state, surface).await?;
+                continue;
+            }
             // A policy change is handled before anything else on the queue: the
             // release it owes is ordered ahead of the input that would otherwise
             // follow it, and the pass reads the policy it finds rather than
@@ -3882,7 +3916,7 @@ async fn rfb_stream(
             },
         };
         match event {
-            Some(RfbEvent::Painted) => present_sink(surface).await?,
+            Some(RfbEvent::Painted) => present_sink(state, surface).await?,
             Some(RfbEvent::Desktop { width, height }) => {
                 state.desktop_geometry(Geometry {
                     display: 0,
@@ -3893,7 +3927,7 @@ async fn rfb_stream(
                 });
                 // A native Desktop event may include pixels from the same
                 // update. Drain that damage now, without requesting again.
-                present_sink(surface).await?;
+                present_sink(state, surface).await?;
             }
             // A bell and a clipboard announcement carry no pixels.
             Some(RfbEvent::Bell) | Some(RfbEvent::Clipboard(_)) | None => {}
@@ -4759,6 +4793,10 @@ async fn rdp_stream(
         let event = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
+            _ = presentation_changed(state) => {
+                present_sink(state, surface).await?;
+                continue;
+            }
             _ = state.input.changed.notified() => {
                 rdp_release_unadmitted(state, session, held).await?;
                 continue;
@@ -4778,7 +4816,7 @@ async fn rdp_stream(
         // capabilities before the later Desktop event publishes new geometry.
         rdp_input_capabilities(state, session);
         match event.map_err(rdp_error)? {
-            Some(RdpEvent::Painted) => present_sink(surface).await?,
+            Some(RdpEvent::Painted) => present_sink(state, surface).await?,
             Some(RdpEvent::Desktop { width, height }) => {
                 state.desktop_geometry(Geometry {
                     display: 0,

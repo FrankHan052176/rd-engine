@@ -95,12 +95,14 @@ use capabilities::query_decoder_capabilities;
 /// and is refused before the slot is touched.
 struct PendingSurfaceLease {
     published: Mutex<Option<Arc<dyn SurfaceLease>>>,
+    presentation: Arc<rd_engine::presentation::LocalPresentation>,
 }
 
 impl PendingSurfaceLease {
     fn new() -> Self {
         Self {
             published: Mutex::new(None),
+            presentation: Arc::new(rd_engine::presentation::LocalPresentation::default()),
         }
     }
 
@@ -143,6 +145,9 @@ impl PendingSurfaceLease {
 // (not ready) rather than a destination. Filling it is serialized and one-shot,
 // so a live destination cannot be swapped under a decoder.
 unsafe impl SurfaceLease for PendingSurfaceLease {
+    fn local_presentation(&self) -> Option<Arc<rd_engine::presentation::LocalPresentation>> {
+        Some(self.presentation.clone())
+    }
     fn surface_id(&self) -> u64 {
         self.published_surface_id()
     }
@@ -302,6 +307,8 @@ fn scrub_terminal_record(record: &mut SessionRecord) {
 #[derive(Default)]
 struct Reported {
     pending: VecDeque<serde_json::Value>,
+    presentation_generation: u64,
+    peer_info: Option<serde_json::Value>,
     /// The engine's own evidence that the peer authorized this session.
     authorized: bool,
     /// The viewer finished; the snapshot's error rides on that event.
@@ -368,8 +375,30 @@ impl Reported {
         // window or the client can never create the binding the viewer awaits.
         if snapshot.authenticated && !self.authorized {
             self.authorized = true;
-            events.push(peer_info_event(snapshot));
+            let peer = peer_info_event(snapshot);
+            self.peer_info = Some(peer.clone());
+            events.push(peer);
             events.push(authorized_event(snapshot));
+        } else if snapshot.authenticated && !snapshot.closed {
+            let mut peer = peer_info_event(snapshot);
+            if self.peer_info.as_ref() != Some(&peer) {
+                self.peer_info = Some(peer.clone());
+                if snapshot.protocol == "rustdesk" {
+                    if let Some(display) = snapshot.displays.get(snapshot.current_display as usize) {
+                        events.push(serde_json::json!({
+                            "name": "switch_display",
+                            "display": snapshot.current_display,
+                            "width": display.width.to_string(),
+                            "height": display.height.to_string(),
+                            "x": display.x.to_string(),
+                            "y": display.y.to_string(),
+                        }));
+                    }
+                } else {
+                    peer["name"] = serde_json::json!("sync_peer_info");
+                    events.push(peer);
+                }
+            }
         }
         // `State::finish` is what sets `closed`; `"closing"` is a teardown that
         // has not finished, and an error a running decoder reports is not one.
@@ -2036,6 +2065,31 @@ pub fn session_poll_events(session_id: String, limit: u32) -> String {
             None => Vec::new(),
         };
         record.reported.pending.extend(observed);
+        let presentation = record.lease.presentation.snapshot();
+        let generation = presentation.generation.to_string();
+        // A queued event may have been superseded while the consumer was
+        // draining a smaller poll limit. Never deliver an old ready after rearm.
+        record.reported.pending.retain(|event| {
+            event["name"] != "native_render_ready"
+                || (!record.closing && !record.closed
+                    && event["presentation_generation"] == generation)
+        });
+        if !record.closing && !record.closed {
+            if let Some(output) = presentation.ready {
+                if output.generation > record.reported.presentation_generation {
+                    record.reported.presentation_generation = output.generation;
+                    record.reported.pending.push_back(serde_json::json!({
+                        "name": "native_render_ready",
+                        "presentation_generation": output.generation.to_string(),
+                        "lifecycleEpoch": record.lifecycle_epoch.to_string(),
+                        "display": output.display,
+                        "width": output.width.to_string(),
+                        "height": output.height.to_string(),
+                        "evidence": "native_submission",
+                    }));
+                }
+            }
+        }
         let count = record.reported.pending.len().min(limit as usize);
         let mut events: Vec<_> = record.reported.pending.drain(..count).collect();
         if record.transfer.is_none() {
@@ -2461,6 +2515,68 @@ pub fn session_input_string(session_id: String, value: String, input_generation:
     }
 }
 
+fn update_presentation(
+    session_id: &str,
+    action: &str,
+    update: impl FnOnce(&rd_engine::presentation::LocalPresentation, &ViewerSnapshot)
+        -> Result<u64, &'static str>,
+) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(session_id) else {
+            return error_json("unknown session");
+        };
+        let snapshot = match mutable_snapshot(record) {
+            Ok(Some(snapshot)) if record.viewer.is_some() => snapshot,
+            Ok(_) => return error_json("session has no running viewer"),
+            Err(error) => return error_json(error),
+        };
+        if snapshot.mode != SessionMode::Desktop {
+            return error_json("file-transfer sessions have no local renderer");
+        }
+        let generation = match update(&record.lease.presentation, &snapshot) {
+            Ok(generation) => generation,
+            Err(error) => return error_json(error),
+        };
+        let mut response = session_response(true, action, session_id, record, Some(&snapshot));
+        response["effect"] = serde_json::json!("local_applied");
+        response["presentation_generation"] = serde_json::json!(generation.to_string());
+        response["video_paused"] = serde_json::json!(record.lease.presentation.snapshot().paused);
+        response["note"] = serde_json::json!(
+            "local presentation gate applied; already admitted native submissions may finish; new output is reported by native_render_ready, not physical scanout"
+        );
+        response.to_string()
+    })
+}
+
+/// Rearms the first-image notification without redisplaying old pixels.
+#[napi]
+pub fn session_on_waiting_for_image_dialog_show(session_id: String) -> String {
+    update_presentation(&session_id, "sessionOnWaitingForImageDialogShow", |owner, _| owner.rearm())
+}
+
+/// Expected local image geometry, as in the pinned Flutter renderer. A mismatch
+/// suppresses presentation only; it does not resize the peer or its decoder.
+#[napi]
+pub fn session_set_size(session_id: String, display: f64, width: f64, height: f64) -> String {
+    let integer = |value: f64| value.is_finite() && value.fract() == 0.0
+        && value >= 0.0 && value <= i32::MAX as f64;
+    if !integer(display) || !integer(width) || !integer(height) {
+        return error_json("renderer display and size must be finite nonnegative integers");
+    }
+    update_presentation(&session_id, "sessionSetSize", |owner, snapshot| {
+        if snapshot.displays.get(display as usize).is_none() {
+            return Err("unknown peer display");
+        }
+        owner.set_size(display as i32, width as i32, height as i32)
+    })
+}
+
+/// Presentation only: the ordered compressed reference chain continues decoding.
+#[napi]
+pub fn session_set_video_paused(session_id: String, paused: bool) -> String {
+    update_presentation(&session_id, "sessionSetVideoPaused", |owner, _| owner.set_paused(paused))
+}
+
 /// Retires this viewer's queued and held input without changing its policy.
 ///
 /// The one writer releases the holds it emitted under the previous generation.
@@ -2859,6 +2975,9 @@ implemented_entry_points!(
     ("sessionSetCustomFps", session_set_custom_fps),
     ("sessionSetViewOnly", session_set_view_only),
     ("sessionReleaseInput", session_release_input),
+    ("sessionOnWaitingForImageDialogShow", session_on_waiting_for_image_dialog_show),
+    ("sessionSetSize", session_set_size),
+    ("sessionSetVideoPaused", session_set_video_paused),
     (
         "sessionSetUnverifiedInputAccepted",
         session_set_unverified_input_accepted
@@ -3022,12 +3141,13 @@ pub fn har_surface_manifest() -> String {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
                 "reason": "the engine presents each frame into the surface sessionBindSurface recorded and has no CPU-side RGBA pull path",
             },
-            "viewer_controls": {
-                "entry_points": [
-                    "sessionSetSize", "sessionSetVideoPaused",
-                ],
-                "reason": "local renderer sizing and pause are not implemented; remote resolution is a distinct control",
-            },
+        },
+        "local_presentation": {
+            "entry_points": ["sessionSetSize", "sessionSetVideoPaused", "sessionOnWaitingForImageDialogShow"],
+            "size": "expected image geometry per real peer display; consumed at output admission, never ChangeResolution",
+            "pause": "decode and rectangle updates continue; only native presentation is suppressed",
+            "ready": "native_render_ready reports a successful new native submission in the current presentation generation, not physical scanout",
+            "in_flight": "native submissions admitted before pause may still finish",
         },
         "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; runtimeGetDecoderCapabilities shares the advertised-metadata query without measured or recommended codec claims; pending entries are not implemented; presentation remains the bound Surface, not RGBA pull",
     })

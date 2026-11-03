@@ -103,6 +103,8 @@ jobs:
           cargo test --locked --lib cliprdr
           cargo test --locked --lib audio::tests
           cargo test --locked --lib viewer::tests
+          cargo test --locked --lib local_pause_frees_outputs
+          cargo test --locked --lib presentation::tests::size_is_a_local_output_gate
           cargo test --locked --lib host::security
           cargo test --locked --lib host::service
           cargo test --locked --test rendezvous

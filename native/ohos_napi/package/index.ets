@@ -136,6 +136,25 @@ export function sessionRefresh(sessionId: string, display: number): string {
   return native.sessionRefresh(sessionId, display);
 }
 
+/**
+ * Applies a local expected-image geometry gate, not a remote resolution request.
+ * JSON effect=local_applied; native_render_ready follows only a new matching
+ * native submission. Its presentation_generation is an opaque decimal string.
+ */
+export function sessionSetSize(sessionId: string, display: number, width: number, height: number): string {
+  return native.sessionSetSize(sessionId, display, width, height);
+}
+
+/** Decode/receive continue. Already admitted native submissions may still finish. */
+export function sessionSetVideoPaused(sessionId: string, paused: boolean): string {
+  return native.sessionSetVideoPaused(sessionId, paused);
+}
+
+/** Rearms native_render_ready without treating historical frame counters as a new image. */
+export function sessionOnWaitingForImageDialogShow(sessionId: string): string {
+  return native.sessionOnWaitingForImageDialogShow(sessionId);
+}
+
 export function sessionGetFrameRateSnapshot(sessionId: string, display: number): string {
   return native.sessionGetFrameRateSnapshot(sessionId, display);
 }

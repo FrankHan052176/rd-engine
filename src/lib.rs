@@ -18,6 +18,7 @@ pub mod identity;
 pub mod lan;
 pub mod media_capability;
 pub mod media_color;
+pub mod presentation;
 #[cfg(all(feature = "official-account", not(target_env = "ohos")))]
 pub mod official_account;
 #[cfg(all(test, not(target_env = "ohos")))]

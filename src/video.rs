@@ -526,6 +526,10 @@ async fn feed_loop<H: VideoOwner>(
                 owner.video_phase("opening_decoder");
             }
             let lease = lease.clone();
+            if let Some(presentation) = lease.local_presentation() {
+                presentation.bind_display(next.1.display)
+                    .map_err(|_| ViewerError::InvalidPeerGeometry)?;
+            }
             owner
                 .reclamation_unconfirmed()
                 .store(true, Ordering::Release);
