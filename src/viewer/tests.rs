@@ -955,22 +955,35 @@ async fn release_input_retires_holds_and_queued_events_without_changing_policy_o
     let mut wire = writer_wire();
     let mut held = RustDeskHeld::default();
     let old = viewer.input_generation();
-    viewer.send_rustdesk_key(control_key_event(true), old).unwrap();
-    take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
-        .await
+    viewer
+        .send_rustdesk_key(control_key_event(true), old)
         .unwrap();
+    take_input(
+        state,
+        &mut wire.writer,
+        &mut held,
+        input.try_recv().unwrap(),
+    )
+    .await
+    .unwrap();
     assert!(key_state(received(&mut wire.peer).await));
     viewer.send_mouse(3, 0, 0, 1, old).unwrap();
     // Consume the earlier grant/policy notification before testing the wake
     // caused by release_input itself.
-    tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified()).await.unwrap();
+    tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified())
+        .await
+        .unwrap();
 
     let outcome = viewer.release_input();
     assert_eq!(outcome.input_generation, old + 1);
     assert_eq!(outcome.policy, policy);
     assert!(!outcome.revoked, "retirement does not revoke authorization");
     assert_eq!(
-        (outcome.releases_owed, outcome.releases_retired, outcome.releases_unreleased),
+        (
+            outcome.releases_owed,
+            outcome.releases_retired,
+            outcome.releases_unreleased
+        ),
         (1, 1, 0),
     );
     assert!(!outcome.released(), "retirement is not a completed release");
@@ -985,36 +998,65 @@ async fn release_input_retires_holds_and_queued_events_without_changing_policy_o
 
     // Exactly the release path the writer's wake branch already runs:
     // no fresh input is needed to let the held key go.
-    tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified()).await.unwrap();
-    super::release_unadmitted(state, &mut wire.writer, &mut held).await.unwrap();
-    assert!(!key_state(received(&mut wire.peer).await), "the old hold is released");
-    let released = viewer.snapshot();
-    assert_eq!(
-        (released.releases_owed, released.releases_retired, released.releases_unreleased),
-        (0, 0, 0),
-    );
-    take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
+    tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified())
         .await
         .unwrap();
-    assert!(input.try_recv().is_err(), "old-generation refusals queued nothing");
+    super::release_unadmitted(state, &mut wire.writer, &mut held)
+        .await
+        .unwrap();
+    assert!(
+        !key_state(received(&mut wire.peer).await),
+        "the old hold is released"
+    );
+    let released = viewer.snapshot();
+    assert_eq!(
+        (
+            released.releases_owed,
+            released.releases_retired,
+            released.releases_unreleased
+        ),
+        (0, 0, 0),
+    );
+    take_input(
+        state,
+        &mut wire.writer,
+        &mut held,
+        input.try_recv().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        input.try_recv().is_err(),
+        "old-generation refusals queued nothing"
+    );
 
     // The first event after that release must be the fresh key, not the
     // mouse event queued before retirement.
     for down in [true, false] {
         assert_eq!(
-            viewer.send_rustdesk_key(control_key_event(down), outcome.input_generation).unwrap(),
+            viewer
+                .send_rustdesk_key(control_key_event(down), outcome.input_generation)
+                .unwrap(),
             outcome.input_generation,
         );
-        take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
-            .await
-            .unwrap();
+        take_input(
+            state,
+            &mut wire.writer,
+            &mut held,
+            input.try_recv().unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(key_state(received(&mut wire.peer).await), down);
     }
 
     assert_eq!(viewer.input_policy(), policy);
     assert_eq!(state.clipboard.revision(), clipboard_revision);
     assert!(viewer.clipboard_admits(clipboard_revision));
-    assert!(viewer.snapshot().clipboard_pending, "retirement did not empty the mailbox");
+    assert!(
+        viewer.snapshot().clipboard_pending,
+        "retirement did not empty the mailbox"
+    );
     let metadata = viewer.clipboard_take_metadata().unwrap();
     assert_eq!(metadata.revision, clipboard_revision);
     assert_eq!(metadata.text.as_deref(), Some("still pending"));

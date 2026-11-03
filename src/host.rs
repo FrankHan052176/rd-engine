@@ -5,13 +5,13 @@
 //! a bound output do. Clipboard/file/audio adapters are absent and never granted.
 #[cfg(all(target_os = "windows", feature = "official-account"))]
 pub mod control;
+#[cfg(target_env = "ohos")]
+use crate::ohos_input::{InputError, InputSession, TargetBinding};
 #[cfg(all(
     any(target_os = "windows", dsh_windows_typecheck),
     feature = "windows-modern-producer"
 ))]
 use crate::windows_input::{InputError, InputSession, TargetBinding, bind_output_key};
-#[cfg(target_env = "ohos")]
-use crate::ohos_input::{InputError, InputSession, TargetBinding};
 mod ingress;
 pub mod security;
 pub mod service;
@@ -86,7 +86,10 @@ struct DisplayBinding {
 }
 #[cfg(not(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 )))]
 #[derive(Clone, Copy)]
 struct DisplayBinding(usize);
@@ -113,17 +116,28 @@ impl DisplayBinding {
         let input = if options.allow_input {
             // The OHOS publisher captures only the default display. Enumeration
             // index zero is not the display ID passed to OH_Input.
-            if options.output_index != 0 { return Err(HostError::UnsupportedDisplay); }
-            Some(TargetBinding::bind_default(options.width, options.height).map_err(display_binding_error)?)
+            if options.output_index != 0 {
+                return Err(HostError::UnsupportedDisplay);
+            }
+            Some(
+                TargetBinding::bind_default(options.width, options.height)
+                    .map_err(display_binding_error)?,
+            )
         } else {
             None
         };
-        Ok(Self { index: options.output_index, input })
+        Ok(Self {
+            index: options.output_index,
+            input,
+        })
     }
 }
 #[cfg(not(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 )))]
 impl DisplayBinding {
     fn bind(options: &HostOptions) -> Result<Self, HostError> {
@@ -135,7 +149,10 @@ impl DisplayBinding {
 /// changed output is never silently replaced by another one.
 #[cfg(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 ))]
 fn display_binding_error(error: InputError) -> HostError {
     match error {
@@ -151,7 +168,10 @@ fn display_binding_error(error: InputError) -> HostError {
 /// reclamation is never reported as anything else.
 #[cfg(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 ))]
 fn input_grant_error(error: InputError) -> HostError {
     match error {
@@ -165,7 +185,10 @@ fn input_grant_error(error: InputError) -> HostError {
 /// injection path ends this peer's input instead of pretending it still works.
 #[cfg(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 ))]
 fn input_event_error(error: InputError) -> Option<HostError> {
     match error {
@@ -187,14 +210,20 @@ fn input_event_error(error: InputError) -> Option<HostError> {
 struct PeerLease {
     #[cfg(any(
         target_env = "ohos",
-        all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+        all(
+            any(target_os = "windows", dsh_windows_typecheck),
+            feature = "windows-modern-producer"
+        )
     ))]
     session: Option<InputSession>,
 }
 
 #[cfg(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 ))]
 impl PeerLease {
     /// Opens the lease for a session this machine's grant covers. The adapter
@@ -251,7 +280,10 @@ impl PeerLease {
 }
 #[cfg(not(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 )))]
 impl PeerLease {
     fn open(granted: bool, _: &DisplayBinding) -> Result<Self, HostError> {
@@ -276,7 +308,10 @@ impl PeerLease {
 
 #[cfg(any(
     target_env = "ohos",
-    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+    all(
+        any(target_os = "windows", dsh_windows_typecheck),
+        feature = "windows-modern-producer"
+    )
 ))]
 fn input_event_error_of(result: Result<(), InputError>) -> Option<HostError> {
     result.err().and_then(input_event_error)
@@ -740,8 +775,12 @@ impl State {
                 if input_run.close().is_err() {
                     self.unreclaimed.store(true, Ordering::Release);
                     Err(HostError::ReclamationUnconfirmed)
-                } else { result }
-            } else { result }
+                } else {
+                    result
+                }
+            } else {
+                result
+            }
         } else {
             if let Some(input_run) = lock(&self.input_run).as_ref() {
                 // Keep the share and block new direct Hosts immediately, not
@@ -949,20 +988,27 @@ impl Host {
             let answer = crate::ohos_input::authorization_status();
             if answer.status != crate::ohos_input::InjectionStatus::Authorized
                 || answer.request_id.is_none()
-                || options.input_authorization_request_id.is_some_and(|expected| answer.request_id != Some(expected))
+                || options
+                    .input_authorization_request_id
+                    .is_some_and(|expected| answer.request_id != Some(expected))
             {
                 return Err(HostError::InputUnavailable);
             }
             // Freeze even a direct Rust caller's None at this start's admission.
             // Later asynchronous work cannot borrow another request's grant.
             answer.request_id
-        } else { None };
+        } else {
+            None
+        };
         // The display is bound once, before anything is advertised or captured.
         let display = DisplayBinding::bind(&options)?;
         // A platform without an input adapter cannot advertise a local grant.
         #[cfg(not(any(
             target_env = "ohos",
-            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+            all(
+                any(target_os = "windows", dsh_windows_typecheck),
+                feature = "windows-modern-producer"
+            )
         )))]
         if options.allow_input {
             return Err(HostError::InputUnavailable);
@@ -974,7 +1020,10 @@ impl Host {
         // checked boundary a peer uses.
         #[cfg(any(
             target_env = "ohos",
-            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+            all(
+                any(target_os = "windows", dsh_windows_typecheck),
+                feature = "windows-modern-producer"
+            )
         ))]
         if options.allow_input {
             let mut lease = PeerLease::open(true, &display)?;
@@ -985,7 +1034,10 @@ impl Host {
         #[cfg(target_env = "ohos")]
         let input_run = if options.allow_input {
             let binding = display.input.as_ref().ok_or(HostError::InputUnavailable)?;
-            Some(crate::ohos_input::InputRun::open(binding, input_request_id).map_err(input_grant_error)?)
+            Some(
+                crate::ohos_input::InputRun::open(binding, input_request_id)
+                    .map_err(input_grant_error)?,
+            )
         } else {
             None
         };
@@ -1038,7 +1090,11 @@ impl Host {
         #[cfg(target_env = "ohos")]
         {
             let enabled = lock(&self.state.snapshot).input_enabled;
-            if enabled && !lock(&self.state.input_run).as_ref().is_some_and(|run| run.is_current()) {
+            if enabled
+                && !lock(&self.state.input_run)
+                    .as_ref()
+                    .is_some_and(|run| run.is_current())
+            {
                 // OS revocation or a new request fences this run permanently.
                 // No old peer may join a new authorization lifetime.
                 self.state.request_close();
@@ -1423,7 +1479,10 @@ fn publisher_config(
         output_index: display.index,
         #[cfg(not(any(
             target_env = "ohos",
-            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
+            all(
+                any(target_os = "windows", dsh_windows_typecheck),
+                feature = "windows-modern-producer"
+            )
         )))]
         output_index: display.0,
     }

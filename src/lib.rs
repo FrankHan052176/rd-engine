@@ -18,14 +18,14 @@ pub mod identity;
 pub mod lan;
 pub mod media_capability;
 pub mod media_color;
-#[cfg(target_env = "ohos")]
-#[path = "platform/ohos_input.rs"]
-pub mod ohos_input;
 #[cfg(all(feature = "official-account", not(target_env = "ohos")))]
 pub mod official_account;
 #[cfg(all(test, not(target_env = "ohos")))]
 #[path = "platform/ohos_audio.rs"]
 mod ohos_audio;
+#[cfg(target_env = "ohos")]
+#[path = "platform/ohos_input.rs"]
+pub mod ohos_input;
 #[cfg(target_env = "ohos")]
 #[path = "platform/ohos_audio.rs"]
 pub mod platform_audio;
