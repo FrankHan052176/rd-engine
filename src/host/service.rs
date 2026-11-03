@@ -154,6 +154,11 @@ pub struct HostServiceOptions {
     pub bitrate: i64,
     pub platform: String,
     pub require_local_approval: bool,
+    /// Explicit local keyboard/pointer grant. On OHOS the process must already
+    /// have dialog injection authorization; starting never requests it.
+    pub allow_input: bool,
+    #[cfg(target_env = "ohos")]
+    pub input_authorization_request_id: Option<u64>,
     /// The one app-private security record this run authenticates with. The run
     /// keeps this exact `Arc`: the password/2FA surface mutates the same owner,
     /// so a change is the state this host really checks, and a republish needs
@@ -178,6 +183,8 @@ pub struct HostServiceStatus {
     pub peers: Vec<HostPeerSnapshot>,
     pub peer_count: u32,
     pub authorized_peers: u32,
+    /// The Host owner's live, admitted grant, not the requested configuration.
+    pub input_enabled: bool,
     pub error: Option<HostServiceError>,
     pub teardown_unconfirmed: bool,
     /// This service's real local-approval policy, empty when no run is live.
@@ -365,8 +372,9 @@ impl HostService {
                 feature = "windows-modern-producer"
             )))]
             output_index: 0,
-            // This engine intentionally has no remote-input grant on HarmonyOS.
-            allow_input: false,
+            allow_input: options.allow_input,
+            #[cfg(target_env = "ohos")]
+            input_authorization_request_id: options.input_authorization_request_id,
             codec_selection: CodecSelection::Auto,
         };
         let host =
@@ -549,11 +557,13 @@ impl HostService {
         let mut id = String::new();
         let mut width = 0;
         let mut height = 0;
+        let mut input_enabled = false;
         if let Some(run) = run {
             id = run.id.clone();
             width = run.width;
             height = run.height;
             let snapshot = run.host.snapshot();
+            input_enabled = snapshot.input_enabled;
             host_phase = snapshot.phase;
             // The Host's own terminal verdict owns the service state.
             if matches!(state, "starting" | "listening")
@@ -581,6 +591,7 @@ impl HostService {
             height,
             peer_count: peers.len() as u32,
             authorized_peers: authorized,
+            input_enabled,
             peers,
             error,
             teardown_unconfirmed: facts.teardown_unconfirmed,
@@ -719,7 +730,9 @@ impl HostService {
 
 impl Drop for HostService {
     fn drop(&mut self) {
-        // A dropped service must not leave a listener accepting.
+        // A dropped service must not leave a listener accepting. The Host's
+        // original serve task still owns checked release/join and its input
+        // run share; neither this Drop nor runtime shutdown claims reclamation.
         if let Some(run) = lock(&self.run).as_ref() {
             run.host.request_close();
             run.cancel.cancel();
@@ -818,6 +831,7 @@ mod tests {
         assert_eq!(status.run_epoch, 0);
         assert!(status.peers.is_empty());
         assert_eq!(status.peer_count, 0);
+        assert!(!status.input_enabled);
         assert!(!status.teardown_unconfirmed);
         // A policy is only reported while this service really runs.
         assert_eq!(status.approve_mode, "");

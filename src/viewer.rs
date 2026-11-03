@@ -191,11 +191,10 @@ pub struct InputPolicyOutcome {
     pub policy: ViewerInputPolicy,
     /// The generation this viewer's input gate is at now.
     ///
-    /// It advances with every policy change and every peer-grant change, so a
-    /// client that keeps input state of its own can tell that the engine
-    /// invalidated what came before this answer — including a withdrawal and
-    /// the grant that followed it, which leave the policy and the admission
-    /// answer unchanged.
+    /// It advances with every policy change, peer-grant change and explicit
+    /// input retirement, so a client that keeps input state of its own can tell
+    /// that the engine invalidated what came before this answer even when the
+    /// policy and the admission answer remain unchanged.
     pub input_generation: u64,
     /// This change stopped admitting input that the previous policy admitted.
     pub revoked: bool,
@@ -810,8 +809,9 @@ struct GateView {
 /// admission and the writer's ledger.
 struct InputGate {
     state: Mutex<GateState>,
-    /// Wakes the one writer when the policy or the peer's grant changes. A
-    /// permit survives a writer that is busy, and the pass it triggers reads
+    /// Wakes the one writer when the policy or the peer's grant changes, or
+    /// input is explicitly retired. A permit survives a writer that is busy,
+    /// and the pass it triggers reads
     /// the gate instead of replaying the change, so a notification is never
     /// replayed as an event.
     changed: Notify,
@@ -824,8 +824,8 @@ struct GateState {
     /// has. It is kept here, rather than beside the snapshot, so that a change
     /// to it is published under the lock that stamps input.
     keyboard: bool,
-    /// Bumped on every policy change and every grant change, so input queued or
-    /// emitted under the previous one can never be emitted after it — including
+    /// Bumped on every policy change, grant change and explicit retirement, so
+    /// prior-generation input cannot be emitted afterwards — including
     /// the input queued, or held, before a revocation when admission is granted
     /// again.
     generation: u64,
@@ -936,6 +936,27 @@ impl InputGate {
             releases_retired: state.retired,
             releases_unreleased: state.unreleased,
         }
+    }
+
+    /// Retires queued input and every hold the writer already owns, without
+    /// changing the policy or the peer's grant. The existing release pass sees
+    /// the old generation as stale; it alone settles the retired holds.
+    fn retire(&self) -> InputPolicyOutcome {
+        let outcome = {
+            let mut state = lock(&self.state);
+            state.generation += 1;
+            state.retired = state.owed;
+            InputPolicyOutcome {
+                policy: state.policy,
+                input_generation: state.generation,
+                revoked: false,
+                releases_owed: state.owed,
+                releases_retired: state.retired,
+                releases_unreleased: state.unreleased,
+            }
+        };
+        self.changed.notify_one();
+        outcome
     }
 
     /// Whether one queued event may still be emitted, taking this writer's
@@ -1887,6 +1908,16 @@ impl Viewer {
     /// The local input policy this viewer is enforcing.
     pub fn input_policy(&self) -> ViewerInputPolicy {
         self.state.input.policy()
+    }
+
+    /// Retires this generation's queued and held input without changing policy.
+    ///
+    /// The existing ordered writer releases exactly the holds it emitted. The
+    /// answer names the new generation and any release still pending, not a
+    /// remote release acknowledgement. Clipboard permission and pending content
+    /// are independent and untouched.
+    pub fn release_input(&self) -> InputPolicyOutcome {
+        self.state.input.retire()
     }
 
     /// Publishes a new local input policy for this viewer.

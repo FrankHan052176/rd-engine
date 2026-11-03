@@ -96,6 +96,9 @@ export declare function sessionGetFrameRateSnapshot(sessionId: string, display: 
 
 export declare function sessionSendMouse(sessionId: string, mouseJson: string, inputGeneration: number): string
 
+/** VNC/RDP X11 keysym transition; keysym is an integer in 1..=0x1FFFFFFF. ok means queued, not applied. */
+export declare function sessionSendKeysym(sessionId: string, keysym: number, down: boolean, inputGeneration: number): string
+
 export declare function sessionInputKey(sessionId: string, keyJson: string, inputGeneration: number): string
 
 export declare function sessionInputString(sessionId: string, value: string, inputGeneration: number): string
@@ -140,6 +143,14 @@ export declare function sessionGetClipboardFileState(sessionId: string): string
 export declare function sessionTakeClipboardFileEvents(sessionId: string): string
 
 export declare function sessionSetCustomFps(sessionId: string, fps: number): string
+
+/**
+ * Advances input_generation without changing input or clipboard policy.
+ * Queued old-generation input is dropped; the existing writer releases its held
+ * keys/buttons. release_pending/release counters are not a remote release ACK.
+ * No running viewer is an error, never a fabricated generation.
+ */
+export declare function sessionReleaseInput(sessionId: string): string
 
 export declare function sessionSetViewOnly(sessionId: string, enabled: boolean): string
 
@@ -237,6 +248,18 @@ export declare function controlledServerStart(optionsJson: string): Promise<stri
 export declare function controlledServerStop(runEpoch: string): Promise<string>
 
 export declare function controlledServerGetStatus(): string
+
+/**
+ * Authorization JSON carries requestId: an opaque decimal string, empty without
+ * an owner; it is neither runEpoch nor input_generation. Starting with
+ * enableInput:true also requires that inputAuthorizationRequestId.
+ */
+export declare function controlledInputAuthorizationRequest(): string
+
+export declare function controlledInputAuthorizationStatus(): string
+
+/** Cancels exactly requestId, including before a host run exists. Never pass runEpoch or input_generation. */
+export declare function controlledInputAuthorizationCancel(requestId: string): string
 
 export declare function controlledScreenCaptureGetStatus(): string
 

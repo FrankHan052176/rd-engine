@@ -64,6 +64,8 @@ use cliprdr::{
     session_set_clipboard_file_root, session_take_clipboard_file_events,
 };
 use host_bridge::{
+    controlled_input_authorization_cancel, controlled_input_authorization_request,
+    controlled_input_authorization_status,
     controlled_incoming_poll, controlled_incoming_resolve, controlled_password_get,
     controlled_password_refresh, controlled_screen_capture_status, controlled_screen_capture_stop,
     controlled_screen_configure, controlled_server_get_status, controlled_server_start,
@@ -574,6 +576,19 @@ fn expected_input_generation(action: &str, value: f64) -> Result<u64, String> {
     Ok(value as u64)
 }
 
+/// The X11 keysym carried by one typed input call, without rounding or clamping
+/// ArkTS's number into a different wire value.
+fn input_keysym(value: f64) -> Result<u32, &'static str> {
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < 1.0
+        || value > 0x1fff_ffffu32 as f64
+    {
+        return Err("sessionSendKeysym keysym must be an integer in 1..=0x1FFFFFFF");
+    }
+    Ok(value as u32)
+}
+
 /// Parses the protocol without choosing a trust source. A RustDesk ID needs a
 /// separately approved route at registration. Direct VNC/RDP retain their
 /// endpoints; RDP requires an explicit account and engine certificate checks.
@@ -690,7 +705,7 @@ fn publish_input_policy(
 /// buttons the operator is holding right now.
 fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     if retired > 0 {
-        Some("this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed")
+        Some("this viewer's writer has not yet released the keys and buttons an input generation change retired; release_pending says that release has not completed")
     } else if unreleased > 0 {
         Some("a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it")
     } else {
@@ -698,14 +713,14 @@ fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     }
 }
 
-/// The answer a policy change returns.
+/// The answer a policy change or explicit input retirement returns.
 ///
 /// `admission_revoked` is what the call already did, and `release_pending` is
 /// what the engine's writer still owes the peer for the keys and buttons a
 /// change retired. `releases_owed` is everything the writer owns, a key the
 /// operator is holding included; `releases_unreleased` counts holds whose writer
 /// stopped before it could release them. A release is never reported as
-/// completed merely because a setter returned, and `input_generation` names the
+/// completed merely because the request returned, and `input_generation` names the
 /// generation this viewer's gate is at now, so a client that keeps input state
 /// of its own can tell that the engine invalidated what came before this answer
 /// even when this particular call changed nothing.
@@ -2192,6 +2207,37 @@ pub fn session_send_mouse(session_id: String, mouse_json: String, input_generati
     })
 }
 
+/// Sends one X11 keysym transition through the existing VNC/RDP adapter.
+///
+/// RustDesk physical keys use `session_input_key` instead. Admission and refusal
+/// carry the same generation contract as `session_send_mouse`; success only
+/// means queued, never that the peer applied the transition.
+#[napi]
+pub fn session_send_keysym(
+    session_id: String,
+    keysym: f64,
+    down: bool,
+    input_generation: f64,
+) -> String {
+    let generation = match expected_input_generation("sessionSendKeysym", input_generation) {
+        Ok(generation) => generation,
+        Err(message) => return error_json(&message),
+    };
+    let keysym = match input_keysym(keysym) {
+        Ok(keysym) => keysym,
+        Err(message) => return error_json(message),
+    };
+    match active_keyboard_viewer(&session_id) {
+        Ok(viewer) => match viewer.send_key(keysym, down, generation) {
+            Ok(admitted) => {
+                serde_json::json!({ "ok": true, "input_generation": admitted }).to_string()
+            }
+            Err(error) => refusal_json(&format!("{error:?}"), viewer.input_generation()),
+        },
+        Err(message) => error_json(&message),
+    }
+}
+
 fn control_key(name: &str) -> Option<ControlKey> {
     Some(match name {
         "VK_DIVIDE" => ControlKey::Divide,
@@ -2340,7 +2386,7 @@ fn legacy_key_event(value: &serde_json::Value) -> Result<KeyEvent, String> {
     Ok(event)
 }
 
-/// The running viewer a legacy key event belongs to.
+/// The running viewer a keyboard event belongs to.
 ///
 /// The local policy is not read here: the engine holds it and refuses the event
 /// itself, both when it is queued and again at the writer, so this layer cannot
@@ -2413,6 +2459,29 @@ pub fn session_input_string(session_id: String, value: String, input_generation:
         },
         Err(message) => error_json(&message),
     }
+}
+
+/// Retires this viewer's queued and held input without changing its policy.
+///
+/// The one writer releases the holds it emitted under the previous generation.
+/// The policy-shaped answer names the new generation and any release still
+/// pending; returning from this call is not confirmation of a remote release.
+/// A record with no running viewer has no input gate to retire.
+#[napi]
+pub fn session_release_input(session_id: String) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return error_json("unknown session");
+        };
+        if let Err(message) = mutable_snapshot(record) {
+            return error_json(message);
+        }
+        let Some(viewer) = record.viewer.as_ref() else {
+            return error_json("session has no running viewer");
+        };
+        let outcome = viewer.release_input();
+        policy_json("sessionReleaseInput", outcome.policy, Some(outcome))
+    })
 }
 
 /// Publishes the client's view-only policy for this session.
@@ -2713,6 +2782,9 @@ implemented_entry_points!(
     ("controlledServerStart", controlled_server_start),
     ("controlledServerStop", controlled_server_stop),
     ("controlledServerGetStatus", controlled_server_get_status),
+    ("controlledInputAuthorizationRequest", controlled_input_authorization_request),
+    ("controlledInputAuthorizationStatus", controlled_input_authorization_status),
+    ("controlledInputAuthorizationCancel", controlled_input_authorization_cancel),
     (
         "controlledScreenCaptureGetStatus",
         controlled_screen_capture_status
@@ -2786,11 +2858,13 @@ implemented_entry_points!(
     ("sessionSetCommon", session_set_common),
     ("sessionSetCustomFps", session_set_custom_fps),
     ("sessionSetViewOnly", session_set_view_only),
+    ("sessionReleaseInput", session_release_input),
     (
         "sessionSetUnverifiedInputAccepted",
         session_set_unverified_input_accepted
     ),
     ("sessionSendMouse", session_send_mouse),
+    ("sessionSendKeysym", session_send_keysym),
     ("sessionInputKey", session_input_key),
     ("sessionInputString", session_input_string),
     ("sessionSendClipboard", session_send_clipboard),
@@ -2829,12 +2903,13 @@ implemented_entry_points!(
 /// advertised as implemented merely because another bridge accepts the name.
 #[napi]
 pub fn har_surface_manifest() -> String {
-    // RustDeskNativeApi.ets imports, plus this bridge's explicit input-policy
-    // export. A refused entry point remains pending, not implemented.
+    // Canonical Resk imports plus the explicit policy and retirement exports.
+    // Platform input acquisition belongs to ArkTS, not legacy interceptor or
+    // Flutter-key entry points. A refused operation remains pending.
     let expected = [
-        "inputInterceptorPollEvents",
-        "inputInterceptorStart",
-        "inputInterceptorStop",
+        "controlledInputAuthorizationRequest",
+        "controlledInputAuthorizationStatus",
+        "controlledInputAuthorizationCancel",
         "nativeVersion",
         "runtimeGetDecoderCapabilities",
         "runtimeGetServerConfig",
@@ -2852,7 +2927,6 @@ pub fn har_surface_manifest() -> String {
         "sessionCancelJob",
         "sessionChangeResolution",
         "sessionClose",
-        "sessionEnterOrLeave",
         "sessionGetClipboardFileState",
         "sessionGetConnToken",
         "sessionHasConnToken",
@@ -2861,7 +2935,6 @@ pub fn har_surface_manifest() -> String {
         "sessionGetImageQuality",
         "sessionGetRemoteAudioState",
         "sessionGetToggleOption",
-        "sessionHandleFlutterKeyEvent",
         "sessionInputKey",
         "sessionInputString",
         "sessionLogin",
@@ -2869,11 +2942,13 @@ pub fn har_surface_manifest() -> String {
         "sessionPollEvents",
         "sessionReadRemoteDir",
         "sessionRefresh",
+        "sessionReleaseInput",
         "sessionSend2fa",
         "sessionSendClipboard",
         "sessionSendClipboardFiles",
         "sessionSendClipboardImage",
         "sessionSendFiles",
+        "sessionSendKeysym",
         "sessionSendMouse",
         "sessionSetClipboardFileRoot",
         "sessionSetCodecPreference",
@@ -2911,6 +2986,37 @@ pub fn har_surface_manifest() -> String {
         "registry_only": registry_only,
         "pending": pending,
         "refused_entry_points": [],
+        "input_adapter": {
+            "entry_points": [
+                "sessionSendMouse", "sessionInputKey", "sessionInputString",
+                "sessionSendKeysym", "sessionReleaseInput",
+            ],
+            "generation": "input calls require a numeric positive safe integer; retirement advances it without changing input or clipboard policy",
+            "keyboard_protocols": {
+                "sessionInputKey": ["rustdesk", "rdp"],
+                "sessionInputString": ["rustdesk", "rdp"],
+                "sessionSendKeysym": ["vnc", "rdp"],
+            },
+            "release": "retirement wakes the existing ordered writer; release_pending and releases_unreleased remain distinct from a confirmed release",
+            "ohos_host_authorization": {
+                "entry_points": [
+                    "controlledInputAuthorizationRequest", "controlledInputAuthorizationStatus",
+                    "controlledInputAuthorizationCancel",
+                ],
+                "request_id": "request/status/cancel JSON carries requestId: an opaque decimal string, empty without an owner; it is neither runEpoch nor input_generation",
+                "start": "enableInput:true also requires inputAuthorizationRequestId; native and engine check the same request owner atomically",
+                "cancel": "cancel names the exact authorization request, including before any runEpoch exists; it is not a server-stop fallback",
+            },
+            "ohos_host_limitations": [
+                "Unicode and text-sequence injection are not supported",
+                "KeyboardMode::Map injection is not supported",
+                "nonzero relative pointer injection is not supported",
+                "OS injection authorization and the adapter's supported event representations bound host input",
+                "key-state preflight reports down only, not physical/injected origin or episode; query and injection are not atomic",
+                "there is no physical mouse-button query, so strict concurrent local/remote hold attribution is not guaranteed",
+            ],
+            "ohos_host_not_verified": ["axis units have not been calibrated on a real device"],
+        },
         "not_served": {
             "rgba_pull": {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
@@ -2922,10 +3028,6 @@ pub fn har_surface_manifest() -> String {
                 ],
                 "reason": "local renderer sizing and pause are not implemented; remote resolution is a distinct control",
             },
-            "input_adapter": {
-                "entry_points": ["sessionEnterOrLeave", "sessionHandleFlutterKeyEvent"],
-                "reason": "no focus/grab owner or Flutter key translator is wired to the shared Viewer; existing input exports require an explicit input generation",
-            },
         },
         "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; runtimeGetDecoderCapabilities shares the advertised-metadata query without measured or recommended codec claims; pending entries are not implemented; presentation remains the bound Surface, not RGBA pull",
     })
@@ -2936,7 +3038,7 @@ pub fn har_surface_manifest() -> String {
 mod tests {
     use super::{
         apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
-        expected_input_generation, parse_viewer_target, policy_json, record_terminal_reclamation,
+        expected_input_generation, input_keysym, parse_viewer_target, policy_json, record_terminal_reclamation,
         refusal_json, resolve_mouse_coordinates, session_acknowledge_close, session_add,
         session_cancel_job, session_poll_events, with_sessions, ApprovedRoute, CloseWork,
         InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported, SurfaceBinding,
@@ -3323,6 +3425,22 @@ mod tests {
                 expected_input_generation("sessionInputKey", rejected).is_err(),
                 "{rejected} is not a positive safe integer"
             );
+        }
+    }
+
+    #[test]
+    fn a_keysym_must_fit_the_exact_positive_wire_range() {
+        assert_eq!(input_keysym(1.0), Ok(1));
+        assert_eq!(input_keysym(0x1fff_ffffu32 as f64), Ok(0x1fff_ffff));
+        for rejected in [
+            0.0,
+            -1.0,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            0x2000_0000u32 as f64,
+        ] {
+            assert!(input_keysym(rejected).is_err(), "{rejected} is not a wire keysym");
         }
     }
 

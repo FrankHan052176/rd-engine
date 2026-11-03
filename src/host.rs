@@ -10,6 +10,8 @@ pub mod control;
     feature = "windows-modern-producer"
 ))]
 use crate::windows_input::{InputError, InputSession, TargetBinding, bind_output_key};
+#[cfg(target_env = "ohos")]
+use crate::ohos_input::{InputError, InputSession, TargetBinding};
 mod ingress;
 pub mod security;
 pub mod service;
@@ -68,17 +70,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// to the adapter LUID and native output index, re-verified before and after
 /// every capture open. It is never re-resolved by ordinal after start, so a
 /// reordered or detached output cannot be published under the requested
-/// configuration. Every other publisher still selects a display by enumeration
-/// index and has no binding or injection adapter.
+/// configuration. OHOS keeps the publisher index separate from the real default
+/// display ID used for input; a view-only host does not open that input binding.
 #[cfg(all(
     any(target_os = "windows", dsh_windows_typecheck),
     feature = "windows-modern-producer"
 ))]
 #[derive(Clone)]
 struct DisplayBinding(TargetBinding);
-#[cfg(not(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(target_env = "ohos")]
+#[derive(Clone)]
+struct DisplayBinding {
+    index: usize,
+    input: Option<TargetBinding>,
+}
+#[cfg(not(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 )))]
 #[derive(Clone, Copy)]
 struct DisplayBinding(usize);
@@ -99,9 +107,23 @@ impl DisplayBinding {
         Ok(Self(binding))
     }
 }
-#[cfg(not(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(target_env = "ohos")]
+impl DisplayBinding {
+    fn bind(options: &HostOptions) -> Result<Self, HostError> {
+        let input = if options.allow_input {
+            // The OHOS publisher captures only the default display. Enumeration
+            // index zero is not the display ID passed to OH_Input.
+            if options.output_index != 0 { return Err(HostError::UnsupportedDisplay); }
+            Some(TargetBinding::bind_default(options.width, options.height).map_err(display_binding_error)?)
+        } else {
+            None
+        };
+        Ok(Self { index: options.output_index, input })
+    }
+}
+#[cfg(not(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 )))]
 impl DisplayBinding {
     fn bind(options: &HostOptions) -> Result<Self, HostError> {
@@ -111,9 +133,9 @@ impl DisplayBinding {
 
 /// Maps a refused display binding onto the host's own error. A missing or
 /// changed output is never silently replaced by another one.
-#[cfg(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 ))]
 fn display_binding_error(error: InputError) -> HostError {
     match error {
@@ -127,9 +149,9 @@ fn display_binding_error(error: InputError) -> HostError {
 /// during authentication, so a desktop or binding the adapter cannot inject into
 /// is reported instead of becoming a silent view-only session. An unconfirmed
 /// reclamation is never reported as anything else.
-#[cfg(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 ))]
 fn input_grant_error(error: InputError) -> HostError {
     match error {
@@ -141,9 +163,9 @@ fn input_grant_error(error: InputError) -> HostError {
 /// Classifies one refused injected event. Malformed and unsupported events are
 /// refused without being claimed as injected; a lost desktop, output or
 /// injection path ends this peer's input instead of pretending it still works.
-#[cfg(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 ))]
 fn input_event_error(error: InputError) -> Option<HostError> {
     match error {
@@ -163,16 +185,16 @@ fn input_event_error(error: InputError) -> Option<HostError> {
 /// start.
 #[derive(Default)]
 struct PeerLease {
-    #[cfg(all(
-        any(target_os = "windows", dsh_windows_typecheck),
-        feature = "windows-modern-producer"
+    #[cfg(any(
+        target_env = "ohos",
+        all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
     ))]
     session: Option<InputSession>,
 }
 
-#[cfg(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 ))]
 impl PeerLease {
     /// Opens the lease for a session this machine's grant covers. The adapter
@@ -182,7 +204,14 @@ impl PeerLease {
         if !granted {
             return Ok(Self { session: None });
         }
-        let session = InputSession::open(display.0.clone()).map_err(input_grant_error)?;
+        #[cfg(all(
+            any(target_os = "windows", dsh_windows_typecheck),
+            feature = "windows-modern-producer"
+        ))]
+        let binding = display.0.clone();
+        #[cfg(target_env = "ohos")]
+        let binding = display.input.clone().ok_or(HostError::InputUnavailable)?;
+        let session = InputSession::open(binding).map_err(input_grant_error)?;
         Ok(Self {
             session: Some(session),
         })
@@ -220,9 +249,9 @@ impl PeerLease {
             .map_err(|_| HostError::ReclamationUnconfirmed)
     }
 }
-#[cfg(not(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(not(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 )))]
 impl PeerLease {
     fn open(granted: bool, _: &DisplayBinding) -> Result<Self, HostError> {
@@ -245,9 +274,9 @@ impl PeerLease {
     }
 }
 
-#[cfg(all(
-    any(target_os = "windows", dsh_windows_typecheck),
-    feature = "windows-modern-producer"
+#[cfg(any(
+    target_env = "ohos",
+    all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
 ))]
 fn input_event_error_of(result: Result<(), InputError>) -> Option<HostError> {
     result.err().and_then(input_event_error)
@@ -344,8 +373,8 @@ pub struct HostOptions {
         feature = "windows-modern-producer"
     ))]
     pub output_key: String,
-    /// Every non-Windows publisher still selects a display by enumeration index
-    /// and has no binding or injection adapter.
+    /// Non-Windows publishers select by enumeration index. OHOS input binds the
+    /// real default display separately when the local grant is enabled.
     #[cfg(not(all(
         any(target_os = "windows", dsh_windows_typecheck),
         feature = "windows-modern-producer"
@@ -354,6 +383,11 @@ pub struct HostOptions {
     /// Local grant of remote keyboard/pointer input. Only this process can set
     /// it, and every remote preference can only remove from it.
     pub allow_input: bool,
+    /// The explicit OHOS injection request admitted by the bridge. A direct Rust
+    /// caller may name None to borrow the current valid explicit request owner;
+    /// it cannot start from an unowned OS AUTHORIZED fact.
+    #[cfg(target_env = "ohos")]
+    pub input_authorization_request_id: Option<u64>,
     pub codec_selection: CodecSelection,
 }
 
@@ -623,6 +657,10 @@ struct State {
     finished: AtomicBool,
     allow_remote_cm: AtomicBool,
     auth_admission: AtomicBool,
+    /// Every OHOS Host entry point (not just HostService) shares the process
+    /// authorization. Only a checked native finish may consume this share.
+    #[cfg(target_env = "ohos")]
+    input_run: Mutex<Option<crate::ohos_input::InputRun>>,
 }
 
 // Tokens never reset when the local listener is stopped/restarted.
@@ -693,6 +731,25 @@ impl State {
         if result == Err(HostError::ReclamationUnconfirmed) {
             self.unreclaimed.store(true, Ordering::Release);
         }
+        #[cfg(target_env = "ohos")]
+        let result = if !self.unreclaimed.load(Ordering::Acquire) {
+            if let Some(input_run) = lock(&self.input_run).take() {
+                // serve has joined the actual input/capture owners. Closing
+                // the last process share checks HOLDS and serializes cancellation
+                // with every new run/request/event, including direct Hosts.
+                if input_run.close().is_err() {
+                    self.unreclaimed.store(true, Ordering::Release);
+                    Err(HostError::ReclamationUnconfirmed)
+                } else { result }
+            } else { result }
+        } else {
+            if let Some(input_run) = lock(&self.input_run).as_ref() {
+                // Keep the share and block new direct Hosts immediately, not
+                // only when the last Arc eventually drops this State.
+                input_run.quarantine();
+            }
+            result
+        };
         self.clear_approvals();
         let safe = !self.unreclaimed.load(Ordering::Acquire);
         self.update(|s| {
@@ -887,13 +944,25 @@ impl Host {
         {
             return Err(HostError::InvalidOptions);
         }
+        #[cfg(target_env = "ohos")]
+        let input_request_id = if options.allow_input {
+            let answer = crate::ohos_input::authorization_status();
+            if answer.status != crate::ohos_input::InjectionStatus::Authorized
+                || answer.request_id.is_none()
+                || options.input_authorization_request_id.is_some_and(|expected| answer.request_id != Some(expected))
+            {
+                return Err(HostError::InputUnavailable);
+            }
+            // Freeze even a direct Rust caller's None at this start's admission.
+            // Later asynchronous work cannot borrow another request's grant.
+            answer.request_id
+        } else { None };
         // The display is bound once, before anything is advertised or captured.
         let display = DisplayBinding::bind(&options)?;
-        // Without the Windows producer no publisher or input adapter exists, so
-        // a local input grant cannot be honored and is not advertised.
-        #[cfg(not(all(
-            any(target_os = "windows", dsh_windows_typecheck),
-            feature = "windows-modern-producer"
+        // A platform without an input adapter cannot advertise a local grant.
+        #[cfg(not(any(
+            target_env = "ohos",
+            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
         )))]
         if options.allow_input {
             return Err(HostError::InputUnavailable);
@@ -903,16 +972,23 @@ impl Host {
         // before that. Opening the lease verifies the desktop and the binding
         // without changing OS state, and the lease is released through the same
         // checked boundary a peer uses.
-        #[cfg(all(
-            any(target_os = "windows", dsh_windows_typecheck),
-            feature = "windows-modern-producer"
+        #[cfg(any(
+            target_env = "ohos",
+            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
         ))]
         if options.allow_input {
-            let mut lease = InputSession::open(display.0.clone()).map_err(input_grant_error)?;
-            lease.release_all().map_err(input_grant_error)?;
+            let mut lease = PeerLease::open(true, &display)?;
+            lease.release()?;
         }
         sodiumoxide::init().map_err(|_| HostError::InvalidOptions)?;
         let runtime = crate::executor::runtime().map_err(|_| HostError::NoRuntime)?;
+        #[cfg(target_env = "ohos")]
+        let input_run = if options.allow_input {
+            let binding = display.input.as_ref().ok_or(HostError::InputUnavailable)?;
+            Some(crate::ohos_input::InputRun::open(binding, input_request_id).map_err(input_grant_error)?)
+        } else {
+            None
+        };
         let state = Arc::new(State {
             cancel: CancellationToken::new(),
             pending: Mutex::new(BTreeMap::new()),
@@ -924,6 +1000,8 @@ impl Host {
             finished: AtomicBool::new(false),
             allow_remote_cm: AtomicBool::new(false),
             auth_admission: AtomicBool::new(true),
+            #[cfg(target_env = "ohos")]
+            input_run: Mutex::new(input_run),
             snapshot: Mutex::new(HostSnapshot {
                 ready: false,
                 phase: "starting",
@@ -957,6 +1035,15 @@ impl Host {
         })
     }
     pub fn snapshot(&self) -> HostSnapshot {
+        #[cfg(target_env = "ohos")]
+        {
+            let enabled = lock(&self.state.snapshot).input_enabled;
+            if enabled && !lock(&self.state.input_run).as_ref().is_some_and(|run| run.is_current()) {
+                // OS revocation or a new request fences this run permanently.
+                // No old peer may join a new authorization lifetime.
+                self.state.request_close();
+            }
+        }
         lock(&self.state.snapshot).clone()
     }
     pub fn approve(&self, request_id: &str, allow: bool) -> bool {
@@ -1332,9 +1419,11 @@ fn publisher_config(
             feature = "windows-modern-producer"
         ))]
         binding: display.0.clone(),
-        #[cfg(not(all(
-            any(target_os = "windows", dsh_windows_typecheck),
-            feature = "windows-modern-producer"
+        #[cfg(target_env = "ohos")]
+        output_index: display.index,
+        #[cfg(not(any(
+            target_env = "ohos",
+            all(any(target_os = "windows", dsh_windows_typecheck), feature = "windows-modern-producer")
         )))]
         output_index: display.0,
     }
@@ -2195,6 +2284,8 @@ mod tests {
             finished: AtomicBool::new(false),
             allow_remote_cm: AtomicBool::new(false),
             auth_admission: AtomicBool::new(true),
+            #[cfg(target_env = "ohos")]
+            input_run: Mutex::new(None),
             snapshot: Mutex::new(HostSnapshot {
                 ready: false,
                 phase: "listening",

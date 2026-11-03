@@ -144,6 +144,11 @@ export function sessionSendMouse(sessionId: string, mouseJson: string, inputGene
   return native.sessionSendMouse(sessionId, mouseJson, inputGeneration);
 }
 
+/** VNC/RDP X11 keysym transition; keysym is an integer in 1..=0x1FFFFFFF. ok means queued, not applied. */
+export function sessionSendKeysym(sessionId: string, keysym: number, down: boolean, inputGeneration: number): string {
+  return native.sessionSendKeysym(sessionId, keysym, down, inputGeneration);
+}
+
 export function sessionInputKey(sessionId: string, keyJson: string, inputGeneration: number): string {
   return native.sessionInputKey(sessionId, keyJson, inputGeneration);
 }
@@ -219,6 +224,16 @@ export function sessionTakeClipboardFileEvents(sessionId: string): string {
 
 export function sessionSetCustomFps(sessionId: string, fps: number): string {
   return native.sessionSetCustomFps(sessionId, fps);
+}
+
+/**
+ * Advances input_generation without changing input or clipboard policy.
+ * Queued old-generation input is dropped; the existing writer releases its held
+ * keys/buttons. release_pending/release counters are not a remote release ACK.
+ * No running viewer is an error, never a fabricated generation.
+ */
+export function sessionReleaseInput(sessionId: string): string {
+  return native.sessionReleaseInput(sessionId);
 }
 
 export function sessionSetViewOnly(sessionId: string, enabled: boolean): string {
@@ -406,6 +421,24 @@ export function controlledServerStop(runEpoch: string): Promise<string> {
 
 export function controlledServerGetStatus(): string {
   return native.controlledServerGetStatus();
+}
+
+/**
+ * Authorization JSON carries requestId: an opaque decimal string, empty without
+ * an owner; it is neither runEpoch nor input_generation. Starting with
+ * enableInput:true also requires that inputAuthorizationRequestId.
+ */
+export function controlledInputAuthorizationRequest(): string {
+  return native.controlledInputAuthorizationRequest();
+}
+
+export function controlledInputAuthorizationStatus(): string {
+  return native.controlledInputAuthorizationStatus();
+}
+
+/** Cancels exactly requestId, including before a host run exists. Never pass runEpoch or input_generation. */
+export function controlledInputAuthorizationCancel(requestId: string): string {
+  return native.controlledInputAuthorizationCancel(requestId);
 }
 
 export function controlledScreenCaptureGetStatus(): string {
