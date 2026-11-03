@@ -8,6 +8,7 @@
 //! watch_viewer immediately after Viewer::start (including its error handling).
 //!
 //! SDK signatures checked in the installed DevEco SDK's sysroot/usr/include:
+//! arkui/native_interface.h: OH_ArkUI_QueryModuleInterfaceByName (API 12);
 //! arkui/native_node_napi.h: OH_ArkUI_GetNodeHandleFromNapiValue (API 12);
 //! arkui/native_node.h: OH_ArkUI_NodeUtils_GetNodeUniqueId (API 20);
 //! ace/xcomponent/native_interface_xcomponent.h: SurfaceHolder/manual lifecycle
@@ -481,6 +482,17 @@ mod ohos {
             if node_id.is_empty() || frame_node.is_null() || event_callback.is_null() {
                 return Err(Failure::local("attach needs a node label, real FrameNode and callback"));
             }
+            // The module query installs ArkUI's C API implementation through
+            // NodeModel::InitialFullImpl; obtaining a NAPI node handle is not initialization.
+            let node_api = unsafe {
+                ffi::OH_ArkUI_QueryModuleInterfaceByName(ffi::ARKUI_NATIVE_NODE, c"ArkUI_NativeNodeAPI_1".as_ptr())
+            };
+            if node_api.is_null() {
+                return Err(Failure {
+                    api: "OH_ArkUI_QueryModuleInterfaceByName", result: None,
+                    message: "ArkUI_NativeNodeAPI_1 is unavailable".to_string(),
+                });
+            }
             let mut node = ptr::null_mut();
             check("OH_ArkUI_GetNodeHandleFromNapiValue", unsafe {
                 ffi::OH_ArkUI_GetNodeHandleFromNapiValue(env.raw() as _, frame_node, &mut node)
@@ -892,10 +904,13 @@ mod ohos {
     // napi_ref becomes an ArkTS integer, a public token, or a SurfaceLease id.
     mod ffi {
         use super::{c_char, c_void};
+        // ArkUI_NativeAPIVariantKind from arkui/native_interface.h.
+        pub(super) const ARKUI_NATIVE_NODE: i32 = 0;
         #[repr(C)]
         pub(super) struct RateRange { pub min: i32, pub max: i32, pub expected: i32 }
         #[link(name = "ace_ndk.z")]
         unsafe extern "C" {
+            pub fn OH_ArkUI_QueryModuleInterfaceByName(kind: i32, struct_name: *const c_char) -> *mut c_void;
             pub fn OH_ArkUI_GetNodeHandleFromNapiValue(env: *mut c_void, value: *mut c_void, node: *mut *mut c_void) -> i32;
             pub fn OH_ArkUI_NodeUtils_GetNodeUniqueId(node: *mut c_void, id: *mut i32) -> i32;
             pub fn OH_ArkUI_SurfaceHolder_Create(node: *mut c_void) -> *mut c_void;
