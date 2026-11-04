@@ -231,6 +231,135 @@ async fn received(peer: &mut WireReader) -> Message {
         .expect("the writer emitted a well-formed message")
 }
 
+/// Two FPS changes and the options around them arrive on one existing wire.
+/// Each FPS record contains only its increment, never login defaults that could
+/// reset the peer's other choices. This is wire delivery, not a peer-cap test.
+#[tokio::test]
+async fn custom_fps_updates_share_the_existing_writer_and_preserve_other_options() {
+    use crate::session_options::SessionOptionChange;
+    use base::message_proto::{ImageQuality, OptionMessage, misc, option_message::BoolOption};
+
+    let (viewer, mouse) = writer_viewer();
+    let (control, control_queue) = mpsc::channel(COMMANDS);
+    *lock(&viewer.state.control) = Some(control);
+    *lock(&viewer.state.advertised_decoding) = Some(Default::default());
+
+    viewer
+        .set_session_option(SessionOptionChange::ImageQuality(ImageQuality::Best))
+        .unwrap();
+    let quality = viewer.session_options_snapshot();
+    viewer.set_custom_fps(30).unwrap();
+    assert_eq!(viewer.session_options_snapshot(), quality);
+    viewer
+        .set_session_option(SessionOptionChange::AudioEnabled(false))
+        .unwrap();
+    let muted = viewer.session_options_snapshot();
+    viewer.set_custom_fps(240).unwrap();
+    assert_eq!(viewer.session_options_snapshot(), muted);
+
+    let Wire {
+        writer,
+        mut peer,
+        _client_reader,
+        _peer_writer,
+    } = writer_wire();
+    let (_bulk_tx, bulk) = mpsc::channel(COMMANDS);
+    let (_clipboard_tx, clipboard) = mpsc::channel(CLIPBOARD_QUEUE);
+    let writing = tokio::spawn(super::write(
+        viewer.state.clone(),
+        writer,
+        mouse,
+        control_queue,
+        bulk,
+        clipboard,
+        None,
+    ));
+    for expected in [
+        OptionMessage {
+            image_quality: ImageQuality::Best.into(),
+            ..Default::default()
+        },
+        OptionMessage {
+            custom_fps: 30,
+            ..Default::default()
+        },
+        OptionMessage {
+            disable_audio: BoolOption::Yes.into(),
+            ..Default::default()
+        },
+        OptionMessage {
+            custom_fps: 240,
+            ..Default::default()
+        },
+    ] {
+        let Some(message::Union::Misc(message)) = received(&mut peer).await.union else {
+            panic!("the same wire must carry a Misc increment, not another login");
+        };
+        let Some(misc::Union::Option(option)) = message.union else {
+            panic!("the same wire must carry an OptionMessage");
+        };
+        assert_eq!(option, expected, "no unrelated option is restated");
+    }
+    viewer.request_close();
+    tokio::time::timeout(RECEIVE_LIMIT, writing)
+        .await
+        .expect("the existing writer stops on cancellation")
+        .expect("the writer task joins")
+        .expect("cancelling the writer succeeds");
+}
+
+#[test]
+fn custom_fps_refuses_unavailable_sessions_and_a_full_writer_queue() {
+    use crate::session_options::OptionError;
+
+    let (viewer, _mouse) = writer_viewer();
+    assert!(matches!(viewer.set_custom_fps(30), Err(ViewerError::Closed)));
+    let (control, mut queue) = mpsc::channel(1);
+    *lock(&viewer.state.control) = Some(control);
+    viewer.state.authenticated.store(false, super::Ordering::Release);
+    assert!(matches!(
+        viewer.set_custom_fps(30),
+        Err(ViewerError::SessionOption(OptionError::SessionNotStarted))
+    ));
+    viewer.state.authenticated.store(true, super::Ordering::Release);
+    for fps in [0, 241] {
+        assert!(matches!(viewer.set_custom_fps(fps), Err(ViewerError::InvalidOptions)));
+    }
+    assert!(queue.try_recv().is_err(), "refused calls queued nothing");
+    viewer.set_custom_fps(30).unwrap();
+    assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Backpressure)));
+    assert_eq!(queue.try_recv().unwrap().len(), 1);
+    assert!(queue.try_recv().is_err(), "the full queue did not admit a second request");
+    drop(queue);
+    assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Closed)));
+
+    let (control, mut queue) = mpsc::channel(1);
+    *lock(&viewer.state.control) = Some(control);
+    viewer.request_close();
+    assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Closed)));
+    assert!(queue.try_recv().is_err());
+
+    for (protocol, mode) in [
+        (Protocol::Vnc, crate::session::SessionMode::Desktop),
+        (Protocol::Rdp, crate::session::SessionMode::Desktop),
+        (Protocol::RustDesk, crate::session::SessionMode::FileTransfer),
+    ] {
+        let mut state = writer_state();
+        let inner = Arc::get_mut(&mut state).unwrap();
+        inner.protocol = protocol;
+        inner.mode = mode;
+        let (control, mut queue) = mpsc::channel(1);
+        *lock(&state.control) = Some(control);
+        let (mouse, _input) = mpsc::channel(COMMANDS);
+        let viewer = Viewer { state, mouse };
+        assert!(matches!(
+            viewer.set_custom_fps(60),
+            Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol))
+        ));
+        assert!(queue.try_recv().is_err());
+    }
+}
+
 /// The key state one message the peer received carries.
 fn key_state(message: Message) -> bool {
     match message.union {

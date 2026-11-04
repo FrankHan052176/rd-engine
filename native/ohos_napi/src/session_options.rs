@@ -30,7 +30,7 @@
 //! module's own option store: it reads the session's audio owner
 //! (`ViewerSnapshot::audio`) for what really became of the peer's audio, and
 //! keeps that apart from the local `disable-audio` request.
-use super::{error_json, mutable_snapshot, with_sessions};
+use super::{error_json, mutable_snapshot, with_sessions, SessionRecord};
 use base::message_proto::{supported_decoding::PreferCodec, ImageQuality};
 use napi_derive_ohos::napi;
 use rd_engine::session_options::{SessionOptionChange, SessionOptions};
@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 
 /// Which session the answer is about: the one running now, or the next dial.
 #[derive(Clone, Copy)]
-enum OptionScope {
+pub(super) enum OptionScope {
     /// A viewer is running; the change was queued for its single writer.
     Session,
     /// No viewer is running; the change is held for the next `session_start`.
@@ -47,18 +47,17 @@ enum OptionScope {
 }
 
 impl OptionScope {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Session => "session",
             Self::NextSession => "next_session",
         }
     }
 
-    fn note(self) -> &'static str {
+    pub(super) fn note(self) -> &'static str {
         match self {
             Self::Session => {
-                "queued for this session's single writer; the peer's application is not \
-                 confirmed, and a quality level has no peer echo so the answer is the requested one"
+                "queued for this session's single writer; the peer's application is not confirmed"
             }
             Self::NextSession => {
                 "recorded for the next session_start: no viewer is running, so nothing has \
@@ -100,6 +99,60 @@ fn options_answer(action: &str, requested: &SessionOptions, scope: OptionScope) 
         "note": scope.note(),
     })
     .to_string()
+}
+
+/// The shared FPS path for the dedicated setter and the legacy common key.
+/// Callers first check `mutable_snapshot`; a refusal never changes the last
+/// accepted request. FPS stays outside `SessionOptions`, as it does at login.
+pub(super) fn request_custom_fps(
+    record: &mut SessionRecord,
+    fps: u32,
+) -> Result<OptionScope, String> {
+    if !(1..=240).contains(&fps) {
+        return Err("fps must be between 1 and 240".to_string());
+    }
+    if record.viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk
+        || record.mode != rd_engine::session::SessionMode::Desktop
+    {
+        return Err("custom fps requires a RustDesk desktop session".to_string());
+    }
+    let scope = match record.viewer.as_ref() {
+        Some(viewer) => {
+            viewer
+                .set_custom_fps(fps)
+                .map_err(|error| format!("sessionSetCustomFps refused: {error:?}"))?;
+            OptionScope::Session
+        }
+        None => OptionScope::NextSession,
+    };
+    record.fps = fps;
+    Ok(scope)
+}
+
+/// Success means queued on the running writer or held for the next login,
+/// never that the peer applied this rate or can reach it.
+#[napi]
+pub fn session_set_custom_fps(session_id: String, fps: u32) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return error_json("unknown session");
+        };
+        if let Err(message) = mutable_snapshot(record) {
+            return error_json(message);
+        }
+        match request_custom_fps(record, fps) {
+            Ok(scope) => json!({
+                "ok": true,
+                "action": "sessionSetCustomFps",
+                "scope": scope.name(),
+                "requested_fps": fps,
+                "applied": false,
+                "note": scope.note(),
+            })
+            .to_string(),
+            Err(message) => error_json(&message),
+        }
+    })
 }
 
 /// Applies one typed change to the session the caller named.

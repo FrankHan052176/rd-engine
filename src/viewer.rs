@@ -1737,6 +1737,40 @@ impl Viewer {
         lock(&self.state.session_options).clone()
     }
 
+    /// Queues the RustDesk frame-rate increment on this session's one writer.
+    ///
+    /// Only `custom_fps` is stated: replaying login options would overwrite
+    /// unrelated choices. `Ok(())` means queued, not written or peer-applied;
+    /// the peer may impose its own cap and sends no applied-rate receipt.
+    pub fn set_custom_fps(&self, fps: u32) -> Result<(), ViewerError> {
+        if !(1..=240).contains(&fps) {
+            return Err(ViewerError::InvalidOptions);
+        }
+        if self.state.protocol != Protocol::RustDesk || self.state.mode != SessionMode::Desktop {
+            return Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol));
+        }
+        if self.state.cancel.is_cancelled() || lock(&self.state.inner).snapshot.closed {
+            return Err(ViewerError::Closed);
+        }
+        if !self.state.authenticated.load(Ordering::Acquire) {
+            return Err(ViewerError::SessionOption(OptionError::SessionNotStarted));
+        }
+        let sender = lock(&self.state.control)
+            .clone()
+            .ok_or(ViewerError::Closed)?;
+        let mut misc = proto::Misc::new();
+        misc.set_option(OptionMessage {
+            custom_fps: fps as i32,
+            ..Default::default()
+        });
+        let mut message = Message::new();
+        message.set_misc(misc);
+        sender.try_send(vec![message]).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+        })
+    }
+
     /// Commit requested state only after the entire change enters the one
     /// writer queue. No option here claims the peer applied its request.
     pub fn set_session_option(&self, change: SessionOptionChange) -> Result<(), ViewerError> {

@@ -39,9 +39,9 @@ mod transfer;
 use rd_engine::session_options::SessionOptions;
 use session_options::{
     session_change_resolution, session_get_image_quality, session_get_remote_audio_state,
-    session_get_toggle_option, session_set_codec_preference, session_set_custom_image_quality,
-    session_set_image_quality, session_set_show_remote_cursor, session_switch_display,
-    session_toggle_option,
+    session_get_toggle_option, session_set_codec_preference, session_set_custom_fps,
+    session_set_custom_image_quality, session_set_image_quality, session_set_show_remote_cursor,
+    session_switch_display, session_toggle_option,
 };
 mod xcomponent;
 use app_context::{
@@ -213,6 +213,8 @@ struct SessionRecord {
     reclaimed: Option<bool>,
     password: String,
     conn_token: Option<ConnToken>,
+    /// Last accepted FPS request, queued for the running writer or saved for
+    /// login. This is not the peer's effective cap or an applied-rate receipt.
     fps: u32,
     session_options: SessionOptions,
     viewer: Option<Arc<Viewer>>,
@@ -2727,8 +2729,8 @@ pub fn session_set_unverified_input_accepted(session_id: String, accepted: bool)
 /// Records a client option pair and answers what the engine does with it.
 ///
 /// The engine acts on `view-only` (the running viewer's own policy, published
-/// here, refuses input while it is on) and `fps` (the rate the next
-/// `session_start` asks for). Every other key is kept on the record so the
+/// here, refuses input while it is on) and `fps` (queued on the running writer
+/// or held for the next login). Every other key is kept on the record so the
 /// client can be told it arrived, and answered as not acted on rather than
 /// silently dropped.
 #[napi]
@@ -2738,8 +2740,9 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
             if let Err(message) = mutable_snapshot(record) {
                 return error_json(message);
             }
-            record.common.insert(key.clone(), value.clone());
             let mut published: Option<InputPolicyOutcome> = None;
+            let mut fps_scope = None;
+            let mut refusal = None;
             let (acted, action_note) = match key.as_str() {
                 "view-only" => {
                     record.input_policy.view_only =
@@ -2758,21 +2761,33 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
                         )
                     }
                 }
-                "fps" => match value.trim().parse::<u32>() {
-                    Ok(fps) if (1..=240).contains(&fps) => {
-                        record.fps = fps;
-                        (true, "rate applied to the next session_start; a running viewer keeps its rate".to_string())
+                "fps" => {
+                    let result = value
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| "fps must be between 1 and 240".to_string())
+                        .and_then(|fps| session_options::request_custom_fps(record, fps));
+                    match result {
+                        Ok(scope) => {
+                            fps_scope = Some(scope);
+                            (true, scope.note().to_string())
+                        }
+                        Err(message) => {
+                            refusal = Some(message.clone());
+                            (false, message)
+                        }
                     }
-                    _ => (
-                        false,
-                        "recorded, not acted on: fps takes a rate between 1 and 240".to_string(),
-                    ),
-                },
+                }
                 _ => (
                     false,
                     format!("recorded, not acted on: the engine acts on {COMMON_ACTED_ON:?} only"),
                 ),
             };
+            // A refused FPS request is neither the next login value nor a
+            // successfully recorded common pair.
+            if refusal.is_none() {
+                record.common.insert(key.clone(), value.clone());
+            }
             let recorded_only: Vec<&str> = record
                 .common
                 .keys()
@@ -2786,7 +2801,7 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
             // is what an answer with nothing outstanding says.
             let note = release_note(retired, unreleased).map_or(action_note, str::to_owned);
             let mut answer = serde_json::json!({
-                "ok": true,
+                "ok": refusal.is_none(),
                 "key": key,
                 "acted": acted,
                 "acted_on": COMMON_ACTED_ON,
@@ -2801,36 +2816,24 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
                 "fps": record.fps,
                 "note": note,
             });
+            if key == "fps" {
+                answer["action"] = serde_json::json!("sessionSetCommon");
+                answer["applied"] = serde_json::json!(false);
+            }
+            if let Some(scope) = fps_scope {
+                answer["scope"] = serde_json::json!(scope.name());
+                answer["requested_fps"] = serde_json::json!(record.fps);
+            }
+            if let Some(message) = refusal {
+                answer["error"] = serde_json::json!(message);
+                answer["message"] = serde_json::json!(message);
+            }
             // Published only when a viewer is running: a session with none has
             // no gate to name.
             if let Some(outcome) = published {
                 answer["input_generation"] = serde_json::json!(outcome.input_generation);
             }
             answer.to_string()
-        }
-        None => error_json("unknown session"),
-    })
-}
-
-/// The engine takes the requested frame rate when the viewer starts, so this
-/// records it for the next session_start instead of implying a running session
-/// changed rate.
-#[napi]
-pub fn session_set_custom_fps(session_id: String, fps: u32) -> String {
-    if fps == 0 || fps > 240 {
-        return error_json("fps must be between 1 and 240");
-    }
-    with_sessions(|sessions| match sessions.get_mut(&session_id) {
-        Some(record) => {
-            if let Err(message) = mutable_snapshot(record) {
-                return error_json(message);
-            }
-            record.fps = fps;
-            serde_json::json!({
-                "ok": true,
-                "note": "applied to the next session_start; a running viewer keeps its rate",
-            })
-            .to_string()
         }
         None => error_json("unknown session"),
     })
@@ -2865,6 +2868,8 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             // shows is computed from the cumulative counters below.
             "generation": dials.to_string(),
             "intentRevision": dials.to_string(),
+            // Last accepted request only: queue admission does not prove the
+            // peer applied it or reveal the peer's own effective cap.
             "desiredFps": fps,
             "safetyFpsCap": null,
             "elapsedMs": elapsed_ms,
@@ -3289,6 +3294,39 @@ mod tests {
         let epoch = added["session"]["lifecycleEpoch"].as_str().unwrap();
         assert!(epoch.parse::<u64>().unwrap() > 0);
         epoch.to_owned()
+    }
+
+    #[test]
+    fn fps_setters_share_prestart_requests_and_do_not_record_refusals() {
+        let id = "napi-test-fps-request";
+        let epoch = register_lifecycle_test(id);
+        let requested = json(super::session_set_custom_fps(id.into(), 120));
+        assert_eq!(requested["ok"], true);
+        assert_eq!(requested["action"], "sessionSetCustomFps");
+        assert_eq!(requested["scope"], "next_session");
+        assert_eq!(requested["requested_fps"], 120);
+        assert_eq!(requested["applied"], false);
+        let common = json(super::session_set_common(id.into(), "fps".into(), "240".into()));
+        assert_eq!(common["ok"], true);
+        assert_eq!(common["acted"], true);
+        assert_eq!(common["fps"], 240);
+        assert_eq!(common["scope"], "next_session");
+        assert_eq!(common["requested_fps"], 240);
+        assert_eq!(common["applied"], false);
+        assert_eq!(json(super::session_set_custom_fps(id.into(), 0))["ok"], false);
+        let refused = json(super::session_set_common(id.into(), "fps".into(), "invalid".into()));
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["acted"], false);
+        assert_eq!(refused["fps"], 240, "legacy field stays the accepted request");
+        assert!(refused["error"].is_string());
+        with_sessions(|sessions| {
+            let record = sessions.get(id).unwrap();
+            assert_eq!(record.fps, 240);
+            assert_eq!(record.common.get("fps").map(String::as_str), Some("240"));
+            assert!(record.viewer.is_none(), "prestart requests do not dial a viewer");
+        });
+        assert_eq!(json(CloseWork::prepare(id.into()).run())["ok"], true);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], true);
     }
 
     #[test]
