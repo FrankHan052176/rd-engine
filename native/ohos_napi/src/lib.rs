@@ -301,9 +301,11 @@ fn scrub_terminal_record(record: &mut SessionRecord) {
 
 /// Authorization and terminal facts already reported for the current viewer.
 ///
-/// Phases are forwarded unchanged. Waiting for the host operator is not a
-/// password rejection and must not fabricate an input-password event.
-/// Starting a new viewer resets these one-shot facts.
+/// Phases are forwarded unchanged. The peer's `awaiting_approval` answer is not
+/// a password rejection and raises no input-password event; one is reported
+/// only when the engine itself armed the password step (the peer demanded or
+/// refused a password, or a login that carried none went out and may still be
+/// settled by a typed one). Starting a new viewer resets these one-shot facts.
 #[derive(Default)]
 struct Reported {
     pending: VecDeque<serde_json::Value>,

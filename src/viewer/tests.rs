@@ -1960,9 +1960,21 @@ async fn password_retry_reuses_the_refused_login_and_reaches_the_next_step() {
                 );
                 let (identity, session_id) = (first.my_id.clone(), first.session_id);
 
+                // A login that carried none is offered the password step while
+                // the peer's operator decides, before the peer has said a word.
+                wait_password(&state, 1).await;
+                {
+                    let inner = lock(&state.inner);
+                    assert_eq!(inner.snapshot.phase, "awaiting_password");
+                    assert_eq!(
+                        inner.snapshot.password_failure,
+                        Some(super::LoginFailure::EmptyPassword)
+                    );
+                }
+
                 // The peer wants a password this attempt did not send.
                 refuse(&mut peer, "Empty Password").await;
-                wait_password(&state, 1).await;
+                wait_password(&state, 2).await;
                 {
                     let inner = lock(&state.inner);
                     assert_eq!(inner.snapshot.phase, "awaiting_password");
@@ -2011,7 +2023,7 @@ async fn password_retry_reuses_the_refused_login_and_reaches_the_next_step() {
                 // The peer refused it: the step is armed again, and the
                 // second answer is that same login once more.
                 refuse(&mut peer, "Wrong Password").await;
-                wait_password(&state, 2).await;
+                wait_password(&state, 3).await;
                 {
                     let inner = lock(&state.inner);
                     assert_eq!(inner.snapshot.phase, "password_rejected");
@@ -2049,12 +2061,135 @@ async fn password_retry_reuses_the_refused_login_and_reaches_the_next_step() {
             let (result, ()) = tokio::join!(driver, fixture);
             assert!(result.is_ok(), "the same wire reaches authorization");
             let snapshot = lock(&state.inner).snapshot.clone();
-            assert_eq!(snapshot.password_challenge, 2);
+            assert_eq!(snapshot.password_challenge, 3);
             assert_eq!(snapshot.second_factor_challenge, 1);
             // The last answer is on the wire, so no mid-flight reason is
             // left beside the authorized session.
             assert_eq!(snapshot.password_failure, None);
         }
+    })
+    .await
+    .expect("the whole exchange must finish within one budget");
+}
+
+/// A login that carried no password is offered the password step while the
+/// peer's operator decides, and a typed password settles that same attempt.
+///
+/// The peer says nothing here: no `Empty Password` and no refusal. The answer
+/// is the first login again on the wire that is already open, under the
+/// identity and session id it carried, and the peer's later acceptance is what
+/// authorizes the session.
+#[tokio::test]
+async fn a_typed_password_settles_a_login_that_awaits_the_peers_operator() {
+    use crate::handshake::{self, ViewerIdentity};
+    use crate::session::ViewerSession;
+    use base::message_proto::{Hash, LoginResponse, PeerInfo};
+
+    tokio::time::timeout(RECEIVE_LIMIT, async {
+        let address: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (client, peer) = tokio::io::duplex(1);
+        let mut peer = FramedStream::from(peer, address);
+        let (established, greeting) = tokio::join!(
+            handshake::viewer(
+                FramedStream::from(client, address),
+                ViewerIdentity::LegacyUnverified,
+                RECEIVE_LIMIT,
+            ),
+            receive(&mut peer),
+        );
+        assert!(greeting.union.is_none());
+        let session =
+            ViewerSession::from_established(established.unwrap(), RECEIVE_LIMIT, RECEIVE_LIMIT);
+        let state = writer_state();
+        state.authenticated.store(false, super::Ordering::Release);
+        let (mouse, _) = mpsc::channel(COMMANDS);
+        let viewer = Viewer {
+            state: state.clone(),
+            mouse,
+        };
+        let options = super::ViewerOptions {
+            target: super::ViewerTarget::RustDesk { address: None },
+            mode: crate::session::SessionMode::Desktop,
+            transfer_root: None,
+            username: "fixture".into(),
+            local_id: "controller".into(),
+            local_name: "fixture".into(),
+            password: String::new(),
+            conn_token: None,
+            requested_fps: 0,
+            input_policy: ViewerInputPolicy::interactive(),
+            session_options: Default::default(),
+        };
+        let mut password = super::Password(Vec::new());
+        let (codes, code_answers) = mpsc::channel(1);
+        let (passwords, password_answers) = mpsc::channel(1);
+        let mut answers = super::AuthAnswers {
+            codes: code_answers,
+            passwords: password_answers,
+        };
+        let driver = super::authenticate_loop(
+            &state,
+            session,
+            &options,
+            &mut password,
+            None,
+            Default::default(),
+            &codes,
+            &passwords,
+            &mut answers,
+        );
+        let fixture = async {
+            let mut challenge = Message::new();
+            challenge.set_hash(Hash {
+                salt: "fixture".into(),
+                challenge: "challenge".into(),
+                ..Default::default()
+            });
+            peer.send(&challenge).await.unwrap();
+            let Some(message::Union::LoginRequest(first)) = receive(&mut peer).await.union else {
+                panic!("expected the owned login request");
+            };
+            assert!(first.password.is_empty());
+            let (identity, session_id) = (first.my_id.clone(), first.session_id);
+
+            // Nothing is demanded by the peer, yet the consumer can answer.
+            while lock(&state.inner).snapshot.password_challenge != 1 {
+                tokio::task::yield_now().await;
+            }
+            {
+                let inner = lock(&state.inner);
+                assert_eq!(inner.snapshot.phase, "awaiting_password");
+                assert_eq!(
+                    inner.snapshot.password_failure,
+                    Some(super::LoginFailure::EmptyPassword)
+                );
+            }
+            assert!(
+                !viewer.snapshot().authenticated,
+                "an offered password step is not an authorization"
+            );
+            viewer.send_password("typed".into()).unwrap();
+            assert_eq!(lock(&state.inner).snapshot.phase, "verifying_password");
+
+            let Some(message::Union::LoginRequest(retried)) = receive(&mut peer).await.union else {
+                panic!("expected the retried login request");
+            };
+            assert_eq!(retried.session_id, session_id, "the same login attempt");
+            assert_eq!(retried.my_id, identity);
+            assert_eq!(retried.username, "fixture");
+            assert!(!retried.password.is_empty());
+
+            let mut success = LoginResponse::new();
+            success.set_peer_info(PeerInfo::new());
+            let mut message = Message::new();
+            message.set_login_response(success);
+            peer.send(&message).await.unwrap();
+        };
+        let (result, ()) = tokio::join!(driver, fixture);
+        assert!(result.is_ok(), "the same wire reaches authorization");
+        let snapshot = lock(&state.inner).snapshot.clone();
+        assert_eq!(snapshot.password_challenge, 1);
+        assert_eq!(snapshot.password_failure, None);
     })
     .await
     .expect("the whole exchange must finish within one budget");

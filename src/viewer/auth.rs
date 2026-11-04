@@ -146,6 +146,41 @@ enum AuthStep {
     Event(Result<ViewerEvent, ViewerError>),
 }
 
+/// Arms the password step on this same session and publishes the demand.
+///
+/// `failure` names why the consumer is asked: the peer wants a password this
+/// attempt did not send (`EmptyPassword`, also the state of a login that went
+/// out with none and waits on the peer's operator) or refused the one it sent
+/// (`WrongPassword`). Either way the login the session already holds is what an
+/// answer resends, and any answer still queued for an earlier demand is
+/// dropped with that demand.
+fn demand_password(
+    state: &State,
+    answers: &mut AuthAnswers,
+    passwords: &mpsc::Sender<String>,
+    failure: LoginFailure,
+) -> Result<(), ViewerError> {
+    *lock(&state.password) = PasswordGate::default();
+    *lock(&state.second_factor) = SecondFactorGate::default();
+    answers.clear();
+    let mut gate = lock(&state.password);
+    let mut inner = lock(&state.inner);
+    inner.snapshot.password_challenge = inner
+        .snapshot
+        .password_challenge
+        .checked_add(1)
+        .ok_or(ViewerError::AuthenticationFailed)?;
+    inner.snapshot.phase = match failure {
+        LoginFailure::EmptyPassword => "awaiting_password",
+        _ => "password_rejected",
+    }
+    .into();
+    inner.snapshot.password_failure = Some(failure);
+    gate.password = Some(passwords.clone());
+    gate.submitted = false;
+    Ok(())
+}
+
 /// The authentication exchange, the peer's password and second-factor steps
 /// included.
 ///
@@ -248,6 +283,14 @@ pub(super) async fn authenticate_loop(
                         None if password.0.is_empty() => LoginCredential::ManualApproval,
                         None => LoginCredential::Password(&password.0),
                     };
+                    // A login that carries no material waits on the peer's
+                    // operator, who may accept it. The official client raises
+                    // its password step beside that wait (client.rs:4690), so a
+                    // password typed meanwhile settles the same attempt; the
+                    // peer may also say nothing at all while its operator
+                    // decides, and without this step the consumer would have
+                    // nothing to show or answer.
+                    let offers_password = matches!(credential, LoginCredential::ManualApproval);
                     let written = session.login_with(request, credential).await;
                     hbb_common::sodiumoxide::utils::memzero(&mut password.0);
                     password.0.clear();
@@ -256,6 +299,9 @@ pub(super) async fn authenticate_loop(
                         // transport outcome and not the peer's decision about
                         // the credential.
                         .map_err(|_| ViewerError::TransportFailed)?;
+                    if offers_password {
+                        demand_password(state, answers, passwords, LoginFailure::EmptyPassword)?;
+                    }
                 }
                 ViewerEvent::Authorized(_) => {
                     let token = session.take_reconnect_credential();
@@ -333,24 +379,7 @@ pub(super) async fn authenticate_loop(
                     if session.state() != ViewerState::AwaitLogin {
                         return Err(ViewerError::LoginFailed(failure));
                     }
-                    *lock(&state.password) = PasswordGate::default();
-                    *lock(&state.second_factor) = SecondFactorGate::default();
-                    answers.clear();
-                    let mut gate = lock(&state.password);
-                    let mut inner = lock(&state.inner);
-                    inner.snapshot.password_challenge = inner
-                        .snapshot
-                        .password_challenge
-                        .checked_add(1)
-                        .ok_or(ViewerError::AuthenticationFailed)?;
-                    inner.snapshot.phase = match failure {
-                        LoginFailure::EmptyPassword => "awaiting_password",
-                        _ => "password_rejected",
-                    }
-                    .into();
-                    inner.snapshot.password_failure = Some(failure);
-                    gate.password = Some(passwords.clone());
-                    gate.submitted = false;
+                    demand_password(state, answers, passwords, failure)?;
                 }
                 // Every other refusal keeps its category: the peer's text is
                 // what the classification reads, and the category is what a

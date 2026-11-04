@@ -549,7 +549,10 @@ impl std::error::Error for ViewerError {}
 /// vocabulary of a login that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginFailure {
-    /// `Empty Password`: the peer wants a password this client did not send.
+    /// `Empty Password`: the peer wants a password this client did not send. A
+    /// login that went out with none is also offered this step while the peer's
+    /// operator decides, as the official client does, so a typed password can
+    /// settle the same attempt.
     EmptyPassword,
     /// `Wrong Password`: the peer refused the password this client sent.
     WrongPassword,
