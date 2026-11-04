@@ -2784,6 +2784,8 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
         Some((dials, fps, elapsed_ms, Some(value))) => serde_json::json!({
             "available": true,
             "source": "engine_viewer_snapshot",
+            "display": value.current_display,
+            "networkRttMs": value.network_rtt_ms,
             // Both identities change when the viewer is dialled again, which is
             // what makes the client start a fresh window, and every rate it
             // shows is computed from the cumulative counters below.

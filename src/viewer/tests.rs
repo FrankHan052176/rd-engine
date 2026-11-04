@@ -1300,6 +1300,58 @@ async fn audio_plays_only_the_peer_grant_and_the_local_option() {
     assert!(!audio.snapshot().allowed);
 }
 
+#[tokio::test]
+async fn peer_test_delay_retains_the_last_positive_rtt_and_echoes_unchanged() {
+    use base::message_proto::TestDelay;
+
+    let state = writer_state();
+    assert_eq!(state.snapshot().network_rtt_ms, None);
+    let (control, mut echoed) = mpsc::channel(COMMANDS);
+    let (transfer, _transfer_rx) = mpsc::channel(COMMANDS);
+    let Wire {
+        writer: _client_writer,
+        peer: _peer_reader,
+        _client_reader: reader,
+        _peer_writer: mut peer,
+    } = writer_wire();
+    let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+
+    // A client-origin report is neither a peer RTT nor a probe to echo.
+    let mut ignored = Message::new();
+    ignored.set_test_delay(TestDelay {
+        time: 7,
+        from_client: true,
+        last_delay: 99,
+        ..Default::default()
+    });
+    peer.send(&ignored).await.unwrap();
+
+    for (last_delay, expected) in [(0, None), (37, Some(37)), (0, Some(37)), (19, Some(19))] {
+        let mut message = Message::new();
+        message.set_test_delay(TestDelay {
+            time: 123,
+            last_delay,
+            target_bitrate: 4_000,
+            ..Default::default()
+        });
+        peer.send(&message).await.unwrap();
+        // Receiving this echo also proves earlier records were processed.
+        let batch = tokio::time::timeout(RECEIVE_LIMIT, echoed.recv())
+            .await
+            .expect("the reader queues the peer probe's echo")
+            .expect("the reader keeps the control channel open");
+        assert_eq!(batch, vec![message], "the peer probe is queued unchanged");
+        assert_eq!(state.snapshot().network_rtt_ms, expected);
+    }
+
+    state.cancel.cancel();
+    tokio::time::timeout(RECEIVE_LIMIT, reading)
+        .await
+        .expect("the reader stops on cancellation")
+        .expect("the reader task joins")
+        .expect("cancelling the reader succeeds");
+}
+
 /// The one reader hands the peer's format and frames to the session's own
 /// audio owner — the same handle a client reads — and admits none of it once
 /// the peer withdraws its grant.

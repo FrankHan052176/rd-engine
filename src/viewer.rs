@@ -299,6 +299,9 @@ pub struct ViewerSnapshot {
     pub codec: String,
     /// `direct_tcp`, `tcp_hole_punch` or `relay`; never inferred from an address.
     pub route: String,
+    /// Last positive RTT in milliseconds reported by a peer TestDelay.
+    /// `None` means the peer has not supplied a positive measurement.
+    pub network_rtt_ms: Option<u32>,
     pub received_units: u64,
     pub pushed_units: u64,
     pub render_submissions: u64,
@@ -2654,6 +2657,9 @@ async fn receive(
             }
             Some(message::Union::TestDelay(probe)) => {
                 if !probe.from_client {
+                    if probe.last_delay > 0 {
+                        lock(&state.inner).snapshot.network_rtt_ms = Some(probe.last_delay);
+                    }
                     let mut response = Message::new();
                     response.set_test_delay(probe);
                     control
