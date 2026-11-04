@@ -13,8 +13,8 @@ use rd_engine::conn_token::ConnToken;
 use rd_engine::protocol::Target;
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
-    direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
-    ViewerOptions, ViewerSnapshot, ViewerTarget,
+    direct_address, CursorImage, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer,
+    ViewerInputPolicy, ViewerOptions, ViewerSnapshot, ViewerTarget,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -22,7 +22,7 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::c_void,
     path::{Component, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
 mod app_context;
 mod app_directory;
@@ -318,6 +318,11 @@ struct Reported {
     /// The last peer-issued 2FA challenge shown to this consumer.
     second_factor_challenge: u64,
     password_challenge: u64,
+    cursor_revision: u64,
+    cursor_position_revision: u64,
+    /// Last exported image, only to split data/id over a limited poll. Earlier
+    /// images may have been evicted by the UI, so selecting one resends its data.
+    cursor_image: Weak<CursorImage>,
 }
 
 impl Reported {
@@ -427,6 +432,65 @@ impl Reported {
             events.push(serde_json::json!({ "name": "clipboard_files" }));
         }
         events
+    }
+
+    /// Cursor state is coalesced, never appended to `pending`: a slow consumer
+    /// gets the latest selection/position inside its remaining poll budget.
+    fn cursor_events(
+        &mut self,
+        snapshot: &ViewerSnapshot,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+        let mut events = Vec::new();
+        if snapshot.closed || !snapshot.authenticated || snapshot.protocol != "rustdesk" {
+            self.cursor_image = Weak::new();
+            return Ok(events);
+        }
+        let cursor = &snapshot.cursor;
+        if limit > 0 && cursor.revision != self.cursor_revision {
+            if let Some(id) = cursor.id {
+                if let Some(image) = &cursor.image {
+                    let weak = Arc::downgrade(image);
+                    let known = self.cursor_image.ptr_eq(&weak);
+                    if !cursor.from_id || !known {
+                        let colors = serde_json::to_string(&image.rgba)?;
+                        events.push(serde_json::json!({
+                            "name": "cursor_data",
+                            "id": image.id.to_string(),
+                            "hotx": image.hotx.to_string(),
+                            "hoty": image.hoty.to_string(),
+                            "width": image.width.to_string(),
+                            "height": image.height.to_string(),
+                            "colors": colors,
+                        }));
+                        self.cursor_image = weak;
+                    }
+                    if !cursor.from_id {
+                        self.cursor_revision = cursor.revision;
+                    } else if events.len() < limit {
+                        events.push(serde_json::json!({ "name": "cursor_id", "id": id.to_string() }));
+                        self.cursor_revision = cursor.revision;
+                    }
+                } else {
+                    // Preserve the actual wire ID, but explicitly invalidate a
+                    // consumer's older same-ID bitmap after rejection/eviction.
+                    self.cursor_image = Weak::new();
+                    events.push(serde_json::json!({
+                        "name": "cursor_id", "id": id.to_string(), "cache_miss": "true",
+                    }));
+                    self.cursor_revision = cursor.revision;
+                }
+            }
+        }
+        if events.len() < limit && cursor.position_revision != self.cursor_position_revision {
+            if let Some((x, y)) = cursor.position {
+                events.push(serde_json::json!({
+                    "name": "cursor_position", "x": x.to_string(), "y": y.to_string(),
+                }));
+                self.cursor_position_revision = cursor.position_revision;
+            }
+        }
+        Ok(events)
     }
 }
 
@@ -2093,7 +2157,17 @@ pub fn session_poll_events(session_id: String, limit: u32) -> String {
             }
         }
         let count = record.reported.pending.len().min(limit as usize);
+        let cursor = match snapshot.as_ref() {
+            Some(snapshot) if !record.closing && !record.closed => {
+                match record.reported.cursor_events(snapshot, limit as usize - count) {
+                    Ok(events) => events,
+                    Err(_) => return error_json("cursor event encoding failed"),
+                }
+            }
+            _ => Vec::new(),
+        };
         let mut events: Vec<_> = record.reported.pending.drain(..count).collect();
+        events.extend(cursor);
         if record.transfer.is_none() {
             record.transfer = record
                 .viewer
@@ -3442,6 +3516,101 @@ mod tests {
             .any(|event| event["name"] == "connection_ready"));
         assert!(!events.iter().any(|event| event["type"] == "input-password"));
         assert!(reported.events(&snapshot).is_empty());
+    }
+
+    fn cursor_snapshot(id: u64, color: u8) -> ViewerSnapshot {
+        ViewerSnapshot {
+            protocol: "rustdesk".into(),
+            authenticated: true,
+            cursor: rd_engine::viewer::CursorSnapshot {
+                revision: 1,
+                id: Some(id),
+                image: Some(Arc::new(super::CursorImage {
+                    id, hotx: 0, hoty: 0, width: 1, height: 1, rgba: vec![color; 4],
+                })),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cursor_poll_supplies_an_unseen_cached_bitmap_before_id_within_the_limit() {
+        let id = (1u64 << 53) + 7;
+        let mut snapshot = cursor_snapshot(id, 17);
+        snapshot.cursor.revision = 3;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.position_revision = 2;
+        snapshot.cursor.position = Some((-1500, 900));
+        let mut reported = Reported::default();
+        assert!(reported.cursor_events(&snapshot, 0).unwrap().is_empty());
+        // The engine already saw A, B, then ID(A); this consumer saw none of
+        // them. A limit of one must not lose either the data or the ID.
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_data", "id": id.to_string(),
+            "hotx": "0", "hoty": "0", "width": "1", "height": "1",
+            "colors": "[17,17,17,17]",
+        })]);
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": id.to_string(),
+        })]);
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_position", "x": "-1500", "y": "900",
+        })]);
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+
+        let first = snapshot.cursor.image.clone();
+        snapshot.cursor.id = Some(9);
+        snapshot.cursor.image = cursor_snapshot(9, 29).cursor.image;
+        snapshot.cursor.revision = 4;
+        snapshot.cursor.from_id = false;
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap()[0]["name"], "cursor_data");
+        snapshot.cursor.id = Some(id);
+        snapshot.cursor.image = first;
+        snapshot.cursor.revision = 5;
+        snapshot.cursor.from_id = true;
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap()[0]["name"], "cursor_data",
+            "a consumer may have evicted a previously exported image");
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": id.to_string(),
+        })]);
+        assert!(reported.cursor_events(&snapshot, 1).unwrap().is_empty());
+
+        let mut next_viewer = Reported::default();
+        let next = next_viewer.cursor_events(&snapshot, 2).unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0]["name"], "cursor_data", "no bitmap receipt crosses a dial/epoch reset");
+        assert_eq!(next[1]["name"], "cursor_id");
+    }
+
+    #[test]
+    fn cursor_poll_replaces_same_id_data_and_clears_missing_images_without_post_close_events() {
+        let mut snapshot = cursor_snapshot(7, 17);
+        let mut reported = Reported::default();
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[17,17,17,17]");
+        snapshot.cursor.image = cursor_snapshot(7, 43).cursor.image;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.revision = 2;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[43,43,43,43]");
+        snapshot.cursor.image = None;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.revision = 3;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": "7", "cache_miss": "true",
+        })]);
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        snapshot.cursor.image = cursor_snapshot(7, 61).cursor.image;
+        snapshot.cursor.from_id = false;
+        snapshot.cursor.revision = 4;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[61,61,61,61]");
+
+        snapshot.authenticated = false;
+        snapshot.cursor.position = Some((1, 2));
+        snapshot.cursor.position_revision = 1;
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        snapshot.closed = true;
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        assert_eq!(reported.events(&snapshot), vec![serde_json::json!({ "name": "close" })]);
     }
 
     /// A clipboard update waiting in the mailbox is announced on every poll until

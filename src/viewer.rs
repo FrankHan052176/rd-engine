@@ -13,6 +13,8 @@
 //! fact is reported separately from the video pipeline's.
 
 mod auth;
+mod cursor;
+pub use cursor::{CursorImage, CursorSnapshot};
 use auth::authenticate;
 #[cfg(test)]
 use auth::authenticate_loop;
@@ -406,6 +408,9 @@ pub struct ViewerSnapshot {
     pub version: String,
     pub displays: Vec<PeerDisplayInfo>,
     pub current_display: i32,
+    /// Latest real RustDesk cursor messages; bitmap bytes are shared, not copied
+    /// with each frame/snapshot. Empty before authorization and after close.
+    pub cursor: CursorSnapshot,
 }
 
 /// One of the peer's displays in the terms the peer's own protocol uses. The
@@ -585,6 +590,7 @@ struct Inner {
     conn_token: Option<ConnToken>,
     geometry: Option<Geometry>,
     decoder: Option<DecoderObserver>,
+    cursor: cursor::CursorState,
     // Observation only; State::finish decides whether cleanup permits publishing it.
     observed_peer_close_reason: Option<PeerCloseReason>,
 }
@@ -1283,6 +1289,11 @@ impl State {
         let inner = lock(&self.inner);
         let mut out = inner.snapshot.clone();
         out.authenticated = self.authenticated.load(Ordering::Acquire);
+        out.cursor = if self.cursor_active() && !out.closed {
+            inner.cursor.snapshot()
+        } else {
+            CursorSnapshot::default()
+        };
         // What the engine would actually admit, not a reading of the peer's
         // grant alone: a read-only viewer and an unaccepted unproven peer both
         // report no keyboard here. The generation that admitted it is published
@@ -1349,6 +1360,7 @@ impl State {
         let mut inner = lock(&self.inner);
         inner.conn_token = None;
         if !inner.snapshot.closed {
+            inner.cursor = cursor::CursorState::default();
             inner.snapshot.phase = "closing".into();
         }
         if let Some(observer) = &inner.decoder {
@@ -1385,6 +1397,7 @@ impl State {
         let mut inner = lock(&self.inner);
         inner.conn_token = None;
         inner.snapshot.closed = true;
+        inner.cursor = cursor::CursorState::default();
         inner.snapshot.keyboard_allowed = false;
         // The category is published beside the string, not inside it: `error`
         // keeps the text it has always reported, and a client that has to choose
@@ -1619,6 +1632,7 @@ impl Viewer {
                 geometry: None,
                 decoder: None,
                 observed_peer_close_reason: None,
+                cursor: cursor::CursorState::default(),
             }),
             cancel: CancellationToken::new(),
             done: Notify::new(),
@@ -2637,6 +2651,9 @@ async fn receive(
             Some(message::Union::AudioFrame(frame)) => {
                 state.offer_audio_frame(frame);
             }
+            Some(message::Union::CursorData(data)) => state.cursor_data(data),
+            Some(message::Union::CursorId(id)) => state.cursor_id(id),
+            Some(message::Union::CursorPosition(position)) => state.cursor_position(position),
             Some(message::Union::FileAction(action)) => {
                 tokio::select! {
                     biased;
@@ -2769,9 +2786,8 @@ async fn receive(
                 }
                 _ => {}
             },
-            // Cursor and informational messages neither authorize input nor fake
-            // video state. The clipboard and the audio are not in this arm: both
-            // have their own arms above and their own owners.
+            // Informational messages neither authorize input nor fake video
+            // state. Cursor, clipboard and audio have their own owners above.
             _ => {}
         }
     }

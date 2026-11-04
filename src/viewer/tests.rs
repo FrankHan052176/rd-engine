@@ -66,8 +66,9 @@ fn writer_state() -> Arc<State> {
             snapshot: ViewerSnapshot::default(),
             geometry: None,
             decoder: None,
-            observed_peer_close_reason: None,
-        }),
+                observed_peer_close_reason: None,
+                cursor: super::cursor::CursorState::default(),
+            }),
         cancel: CancellationToken::new(),
         done: Notify::new(),
         result: Mutex::new(None),
@@ -1300,8 +1301,199 @@ async fn audio_plays_only_the_peer_grant_and_the_local_option() {
     assert!(!audio.snapshot().allowed);
 }
 
-#[tokio::test]
-async fn peer_test_delay_retains_the_last_positive_rtt_and_echoes_unchanged() {
+    fn cursor_bitmap(id: u64, value: u8) -> base::message_proto::CursorData {
+        base::message_proto::CursorData {
+            id,
+            hotx: 1,
+            width: 2,
+            height: 1,
+            colors: hbb_common::compress::compress(&[value; 8]).into(),
+            ..Default::default()
+        }
+    }
+
+    /// The echoed probe proves preceding cursor records passed through the real
+    /// reader, without sleeps or polling the state for an assumed delivery.
+    async fn cursor_barrier(
+        peer: &mut WireWriter,
+        echoed: &mut mpsc::Receiver<Vec<Message>>,
+        state: &State,
+    ) -> ViewerSnapshot {
+        let mut probe = Message::new();
+        probe.set_test_delay(base::message_proto::TestDelay::default());
+        peer.send(&probe).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(RECEIVE_LIMIT, echoed.recv()).await.unwrap().unwrap(),
+            vec![probe],
+        );
+        state.snapshot()
+    }
+
+    #[tokio::test]
+    async fn peer_cursor_messages_keep_cached_images_and_global_positions_without_media_progress() {
+        use base::message_proto::CursorPosition;
+
+        let state = writer_state();
+        lock(&state.inner).snapshot.displays.push(super::PeerDisplayInfo {
+            x: -1920, y: 640, width: 1920, height: 1080, ..Default::default()
+        });
+        let before = state.snapshot();
+        let (control, mut echoed) = mpsc::channel(COMMANDS);
+        let (transfer, _transfer_rx) = mpsc::channel(COMMANDS);
+        let Wire {
+            writer: _client_writer,
+            peer: _peer_reader,
+            _client_reader: reader,
+            _peer_writer: mut peer,
+        } = writer_wire();
+        let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+        let id = (1u64 << 53) + 7;
+        let first = cursor_bitmap(id, 17);
+        // A slow consumer sees neither intermediate bitmap. Selecting A by ID
+        // still supplies its real bitmap, not the most recently received B.
+        for data in [first.clone(), cursor_bitmap(9, 29)] {
+            let mut message = Message::new();
+            message.set_cursor_data(data);
+            peer.send(&message).await.unwrap();
+        }
+        let mut selected = Message::new();
+        selected.set_cursor_id(id);
+        peer.send(&selected).await.unwrap();
+        let mut position = Message::new();
+        position.set_cursor_position(CursorPosition { x: -1500, y: 900, ..Default::default() });
+        peer.send(&position).await.unwrap();
+        let observed = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        let image = observed.cursor.image.as_ref().unwrap();
+        assert_eq!((image.id, image.hotx, image.hoty, image.width, image.height), (id, 1, 0, 2, 1));
+        assert_eq!(image.rgba, vec![17; 8]);
+        assert_eq!(observed.cursor.revision, 3);
+        assert!(observed.cursor.from_id);
+        assert_eq!(observed.cursor.position, Some((-1500, 900)), "no display-origin subtraction");
+
+        peer.send(&selected).await.unwrap();
+        peer.send(&position).await.unwrap();
+        let mut repeated = Message::new();
+        repeated.set_cursor_data(first.clone());
+        peer.send(&repeated).await.unwrap();
+        let repeated = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        assert_eq!(repeated.cursor.revision, observed.cursor.revision);
+        assert_eq!(repeated.cursor.position_revision, observed.cursor.position_revision);
+        assert!(Arc::ptr_eq(image, repeated.cursor.image.as_ref().unwrap()));
+
+        let mut changed = Message::new();
+        changed.set_cursor_data(cursor_bitmap(id, 43));
+        peer.send(&changed).await.unwrap();
+        for x in 0..64 {
+            position.set_cursor_position(CursorPosition { x, y: 1000, ..Default::default() });
+            peer.send(&position).await.unwrap();
+        }
+        let changed = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        assert_eq!(changed.cursor.image.as_ref().unwrap().rgba, vec![43; 8]);
+        assert!(!Arc::ptr_eq(image, changed.cursor.image.as_ref().unwrap()));
+        assert!(!changed.cursor.from_id, "same-ID data replaces the old bitmap");
+        assert_eq!(changed.cursor.position, Some((63, 1000)), "only the latest move is retained");
+        assert_eq!(changed.input_generation, before.input_generation);
+        assert_eq!(changed.keyboard_allowed, before.keyboard_allowed);
+        assert_eq!((changed.received_units, changed.pushed_units, changed.render_submissions), (0, 0, 0));
+        assert!(changed.authenticated && !changed.closed);
+
+        state.request_close();
+        state.cursor_data(first);
+        state.cursor_id(id);
+        state.cursor_position(CursorPosition { x: 1, y: 2, ..Default::default() });
+        let closing = state.snapshot();
+        assert!(closing.cursor.id.is_none());
+        assert!(closing.cursor.image.is_none());
+        assert!(closing.cursor.position.is_none());
+        state.finish(Ok(()));
+        assert!(state.snapshot().cursor.image.is_none());
+        tokio::time::timeout(RECEIVE_LIMIT, reading).await.unwrap().unwrap().unwrap();
+    }
+
+    #[test]
+    fn invalid_cursor_bitmaps_and_unknown_ids_clear_the_image_without_ending_the_session() {
+        use std::io::Write;
+
+        let state = writer_state();
+        let valid = cursor_bitmap(7, 17);
+        let before = state.snapshot();
+        state.authenticated.store(false, super::Ordering::Release);
+        state.cursor_data(valid.clone());
+        state.cursor_id(7);
+        assert!(state.snapshot().cursor.id.is_none(), "no cursor is published before authorization");
+        state.authenticated.store(true, super::Ordering::Release);
+        let mut bad_size = valid.clone();
+        bad_size.width = 513;
+        let mut bad_hotspot = valid.clone();
+        bad_hotspot.hotx = 2;
+        let mut short = valid.clone();
+        short.colors = hbb_common::compress::compress(&[0; 7]).into();
+        let mut inflated = valid.clone();
+        inflated.colors = hbb_common::compress::compress(&[0; 1024]).into();
+        let mut corrupt = valid.clone();
+        corrupt.colors = vec![1, 2, 3].into();
+        let mut too_large = valid.clone();
+        too_large.colors = vec![0; 2 * 512 * 512 * 4 + 1].into();
+        let mut encoder = zstd::Encoder::new(Vec::<u8>::new(), 3).unwrap();
+        encoder.window_log(23).unwrap();
+        encoder.write_all(b"abcdefgh").unwrap();
+        let frame = encoder.finish().unwrap();
+        assert_eq!(zstd::decode_all(frame.as_slice()).unwrap(), b"abcdefgh".to_vec());
+        let mut large_window = valid.clone();
+        large_window.colors = frame.into();
+
+        for invalid in [bad_size, bad_hotspot, short, inflated, corrupt, too_large, large_window] {
+            state.cursor_data(valid.clone());
+            assert!(state.snapshot().cursor.image.is_some());
+            state.cursor_data(invalid);
+            let refused = state.snapshot();
+            assert_eq!(refused.cursor.id, Some(7));
+            assert!(refused.cursor.image.is_none(), "no previous same-ID image survives rejection");
+            state.cursor_id(7);
+            assert!(state.snapshot().cursor.image.is_none(), "the cache was invalidated too");
+            assert!(refused.authenticated && !refused.closed);
+            assert_eq!(refused.input_generation, before.input_generation);
+            assert_eq!(refused.received_units, 0);
+        }
+        state.cursor_data(valid.clone());
+        state.cursor_id(u64::MAX);
+        assert_eq!(state.snapshot().cursor.id, Some(u64::MAX));
+        assert!(state.snapshot().cursor.image.is_none());
+        state.cursor_data(valid);
+        assert_eq!(state.snapshot().cursor.image.as_ref().unwrap().rgba, vec![17; 8]);
+    }
+
+    #[test]
+    fn cursor_cache_is_fifo_bounded_by_both_image_count_and_rgba_bytes() {
+        let state = writer_state();
+        for id in 0..=256 {
+            state.cursor_data(cursor_bitmap(id, 17));
+        }
+        state.cursor_id(0);
+        assert!(state.snapshot().cursor.image.is_none());
+        state.cursor_id(1);
+        assert!(state.snapshot().cursor.image.is_some(), "FIFO keeps the next-oldest ID");
+
+        let state = writer_state();
+        let mut bitmap = base::message_proto::CursorData {
+            width: 512,
+            height: 512,
+            colors: hbb_common::compress::compress(&vec![17; 512 * 512 * 4]).into(),
+            ..Default::default()
+        };
+        for id in 0..=16 {
+            bitmap.id = id;
+            state.cursor_data(bitmap.clone());
+        }
+        state.cursor_id(0);
+        assert!(state.snapshot().cursor.image.is_none(), "17 MiB does not fit the 16 MiB cache");
+        state.cursor_id(1);
+        assert_eq!(state.snapshot().cursor.image.as_ref().unwrap().rgba.len(), 512 * 512 * 4);
+        assert!(state.snapshot().authenticated);
+    }
+
+    #[tokio::test]
+    async fn peer_test_delay_retains_the_last_positive_rtt_and_echoes_unchanged() {
     use base::message_proto::TestDelay;
 
     let state = writer_state();
