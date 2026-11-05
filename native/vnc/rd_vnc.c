@@ -4,9 +4,12 @@
 #include "rd_vnc_hooks.h"
 #include <limits.h>
 #include <string.h>
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
+/* linux/tcp.h is where TCP_INFO's own fields are declared: the OHOS SDK's
+ * netinet/tcp.h only forward-declares struct tcp_info, so a build that read the
+ * measurement through that header alone could not see tcpi_rtt at all. */
+#include <linux/tcp.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <sys/socket.h>
 #endif
 
@@ -305,8 +308,9 @@ static int cursor_paint(rd_vnc *session) {
     session->cursor_paint_height = height;
     return 1;
 }
-#if defined(_WIN32)
-/* Winsock exposes no TCP_INFO, so this measurement is unavailable rather than 0. */
+#if defined(_WIN32) || defined(__APPLE__)
+/* Neither platform's socket API exposes TCP_INFO, so this measurement is
+ * unavailable here rather than zero. */
 static int socket_rtt_us(const rfbClient *client) {
     (void)client;
     return -1;

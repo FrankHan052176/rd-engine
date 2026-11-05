@@ -97,7 +97,10 @@ hotspot the peer names and the mask upstream decodes, and saves the pixels under
 that rectangle so the next library write starts from what the server sent. The
 frame also carries the count of real rectangles decoded, the encoding of the
 most recent one and the socket's own smoothed round trip from TCP_INFO, which is
-the only round trip a wire without a delay probe can state.
+the only round trip a wire without a delay probe can state. That reading comes
+from linux/tcp.h, where TCP_INFO's fields are declared: the OHOS SDK's
+netinet/tcp.h only forward-declares struct tcp_info. A platform whose socket API
+has no TCP_INFO reports the measurement as unavailable, never as zero.
 Security: None and VNC authentication only. A username-bearing Endpoint is
 rejected rather than ignored. LibVNCClient's password callback cannot represent
 embedded NUL and its VNC-auth implementation rejects an empty password; these
