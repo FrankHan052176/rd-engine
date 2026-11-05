@@ -78,6 +78,8 @@ fn writer_state() -> Arc<State> {
         authenticated: AtomicBool::new(true),
         rdp_input_flags: super::AtomicU16::new(0),
         peer_proven: AtomicBool::new(true),
+        // The reader's stage state, empty until a test drives a reading.
+        reader_progress: super::ReaderProgress::new(),
         input: InputGate::new(ViewerInputPolicy::interactive()),
         // The clipboard mailbox and its fence, with the peer's grant and the
         // local option left to each test: nothing is admitted until a test
@@ -1671,6 +1673,150 @@ async fn audio_plays_only_the_peer_grant_and_the_local_option() {
         .expect("the reader stops on cancellation")
         .expect("the reader task joins")
         .expect("cancelling the reader succeeds");
+}
+
+/// The one reader publishes the stage it is standing in, so a session that stops
+/// producing frames can be asked where its only reader actually is: here the
+/// peer's file messages leave it waiting inside the bounded transfer queue, and
+/// that wait is visible — with its dwell age growing — before anything is
+/// released.
+#[tokio::test]
+async fn reader_progress_reports_the_transfer_stage_while_the_one_reader_waits() {
+    let state = writer_state();
+    // No reader publishes a stage yet, so a caller is told nothing rather than
+    // shown a zero-filled stage.
+    assert_eq!(state.snapshot().reader_progress, None);
+
+    let (control, mut echoed) = mpsc::channel(COMMANDS);
+    // One slot this test deliberately leaves full: the second action is the one
+    // the reader waits inside.
+    let (transfer, mut inbound) = mpsc::channel(1);
+    let Wire {
+        writer: _client_writer,
+        peer: _peer_reader,
+        _client_reader: reader,
+        _peer_writer: mut peer,
+    } = writer_wire();
+    let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+    let actions = ["/first", "/second"].map(|path| {
+        let mut action = base::message_proto::FileAction::new();
+        action.set_read_dir(base::message_proto::ReadDir {
+            path: path.into(),
+            ..Default::default()
+        });
+        action
+    });
+    for action in &actions {
+        let mut message = Message::new();
+        message.set_file_action(action.clone());
+        peer.send(&message)
+            .await
+            .expect("the peer's file message reaches the wire");
+    }
+
+    let mut probe = Message::new();
+    probe.set_test_delay(base::message_proto::TestDelay {
+        time: 123,
+        last_delay: 21,
+        ..Default::default()
+    });
+    peer.send(&probe)
+        .await
+        .expect("the peer's probe arrives behind the blocked file records");
+
+    // Wait for the reading itself instead of sleeping: the stage is published
+    // before the reader waits, so a bounded poll observes the wait it is in.
+    let waiting = tokio::time::timeout(RECEIVE_LIMIT, async {
+        loop {
+            if let Some(progress) = state.snapshot().reader_progress {
+                if progress.phase == "transfer_dispatch" {
+                    return progress;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the reader reports the dispatch it is waiting in");
+
+    // A real wait, so the age reported afterwards is a measurement of this wait
+    // rather than the zero a getter would return.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let grown = state
+        .snapshot()
+        .reader_progress
+        .expect("the waiting reader is still published");
+    assert_eq!(
+        grown.phase, "transfer_dispatch",
+        "the reader did not leave the stage it is blocked in"
+    );
+    assert!(
+        grown.age_ms >= waiting.age_ms + 50,
+        "the dwell age grows while the reader waits: {} -> {}",
+        waiting.age_ms,
+        grown.age_ms
+    );
+    assert!(matches!(
+        echoed.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    // Freeing one slot lets the blocked send finish; the queue keeps the order
+    // the peer sent in, so nothing was dropped or reordered to unblock it.
+    let first = tokio::time::timeout(RECEIVE_LIMIT, inbound.recv())
+        .await
+        .expect("the first action was queued")
+        .expect("the inbound queue stays open");
+    let crate::transfer::Inbound::Action(first) = first else {
+        panic!("the reader queued something other than the peer's action");
+    };
+    assert_eq!(first, actions[0]);
+    let second = tokio::time::timeout(RECEIVE_LIMIT, inbound.recv())
+        .await
+        .expect("the blocked send completes once a slot frees")
+        .expect("the inbound queue stays open");
+    let crate::transfer::Inbound::Action(second) = second else {
+        panic!("the reader queued something other than the peer's action");
+    };
+    assert_eq!(second, actions[1]);
+
+    // A probe that arrived behind the blocked records is still echoed unchanged,
+    // and its answer reaches the control queue only after them.
+    let batch = tokio::time::timeout(RECEIVE_LIMIT, echoed.recv())
+        .await
+        .expect("the reader queues the probe's echo after the blocked dispatch")
+        .expect("the control queue stays open");
+    assert_eq!(batch, vec![probe], "the probe is echoed unchanged");
+    assert_eq!(state.snapshot().network_rtt_ms, Some(21));
+
+    // Done dispatching, the reader is waiting on the wire again: the live stage
+    // is the one it is really in, never the one it left.
+    tokio::time::timeout(RECEIVE_LIMIT, async {
+        loop {
+            if state
+                .snapshot()
+                .reader_progress
+                .is_some_and(|progress| progress.phase == "wire_wait")
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the reader returns to waiting on the wire");
+
+    state.cancel.cancel();
+    tokio::time::timeout(RECEIVE_LIMIT, reading)
+        .await
+        .expect("the reader stops on cancellation")
+        .expect("the reader task joins")
+        .expect("cancelling the reader succeeds");
+    // An ended reader leaves a terminal reading, never the stage it left.
+    assert_eq!(
+        state.snapshot().reader_progress.map(|progress| progress.phase),
+        Some("stopped")
+    );
 }
 
 /// The one reader hands the peer's format and frames to the session's own

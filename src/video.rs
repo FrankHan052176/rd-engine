@@ -611,15 +611,7 @@ async fn feed_loop<H: VideoOwner>(
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            let pts_us = frame
-                .pts
-                .checked_mul(1000)
-                .ok_or(ViewerError::TimestampOverflow)?;
-            let unit = AccessUnit {
-                bytes: frame.data.to_vec(),
-                pts_us,
-                kind: AccessUnitKind::Frame { key: frame.key },
-            };
+            let unit = access_unit(frame)?;
             // The decoder admission operation: the submit itself, including a
             // wait for the decoder's own capacity when it is full. Only an
             // accepted unit is a sample; a rejection returns below.
@@ -632,5 +624,64 @@ async fn feed_loop<H: VideoOwner>(
             }
             owner.video_decoder_admission(admission.elapsed());
         }
+    }
+}
+
+fn access_unit(frame: EncodedVideoFrame) -> Result<AccessUnit, ViewerError> {
+    let pts_us = frame
+        .pts
+        .checked_mul(1000)
+        .ok_or(ViewerError::TimestampOverflow)?;
+    Ok(AccessUnit {
+        // Reuse uniquely owned payload storage instead of always copying it.
+        // Shared/static storage may still copy. Trim spare backing capacity so
+        // the AU retains only bytes charged to its existing admission quota.
+        bytes: Vec::from(frame.data).into_boxed_slice().into_vec(),
+        pts_us,
+        kind: AccessUnitKind::Frame { key: frame.key },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hbb_common::protobuf::Message as _;
+
+    #[test]
+    fn video_payload_reuses_owned_wire_bytes() {
+        let frame = EncodedVideoFrame {
+            data: vec![0x5a; 256].into(),
+            pts: 17,
+            key: true,
+            ..Default::default()
+        };
+        // The same slice-backed protobuf parse used by WireReader::decode,
+        // rather than assuming the wire's payload has reusable storage.
+        let wire = frame.write_to_bytes().unwrap();
+        let parsed = EncodedVideoFrame::parse_from_bytes(&wire).unwrap();
+        let payload = parsed.data.as_ptr();
+        let unit = access_unit(parsed).unwrap();
+        assert_eq!(unit.bytes.as_ptr(), payload, "no second payload allocation");
+        assert_eq!(unit.bytes, vec![0x5a; 256]);
+        assert_eq!(unit.bytes.capacity(), unit.bytes.len());
+        assert_eq!(unit.pts_us, 17_000);
+        assert_eq!(unit.kind, AccessUnitKind::Frame { key: true });
+    }
+
+    #[test]
+    fn video_payload_compacts_shared_slice_without_retaining_unbilled_bytes() {
+        let owner = bytes::Bytes::from(vec![0x7b; 4096]);
+        let frame = EncodedVideoFrame {
+            data: owner.slice(64..192),
+            pts: 18,
+            key: false,
+            ..Default::default()
+        };
+        let unit = access_unit(frame).unwrap();
+        assert_eq!(unit.bytes, vec![0x7b; 128]);
+        assert_eq!(unit.bytes.capacity(), 128, "retain only charged AU bytes");
+        assert_eq!(owner.as_ref(), &[0x7b; 4096]);
+        assert_eq!(unit.pts_us, 18_000);
+        assert_eq!(unit.kind, AccessUnitKind::Frame { key: false });
     }
 }

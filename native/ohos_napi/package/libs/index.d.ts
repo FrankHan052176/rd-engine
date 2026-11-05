@@ -111,6 +111,10 @@ export declare function sessionOnWaitingForImageDialogShow(sessionId: string): s
  * and renderApi as null (unmeasured) or {samples,totalNs,peakNs,over8Ms}.
  * peakNs is a dial-lifetime maximum; over8Ms counts samples strictly above 8 ms.
  * Legacy queueCalls/queueNs/busyFrames are null, not measured zero waits.
+ * readerProgress is null until this session's one reader publishes, otherwise
+ * {phase,ageMs}: phase is wire_wait, wire_decode, video_dispatch,
+ * cursor_dispatch, transfer_dispatch, cliprdr_dispatch, control_dispatch,
+ * other_dispatch or stopped, and ageMs is how long it has been in that phase.
  */
 export declare function sessionGetFrameRateSnapshot(sessionId: string, display: number): string
 

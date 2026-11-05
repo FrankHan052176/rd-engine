@@ -2865,6 +2865,23 @@ fn pipeline_timings_json(value: &rd_engine::viewer::PipelineTimings) -> serde_js
     })
 }
 
+/// Where the one reader stands, or null when no reader publishes a stage for
+/// this session (another protocol's wire, or a reader that has not started).
+/// `ageMs` is dwell time in `phase` on the reader's own monotonic clock — not
+/// CPU time and not a per-frame duration — and `stopped` is the terminal
+/// reading of a reader that has returned.
+fn reader_progress_json(
+    progress: Option<rd_engine::transport::ReaderProgressSnapshot>,
+) -> serde_json::Value {
+    match progress {
+        Some(progress) => serde_json::json!({
+            "phase": progress.phase,
+            "ageMs": progress.age_ms,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 /// Cumulative counters from `Viewer::snapshot`. The engine reports totals, not
 /// window rates, so the client owns the sampling window; this never invents an
 /// average it did not measure.
@@ -2928,6 +2945,9 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             "busyFrames": null,
             "queueTimingAvailable": false,
             "pipelineTimings": pipeline_timings_json(&value.pipeline_timings),
+            // The stage the one reader is in right now. Null is an observation
+            // this session never had, not a reader standing still.
+            "readerProgress": reader_progress_json(value.reader_progress),
             // The interval this path measures runs from taking a unit to the
             // submission of its picture: the round trip through the codec,
             // pipeline delay included, not the decode work itself. The client's

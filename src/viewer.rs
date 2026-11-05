@@ -33,7 +33,7 @@ use crate::{
     rendezvous::RendezvousConfig,
     session::{AuthenticatedParts, PeerCloseReason, SessionMode},
     session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
-    transport::{WireReader, WireWriter},
+    transport::{ReaderPhase, ReaderProgress, WireReader, WireWriter},
 };
 use base::message_proto::{
     self as proto, KeyEvent, Message, MouseEvent, OptionMessage, message, misc,
@@ -359,6 +359,14 @@ pub struct ViewerSnapshot {
     /// This session's per-stage diagnostics, kept apart from the residency above
     /// because they answer different questions about the same frame.
     pub pipeline_timings: PipelineTimings,
+    /// The stage the one reader is standing in at this snapshot, with how long
+    /// it has been there.
+    ///
+    /// Updated before dispatch takes session locks or awaits a bounded queue.
+    /// This full snapshot still takes the session lock: it is not a lock-free
+    /// probe of that lock. `None` means this session's reader has not published
+    /// a stage (including other protocols), not a measured zero wait.
+    pub reader_progress: Option<crate::transport::ReaderProgressSnapshot>,
     /// Units admitted but not yet pushed into the decoder at this snapshot.
     pub queued_units: u64,
     /// This session's audio playback, or `None` when the session never had an
@@ -673,6 +681,10 @@ struct State {
     // Installed by authenticate once the writer task owns the control channel,
     // so out-of-band control (keyframe requests) can be sent after login.
     control: Mutex<Option<mpsc::Sender<Vec<Message>>>>,
+    /// Where the one reader publishes the stage it is standing in.
+    ///
+    /// Independent of `inner`, so dispatch can publish before taking that lock.
+    reader_progress: Arc<ReaderProgress>,
     session_options: Mutex<SessionOptions>,
     advertised_decoding: Mutex<Option<proto::SupportedDecoding>>,
     /// The peer's second-factor step: installed by authentication only while
@@ -1337,6 +1349,9 @@ impl State {
     fn snapshot(&self) -> ViewerSnapshot {
         let inner = lock(&self.inner);
         let mut out = inner.snapshot.clone();
+        // The checkpoint is independent, but constructing this full snapshot
+        // still requires `inner`; do not claim it can bypass a held state lock.
+        out.reader_progress = self.reader_progress.snapshot();
         out.authenticated = self.authenticated.load(Ordering::Acquire);
         out.cursor = if self.cursor_active() && !out.closed {
             inner.cursor.snapshot()
@@ -1736,6 +1751,10 @@ impl Viewer {
             authenticated: AtomicBool::new(false),
             rdp_input_flags: AtomicU16::new(0),
             peer_proven: AtomicBool::new(false),
+            // The reader's own stage state exists from the start and stays empty
+            // until that session's reader publishes one: a session that never
+            // runs one reports no reading rather than a stage it never had.
+            reader_progress: ReaderProgress::new(),
             // The local policy is in force before the session starts, not after
             // the first caller asks: this is what makes a read-only viewer
             // read-only from its first event.
@@ -2749,6 +2768,30 @@ async fn run_rustdesk(
     result
 }
 
+/// The stage this reader enters for one message.
+///
+/// It is decided from the message's own union before any branch runs, so no
+/// stage is recorded after the work it describes. Only the owners this reader
+/// really waits on get a label of their own; everything else shares
+/// `other_dispatch` instead of inventing a stage per message kind. Nothing here
+/// reads the message's contents, an address or a payload.
+fn dispatch_phase(union: Option<&message::Union>) -> ReaderPhase {
+    match union {
+        Some(message::Union::VideoFrame(_)) => ReaderPhase::VideoDispatch,
+        Some(message::Union::CursorData(_))
+        | Some(message::Union::CursorId(_))
+        | Some(message::Union::CursorPosition(_)) => ReaderPhase::CursorDispatch,
+        Some(message::Union::FileAction(_)) | Some(message::Union::FileResponse(_)) => {
+            ReaderPhase::TransferDispatch
+        }
+        Some(message::Union::Cliprdr(_)) => ReaderPhase::CliprdrDispatch,
+        // The one control path this reader takes itself: the peer's probe is
+        // queued for the session's writer here.
+        Some(message::Union::TestDelay(_)) => ReaderPhase::ControlDispatch,
+        _ => ReaderPhase::OtherDispatch,
+    }
+}
+
 async fn receive(
     state: Arc<State>,
     mut reader: WireReader,
@@ -2756,12 +2799,21 @@ async fn receive(
     control: mpsc::Sender<Vec<Message>>,
     transfer: mpsc::Sender<crate::transfer::Inbound>,
 ) -> Result<(), ViewerError> {
+    // This loop publishes the stage it stands in, beside the session state and
+    // never inside it. The reader drops the publication when this future ends,
+    // so cancellation and every error exit leave a terminal reading rather than
+    // the last live stage.
+    let progress = Arc::clone(&state.reader_progress);
+    reader.track_progress(Arc::clone(&progress));
     loop {
         let message = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
             result = reader.recv() => result.map_err(|_| ViewerError::TransportFailed)?.ok_or(ViewerError::RemoteClosed)?,
         };
+        // Before the branch, not after it: these dispatches are the work that can
+        // block, so the published stage has to be the one being entered.
+        progress.enter(dispatch_phase(message.union.as_ref()));
         match message.union {
             Some(message::Union::VideoFrame(frame)) => {
                 if let Some(admission) = admission.as_mut() {
