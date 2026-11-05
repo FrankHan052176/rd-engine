@@ -29,6 +29,9 @@ Four upstream files have small integration changes:
   replaced. Connection failures still retain native logging.
 - sockets.c: wrap the existing upstream read/write functions to record actual
   transport failure; report the actual read EOF separately from transport errors.
+  On the engine-owned non-blocking socket, count only expired waits toward the
+  read timeout and reset that count after data arrives; EAGAIN alone is not a
+  timeout. A failed readiness wait remains an immediate transport failure.
 - vncviewer.c: report failed existing framebuffer bounds checks as geometry errors
   rather than silently presenting success after a rejected library bitmap/copy.
 - rfbclient.h: include the generated rfbconfig.h before testing feature macros

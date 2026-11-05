@@ -126,7 +126,29 @@
  {
    const int USECS_WAIT_PER_RETRY = 100000;
    int retries = 0;
-@@ -169,6 +170,7 @@
+@@ -154,7 +155,7 @@
+ 	if (i < 0) {
+ 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
+ 	    if (client->readTimeout > 0 &&
+-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
++		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
+ 	    {
+ 	      rfbClientLog("Connection timed out\n");
+ 	      return FALSE;
+@@ -162,19 +163,26 @@
+ 	    /* TODO:
+ 	       ProcessXtEvents();
+ 	    */
+-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
++	    /* The engine adopts a non-blocking socket, so every drained socket yields
++	     * EAGAIN. Only a wait that expires without readable data counts toward
++	     * readTimeout; progress below resets it. */
++	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
++	    if (ready < 0) return FALSE;
++	    if (ready == 0) ++retries;
+ 	    i = 0;
+ 	  } else {
+ 	    rfbClientErr("read (%d: %s)\n",errno,strerror(errno));
  	    return FALSE;
  	  }
  	} else {
@@ -134,7 +156,36 @@
  	  if (errorMessageOnReadFailure) {
  	    rfbClientLog("VNC server closed connection\n");
  	  }
-@@ -218,6 +220,7 @@
+ 	  return FALSE;
+ 	}
+       }
++      if (i > 0) retries = 0;
+       client->buffered += i;
+     }
+ 
+@@ -203,7 +211,7 @@
+ #endif
+ 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
+ 	    if (client->readTimeout > 0 &&
+-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
++		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
+ 	    {
+ 		rfbClientLog("Connection timed out\n");
+ 		return FALSE;
+@@ -211,19 +219,26 @@
+ 	    /* TODO:
+ 	       ProcessXtEvents();
+ 	    */
+-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
++	    /* The engine adopts a non-blocking socket, so every drained socket yields
++	     * EAGAIN. Only a wait that expires without readable data counts toward
++	     * readTimeout; progress below resets it. */
++	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
++	    if (ready < 0) return FALSE;
++	    if (ready == 0) ++retries;
+ 	    i = 0;
+ 	  } else {
+ 	    rfbClientErr("read (%s)\n",strerror(errno));
  	    return FALSE;
  	  }
  	} else {
@@ -142,7 +193,14 @@
  	  if (errorMessageOnReadFailure) {
  	    rfbClientLog("VNC server closed connection\n");
  	  }
-@@ -247,7 +250,7 @@
+ 	  return FALSE;
+ 	}
+       }
++      if (i > 0) retries = 0;
+       out += i;
+       n -= i;
+     }
+@@ -247,7 +262,7 @@
   */
  
  rfbBool

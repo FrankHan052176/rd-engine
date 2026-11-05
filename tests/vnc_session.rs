@@ -540,3 +540,81 @@ async fn upstream_sends_exactly_one_incremental_request_per_update() {
         "the adapter duplicated upstream's incremental request"
     );
 }
+
+/// The engine adopts a non-blocking socket, so a single upstream read of a large
+/// rectangle sees EAGAIN each time it drains the socket. `readTimeout` must
+/// measure silence, not drained-socket wakeups: a healthy peer that trickles one
+/// rectangle in many small pieces (far more than the 300 waits that 30 seconds
+/// of 100 ms retries allow) must still be decoded.
+#[tokio::test]
+async fn a_large_rectangle_arriving_in_pieces_is_not_a_read_timeout() {
+    const RECT_WIDTH: u16 = 200;
+    const RECT_HEIGHT: u16 = 300;
+    // One upstream Raw read: 240000 bytes, which is within its 307200 byte limit.
+    const PIECE: usize = 600;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        let Ok((mut stream, _peer)) = listener.accept().await else {
+            return;
+        };
+        stream.set_nodelay(true).expect("fixture nodelay");
+        write_all(&mut stream, b"RFB 003.008\n").await;
+        let mut banner = [0u8; 12];
+        read_exact(&mut stream, &mut banner).await;
+        write_all(&mut stream, &[1, 1]).await;
+        let mut chosen = [0u8; 1];
+        read_exact(&mut stream, &mut chosen).await;
+        write_all(&mut stream, &0u32.to_be_bytes()).await;
+
+        let mut shared = [0u8; 1];
+        read_exact(&mut stream, &mut shared).await;
+        let mut init = Vec::new();
+        init.extend_from_slice(&RECT_WIDTH.to_be_bytes());
+        init.extend_from_slice(&RECT_HEIGHT.to_be_bytes());
+        init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+        init.extend_from_slice(&0u32.to_be_bytes());
+        write_all(&mut stream, &init).await;
+
+        let mut set_format = [0u8; 20];
+        read_exact(&mut stream, &mut set_format).await;
+        let mut encoding_header = [0u8; 4];
+        read_exact(&mut stream, &mut encoding_header).await;
+        let count = usize::from(u16::from_be_bytes([encoding_header[2], encoding_header[3]]));
+        let _ = read_message(&mut stream, count * 4).await;
+        let _ = read_message(&mut stream, 10).await;
+
+        let mut message = update(1);
+        rect_header(
+            &mut message,
+            0,
+            0,
+            RECT_WIDTH as i32,
+            RECT_HEIGHT as i32,
+            ENCODING_RAW,
+        );
+        for _ in 0..(RECT_WIDTH as usize * RECT_HEIGHT as usize) {
+            message.extend_from_slice(&RED);
+        }
+        // Each piece is sent alone, so the client's non-blocking read drains the
+        // socket and waits again between them.
+        for piece in message.chunks(PIECE) {
+            write_all(&mut stream, piece).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // Library-driven incremental request after the update was consumed.
+        let _ = read_message(&mut stream, 10).await;
+    });
+
+    let mut sink = MemorySurface::new(RECT_WIDTH as i32, RECT_HEIGHT as i32).expect("sink");
+    let mut session = connect_or_panic(address, &sink).await;
+    let event = timeout(LIMIT, session.pump(&mut sink))
+        .await
+        .expect("pump did not stall")
+        .expect("a healthy trickling peer is not a read timeout");
+    assert_eq!(event, Some(RfbEvent::Painted));
+    for pixel in sink.bytes().chunks_exact(4) {
+        assert_eq!(pixel, RED, "every pixel of the large raw rectangle");
+    }
+}

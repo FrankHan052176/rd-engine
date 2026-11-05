@@ -155,7 +155,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	if (i < 0) {
 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
 	    if (client->readTimeout > 0 &&
-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
+		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
 	    {
 	      rfbClientLog("Connection timed out\n");
 	      return FALSE;
@@ -163,7 +163,12 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	    /* TODO:
 	       ProcessXtEvents();
 	    */
-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    /* The engine adopts a non-blocking socket, so every drained socket yields
+	     * EAGAIN. Only a wait that expires without readable data counts toward
+	     * readTimeout; progress below resets it. */
+	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    if (ready < 0) return FALSE;
+	    if (ready == 0) ++retries;
 	    i = 0;
 	  } else {
 	    rfbClientErr("read (%d: %s)\n",errno,strerror(errno));
@@ -177,6 +182,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	  return FALSE;
 	}
       }
+      if (i > 0) retries = 0;
       client->buffered += i;
     }
 
@@ -205,7 +211,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 #endif
 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
 	    if (client->readTimeout > 0 &&
-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
+		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
 	    {
 		rfbClientLog("Connection timed out\n");
 		return FALSE;
@@ -213,7 +219,12 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	    /* TODO:
 	       ProcessXtEvents();
 	    */
-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    /* The engine adopts a non-blocking socket, so every drained socket yields
+	     * EAGAIN. Only a wait that expires without readable data counts toward
+	     * readTimeout; progress below resets it. */
+	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    if (ready < 0) return FALSE;
+	    if (ready == 0) ++retries;
 	    i = 0;
 	  } else {
 	    rfbClientErr("read (%s)\n",strerror(errno));
@@ -227,6 +238,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	  return FALSE;
 	}
       }
+      if (i > 0) retries = 0;
       out += i;
       n -= i;
     }

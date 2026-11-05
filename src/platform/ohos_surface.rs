@@ -620,6 +620,10 @@ mod native {
     /// red, alpha in memory order, which is what `PixelLayout::bgra8888()`
     /// writes with the red channel at shift 16 and blue at shift 0.
     const NATIVEBUFFER_PIXEL_FMT_BGRA_8888: i32 = 20;
+    /// ArkUI already sizes the Surface to the selected fit/original/stretch
+    /// rectangle. Fill that rectangle so displayed pixels and input mapping
+    /// use the same geometry, rather than leaving peer-sized pixels at 1:1.
+    const OH_SCALING_MODE_SCALE_TO_WINDOW_V2: i32 = 1;
 
     unsafe extern "C" {
         // The SDK's request hands over a release fence that this sink owns: it
@@ -667,6 +671,10 @@ mod native {
         // warning at best and a silent mismatch at worst.
         fn OH_NativeWindow_DestroyNativeWindow(window: *mut core::ffi::c_void);
         fn OH_NativeWindow_NativeWindowHandleOpt(window: *mut NativeWindow, code: i32, ...) -> i32;
+        fn OH_NativeWindow_NativeWindowSetScalingModeV2(
+            window: *mut NativeWindow,
+            scaling_mode: i32,
+        ) -> i32;
         fn OH_NativeWindow_NativeWindowRequestBuffer(
             window: *mut NativeWindow,
             buffer: *mut *mut NativeWindowBuffer,
@@ -802,6 +810,12 @@ mod native {
             })?;
             buffer_result(unsafe {
                 OH_NativeWindow_NativeWindowHandleOpt(handle, SET_USAGE, CPU_BUFFER_USAGE)
+            })?;
+            buffer_result(unsafe {
+                OH_NativeWindow_NativeWindowSetScalingModeV2(
+                    handle,
+                    OH_SCALING_MODE_SCALE_TO_WINDOW_V2,
+                )
             })?;
             Ok(opened)
         }
