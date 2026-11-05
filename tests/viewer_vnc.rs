@@ -208,6 +208,23 @@ async fn until_awaiting_surface(viewer: &Viewer) -> ViewerSnapshot {
     }
 }
 
+/// A submission is counted once its blocking worker has returned, so the
+/// observer can report a frame before that count moves. This waits for the
+/// count the assertion is about instead of racing it.
+async fn until_submitted(viewer: &Viewer) -> ViewerSnapshot {
+    let deadline = tokio::time::Instant::now() + LIMIT;
+    loop {
+        let snapshot = viewer.snapshot();
+        if snapshot.render_submissions >= 1 || snapshot.closed || snapshot.error.is_some() {
+            return snapshot;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return snapshot;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// One client-to-server message this fixture reports back, in the values the
 /// wire carries. Everything else the client sends — the pixel format, the
 /// encodings, the update requests themselves — is answered and not reported, so
@@ -441,10 +458,11 @@ async fn a_vnc_target_drives_the_viewer_shell_end_to_end() {
     );
     assert_eq!(bytes, RED.repeat(usize::from(WIDTH) * usize::from(HEIGHT)));
 
-    // The wire's own accounting now reaches the client: the rectangle the
-    // fixture painted, the encoding it arrived in, and the one submission that
-    // put it on the sink. A VNC session names its encoding and never a codec
-    // vendor, and neither counter is inferred from the FPS window.
+    // The wire's own accounting now reaches the client. The rectangle and the
+    // encoding it arrived in are published before the frame is presented, so
+    // both are readable as soon as the observer has the pixels. A VNC session
+    // names its encoding and never a codec vendor, and neither counter is
+    // inferred from the FPS window.
     let streamed = viewer.snapshot();
     assert_eq!(
         streamed.codec, "Raw",
@@ -455,10 +473,13 @@ async fn a_vnc_target_drives_the_viewer_shell_end_to_end() {
         "the painted rectangle is counted: {}",
         streamed.received_units
     );
+    // The submission is counted after its blocking worker returns, which is
+    // after the observer already has the frame.
+    let counted = until_submitted(&viewer).await;
     assert!(
-        streamed.render_submissions >= 1,
+        counted.render_submissions >= 1,
         "a successful present is a submission: {}",
-        streamed.render_submissions
+        counted.render_submissions
     );
 
     // Closing proves reclamation rather than merely stopping.
