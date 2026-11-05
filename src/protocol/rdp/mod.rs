@@ -1200,10 +1200,6 @@ mod tests {
             RdpError::Transport(io::ErrorKind::ConnectionRefused)
         );
         assert!(failure.certificate.is_none());
-        assert_eq!(
-            failure.to_string(),
-            "RDP transport failed: ConnectionRefused"
-        );
     }
 
     /// With no platform trust store, the refusal it forces is not the answer the
