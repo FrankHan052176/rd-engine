@@ -6,6 +6,7 @@
 //! NativeSurface buffers are never retained by the native decoder.
 
 pub mod auth;
+mod diag;
 mod native;
 pub mod session;
 mod worker;

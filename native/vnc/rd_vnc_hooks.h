@@ -4,6 +4,8 @@
 #include "rd_vnc.h"
 #include <rfb/rfbclient.h>
 void rd_vnc_fail(rfbClient *client, int code);
+/* Records the first failing operation (first wins, never overwritten). */
+void rd_vnc_note(rfbClient *client, int stage, int os_errno, unsigned int want);
 void rd_vnc_reason(rfbClient *client, const char *reason);
 void rd_vnc_auth_result(rfbClient *client, uint32_t result);
 int rd_vnc_allow_security(rfbClient *client, uint32_t security);

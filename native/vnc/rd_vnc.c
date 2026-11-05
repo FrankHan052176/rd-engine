@@ -13,6 +13,8 @@ struct rd_vnc {
     char *password, *reason, *clipboard;
     size_t clipboard_length;
     int error, resized, bell;
+    rd_vnc_origin origin;
+    unsigned int reads; /* ReadFromRFBServer calls in the current message */
 };
 static char client_tag;
 
@@ -31,6 +33,15 @@ static void erase_password(rd_vnc *session) {
 void rd_vnc_fail(rfbClient *client, int code) {
     rd_vnc *session = owner(client);
     if (session && session->error == RD_VNC_OK) session->error = code;
+}
+void rd_vnc_note(rfbClient *client, int stage, int os_errno, unsigned int want) {
+    rd_vnc *session = owner(client);
+    if (!session || session->origin.stage != RD_VNC_STAGE_NONE) return;
+    session->origin.stage = stage;
+    session->origin.os_errno = os_errno;
+    session->origin.want = want;
+    session->origin.buffered = client->buffered;
+    session->origin.reads = session->reads;
 }
 void rd_vnc_reason(rfbClient *client, const char *reason) {
     rd_vnc *session = owner(client);
@@ -66,7 +77,10 @@ void rd_vnc_prefer_security(uint8_t *types, unsigned int count) {
 extern rfbBool rd_vnc_read_upstream(rfbClient *, char *, unsigned int);
 extern rfbBool rd_vnc_write_upstream(rfbClient *, const char *, unsigned int);
 rfbBool ReadFromRFBServer(rfbClient *client, char *out, unsigned int count) {
-    rfbBool ok = rd_vnc_read_upstream(client, out, count);
+    rd_vnc *session = owner(client);
+    rfbBool ok;
+    if (session) ++session->reads;
+    ok = rd_vnc_read_upstream(client, out, count);
     if (!ok) rd_vnc_fail(client, RD_VNC_TRANSPORT);
     return ok;
 }
@@ -210,11 +224,15 @@ int rd_vnc_handle(rd_vnc *session, rd_vnc_frame *frame) {
     if (!client || session->error) return 0;
     session->damage_count = 0;
     session->resized = session->bell = 0;
+    session->reads = 0;
     free(session->clipboard);
     session->clipboard = NULL;
     session->clipboard_length = 0;
     /* This upstream function sends the next incremental request itself. */
     if (!HandleRFBServerMessage(client)) {
+        /* A read/write failure already recorded its own stage; this is every
+         * other FALSE (decode failure, unknown message type, bounds check). */
+        rd_vnc_note(client, RD_VNC_STAGE_HANDLE_FALSE, 0, 0);
         rd_vnc_fail(client, RD_VNC_PROTOCOL);
         return 0;
     }
@@ -249,6 +267,11 @@ int rd_vnc_clipboard(rd_vnc *s, const char *text, int length) {
     return SendClientCutText(s->client, (char *)text, length);
 }
 int rd_vnc_error_code(const rd_vnc *s) { return s->error; }
+int rd_vnc_origin_get(const rd_vnc *s, rd_vnc_origin *out) {
+    if (s->origin.stage == RD_VNC_STAGE_NONE) return 0;
+    *out = s->origin;
+    return 1;
+}
 const char *rd_vnc_error_reason(const rd_vnc *s) { return s->reason ? s->reason : ""; }
 const char *rd_vnc_name(const rd_vnc *s) { return s->client->desktopName; }
 int rd_vnc_width(const rd_vnc *s) { return s->client->width; }

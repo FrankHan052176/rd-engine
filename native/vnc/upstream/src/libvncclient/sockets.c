@@ -75,8 +75,10 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
   /* Handle attempts to write to NULL out buffer that might occur
      when an outside malloc() fails. For instance, memcpy() to NULL
      results in undefined behaviour and probably memory corruption.*/
-  if(!out)
+  if(!out) {
+    rd_vnc_note(client, RD_VNC_STAGE_READ_NULL, 0, n);
     return FALSE;
+  }
 
   if (client->serverPort==-1) {
     /* vncrec playing */
@@ -157,6 +159,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	    if (client->readTimeout > 0 &&
 		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
 	    {
+	      rd_vnc_note(client, RD_VNC_STAGE_READ_TIMEOUT, 0, n);
 	      rfbClientLog("Connection timed out\n");
 	      return FALSE;
 	    }
@@ -167,15 +170,24 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	     * EAGAIN. Only a wait that expires without readable data counts toward
 	     * readTimeout; progress below resets it. */
 	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
-	    if (ready < 0) return FALSE;
-	    if (ready == 0) ++retries;
+	    if (ready < 0) {
+	      int wait_errno = errno;
+	      /* An interrupted wait is not a failed connection: look again. */
+	      if (wait_errno != EINTR) {
+	        rd_vnc_note(client, RD_VNC_STAGE_READ_WAIT, wait_errno, n);
+	        return FALSE;
+	      }
+	    } else if (ready == 0) ++retries;
 	    i = 0;
 	  } else {
-	    rfbClientErr("read (%d: %s)\n",errno,strerror(errno));
+	    int read_errno = errno;
+	    rd_vnc_note(client, RD_VNC_STAGE_READ_ERRNO, read_errno, n);
+	    rfbClientErr("read (%d: %s)\n",read_errno,strerror(read_errno));
 	    return FALSE;
 	  }
 	} else {
           rd_vnc_fail(client, RD_VNC_CLOSED);
+	  rd_vnc_note(client, RD_VNC_STAGE_READ_EOF, 0, n);
 	  if (errorMessageOnReadFailure) {
 	    rfbClientLog("VNC server closed connection\n");
 	  }
@@ -213,6 +225,7 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	    if (client->readTimeout > 0 &&
 		retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
 	    {
+		rd_vnc_note(client, RD_VNC_STAGE_READ_TIMEOUT, 0, n);
 		rfbClientLog("Connection timed out\n");
 		return FALSE;
 	    }
@@ -223,15 +236,24 @@ rd_vnc_read_upstream(rfbClient* client, char *out, unsigned int n)
 	     * EAGAIN. Only a wait that expires without readable data counts toward
 	     * readTimeout; progress below resets it. */
 	    int ready = WaitForMessage(client, USECS_WAIT_PER_RETRY);
-	    if (ready < 0) return FALSE;
-	    if (ready == 0) ++retries;
+	    if (ready < 0) {
+	      int wait_errno = errno;
+	      /* An interrupted wait is not a failed connection: look again. */
+	      if (wait_errno != EINTR) {
+	        rd_vnc_note(client, RD_VNC_STAGE_READ_WAIT, wait_errno, n);
+	        return FALSE;
+	      }
+	    } else if (ready == 0) ++retries;
 	    i = 0;
 	  } else {
-	    rfbClientErr("read (%s)\n",strerror(errno));
+	    int read_errno = errno;
+	    rd_vnc_note(client, RD_VNC_STAGE_READ_ERRNO, read_errno, n);
+	    rfbClientErr("read (%s)\n",strerror(read_errno));
 	    return FALSE;
 	  }
 	} else {
           rd_vnc_fail(client, RD_VNC_CLOSED);
+	  rd_vnc_note(client, RD_VNC_STAGE_READ_EOF, 0, n);
 	  if (errorMessageOnReadFailure) {
 	    rfbClientLog("VNC server closed connection\n");
 	  }
@@ -280,7 +302,10 @@ rd_vnc_write_upstream(rfbClient* client, const char *buf, unsigned int n)
   if (client->tlsSession) {
     /* WriteToTLS() will guarantee either everything is written, or error/eof returns */
     i = WriteToTLS(client, buf, n);
-    if (i <= 0) return FALSE;
+    if (i <= 0) {
+      rd_vnc_note(client, RD_VNC_STAGE_WRITE_LAYER, 0, n);
+      return FALSE;
+    }
 
     return TRUE;
   }
@@ -290,6 +315,7 @@ rd_vnc_write_upstream(rfbClient* client, const char *buf, unsigned int n)
                       buf, n,
                       &output, &outputlen);
     if (err != SASL_OK) {
+      rd_vnc_note(client, RD_VNC_STAGE_WRITE_LAYER, 0, n);
       rfbClientLog("Failed to encode SASL data %s",
                    sasl_errstring(err, NULL, NULL));
       return FALSE;
@@ -315,15 +341,20 @@ rd_vnc_write_upstream(rfbClient* client, const char *buf, unsigned int n)
 	  FD_SET(client->sock,&fds);
 
 	  if (select(client->sock+1, NULL, &fds, NULL, NULL) <= 0) {
+	    int write_errno = errno;
+	    rd_vnc_note(client, RD_VNC_STAGE_WRITE_WAIT, write_errno, n);
 	    rfbClientErr("select\n");
 	    return FALSE;
 	  }
 	  j = 0;
 	} else {
+	  int write_errno = errno;
+	  rd_vnc_note(client, RD_VNC_STAGE_WRITE_ERRNO, write_errno, n);
 	  rfbClientErr("write\n");
 	  return FALSE;
 	}
       } else {
+	rd_vnc_note(client, RD_VNC_STAGE_WRITE_ZERO, 0, n);
 	rfbClientLog("write failed\n");
 	return FALSE;
       }
@@ -878,10 +909,14 @@ int WaitForMessage(rfbClient* client,unsigned int usecs)
 
   num=select(client->sock+1, &fds, NULL, NULL, &timeout);
   if(num<0) {
+    int wait_errno;
 #ifdef WIN32
     errno=WSAGetLastError();
 #endif
-    rfbClientLog("Waiting for message failed: %d (%s)\n",errno,strerror(errno));
+    /* Callers report this errno: logging must not replace it. */
+    wait_errno = errno;
+    rfbClientLog("Waiting for message failed: %d (%s)\n",wait_errno,strerror(wait_errno));
+    errno = wait_errno;
   }
 
   return num;

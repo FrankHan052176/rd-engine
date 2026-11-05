@@ -31,7 +31,10 @@ Four upstream files have small integration changes:
   transport failure; report the actual read EOF separately from transport errors.
   On the engine-owned non-blocking socket, count only expired waits toward the
   read timeout and reset that count after data arrives; EAGAIN alone is not a
-  timeout. A failed readiness wait remains an immediate transport failure.
+  timeout. Interrupted readiness waits (EINTR) continue waiting; other readiness
+  errors remain immediate transport failures. Record the first failing operation,
+  its immediately captured errno and byte/read counts through typed hooks, without
+  credentials or peer content. WaitForMessage preserves errno across its logging.
 - vncviewer.c: report failed existing framebuffer bounds checks as geometry errors
   rather than silently presenting success after a rejected library bitmap/copy.
 - rfbclient.h: include the generated rfbconfig.h before testing feature macros

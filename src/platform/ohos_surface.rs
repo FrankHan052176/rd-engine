@@ -621,9 +621,23 @@ mod native {
     /// writes with the red channel at shift 16 and blue at shift 0.
     const NATIVEBUFFER_PIXEL_FMT_BGRA_8888: i32 = 20;
     /// ArkUI already sizes the Surface to the selected fit/original/stretch
-    /// rectangle. Fill that rectangle so displayed pixels and input mapping
-    /// use the same geometry, rather than leaving peer-sized pixels at 1:1.
+    /// rectangle. A buffer of the peer's size is meant to be stretched to that
+    /// rectangle by the consumer, so displayed pixels and input mapping share
+    /// one geometry. This only states the intent for a buffer whose size
+    /// differs from the node; it does not make the window hand out such a
+    /// buffer, which is what `present` enforces through the buffer geometry.
     const OH_SCALING_MODE_SCALE_TO_WINDOW_V2: i32 = 1;
+    #[link(name = "hilog_ndk.z")]
+    unsafe extern "C" {
+        fn OH_LOG_Print(
+            kind: i32,
+            level: i32,
+            domain: u32,
+            tag: *const core::ffi::c_char,
+            format: *const core::ffi::c_char,
+            ...
+        ) -> i32;
+    }
 
     unsafe extern "C" {
         // The SDK's request hands over a release fence that this sink owns: it
@@ -762,8 +776,15 @@ mod native {
     }
 
     /// Owns the native window until it is destroyed or retained.
+    ///
+    /// `OH_NativeWindow_CreateNativeWindowFromSurfaceId` may reuse ArkUI's
+    /// window. Its Surface buffer configuration is shared: a later XComponent
+    /// layout can replace the geometry set at `open`. `present` therefore sets
+    /// the framebuffer geometry immediately before requesting its buffer.
     pub(super) struct Window {
         inner: Option<Inner>,
+        /// Whether the first buffer's geometry has been logged for this window.
+        reported: bool,
     }
 
     impl Window {
@@ -793,6 +814,7 @@ mod native {
                     _lease: lease,
                     _permit: permit,
                 }),
+                reported: false,
             };
             // The format is constant for the lifetime of the sink, because
             // `layout` promises one layout; the geometry follows the framebuffer.
@@ -820,7 +842,10 @@ mod native {
             Ok(opened)
         }
 
-        /// Tells the window the geometry the next requested buffer must have.
+        /// Tells the window the geometry of the framebuffer. ArkUI shares and
+        /// rewrites this value, so `present` asserts it again before every
+        /// buffer request; this call only keeps `get`-side state consistent
+        /// between a resize and the next present.
         pub(super) fn set_geometry(&self, width: i32, height: i32) -> Result<(), SurfaceError> {
             let Some(inner) = self.inner.as_ref() else {
                 return Err(SurfaceError::NativeBufferUnavailable);
@@ -851,6 +876,14 @@ mod native {
                 return Err(SurfaceError::NativeBufferUnavailable);
             }
             let window = inner.handle as *mut NativeWindow;
+            // Request source-sized pixels, independently of the ArkUI layout.
+            // A larger buffer would show a 1:1 image in its top-left instead of
+            // letting the consumer scale the complete image to the node.
+            buffer_result(unsafe {
+                OH_NativeWindow_NativeWindowHandleOpt(
+                    window, SET_BUFFER_GEOMETRY, fb.width, fb.height,
+                )
+            })?;
             let mut buffer = ptr::null_mut();
             let mut fence = -1;
             buffer_result(unsafe {
@@ -861,17 +894,36 @@ mod native {
                 return Err(SurfaceError::NativeBufferUnavailable);
             }
             inner.outstanding = Some(buffer as usize);
-            // The consumer's release fence is ours from here: the SDK requires
-            // waiting for it before writing, then closing it. It is never
-            // handed back to the flush, whose acquire fence must be a different
-            // descriptor.
+            // The consumer's release fence is ours: wait before writing, then
+            // close it. Flush receives no fence, never this closed descriptor.
             let released = unsafe { wait_release_fence(fence) };
             let handle = unsafe { OH_NativeWindow_GetBufferHandleFromNative(buffer) };
-            let blitted = released
-                && match unsafe { handle.as_ref() } {
-                    Some(handle) => unsafe { blit_rows(handle, fb) },
-                    None => false,
-                };
+            let Some(handle) = (unsafe { handle.as_ref() }).filter(|_| released) else {
+                inner.abort(window);
+                return Err(SurfaceError::NativeBufferUnavailable);
+            };
+            let geometry_matches = handle.width == fb.width && handle.height == fb.height;
+            if !self.reported || !geometry_matches {
+                self.reported = true;
+                // Direct hilog also works in a Release build. Dimensions only;
+                // no Surface id, peer data, credentials or frame content.
+                unsafe {
+                    OH_LOG_Print(
+                        0, if geometry_matches { 4 } else { 5 }, 0xFF01,
+                        c"RustDeskIndex".as_ptr(),
+                        c"surface-geometry buffer=%{public}dx%{public}d stride=%{public}d framebuffer=%{public}dx%{public}d match=%{public}d".as_ptr(),
+                        handle.width, handle.height, handle.stride,
+                        fb.width, fb.height, i32::from(geometry_matches),
+                    );
+                }
+            }
+            if !geometry_matches {
+                // A mismatch is evidence, not proof of a transient race. Do not
+                // blindly re-request or publish a partially filled buffer.
+                inner.abort(window);
+                return Err(SurfaceError::NativeBufferUnavailable);
+            }
+            let blitted = unsafe { blit_rows(handle, fb) };
             if !blitted {
                 inner.abort(window);
                 return Err(SurfaceError::NativeBufferUnavailable);
@@ -1013,10 +1065,11 @@ mod native {
     /// Maps the requested buffer through its own descriptor and copies the
     /// canonical framebuffer into it, independent of the buffer's previous age.
     ///
-    /// Returns false without a partial write when the buffer cannot hold the
-    /// frame or cannot be mapped. The window may hand back a wider stride and
-    /// padding rows, never a smaller buffer, and a buffer that disagrees is a
-    /// window bug rather than something to clip around.
+    /// Returns false without a partial write when the buffer is not exactly the
+    /// framebuffer's geometry or cannot be mapped. A wider stride and padding
+    /// rows are the window's business and are honoured, but a buffer of another
+    /// width or height is refused: copying the frame into a larger one would
+    /// leave it at 1:1 in the top-left corner instead of stretched to the node.
     ///
     /// # Safety
     /// `handle` must be the handle of a buffer currently requested from a
@@ -1024,8 +1077,8 @@ mod native {
     unsafe fn blit_rows(handle: &BufferHandle, fb: &Framebuffer) -> bool {
         if handle.fd < 0
             || handle.size <= 0
-            || i64::from(handle.width) < i64::from(fb.width)
-            || i64::from(handle.height) < i64::from(fb.height)
+            || handle.width != fb.width
+            || handle.height != fb.height
             || handle.stride < 0
         {
             return false;

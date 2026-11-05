@@ -1,5 +1,6 @@
 use super::{
     RfbError,
+    diag,
     native::{Connected, Frame, Native},
     session::RfbOptions,
 };
@@ -101,7 +102,10 @@ impl Worker {
     fn enqueue(&self, command: Command) -> Result<(), RfbError> {
         self.ensure_open()?;
         self.commands.send(command).map_err(|_| RfbError::Closed)?;
-        self.wake.wake().map_err(|_| RfbError::Transport)
+        self.wake.wake().map_err(|error| {
+            diag::io("worker_wake", &error);
+            RfbError::Transport
+        })
     }
     pub fn receive(&self) -> Result<oneshot::Receiver<Result<Frame, RfbError>>, RfbError> {
         let (sender, receiver) = oneshot::channel();
@@ -150,7 +154,10 @@ impl Worker {
         match shutdown {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotConnected => Ok(()),
-            Err(_) => Err(RfbError::Transport),
+            Err(error) => {
+                diag::io("socket_shutdown", &error);
+                Err(RfbError::Transport)
+            }
         }
     }
 }
@@ -254,7 +261,8 @@ fn run(
                     Ok(_) => true, // EOF is handled by upstream, preserving Closed.
                     Err(error) if error.kind() == ErrorKind::WouldBlock => false,
                     Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                    Err(_) => {
+                    Err(error) => {
+                        diag::io("monitor_peek", &error);
                         failure = Some(RfbError::Transport);
                         false
                     }
@@ -280,6 +288,7 @@ fn run(
         // independently of socket readability; upstream handles buffered bytes.
         if let Err(error) = poll.poll(&mut events, None) {
             if error.kind() != ErrorKind::Interrupted {
+                diag::io("monitor_poll", &error);
                 failure = Some(RfbError::Transport);
             }
         }
