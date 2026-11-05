@@ -51,6 +51,14 @@ pub(super) struct Frame {
     bell: c_int,
     clipboard: *const c_char,
     clipboard_length: usize,
+    /// The encoding of the most recent real framebuffer rectangle in this
+    /// message, and how many it decoded. `rectangles` 0 means this message
+    /// carried no pixels, so `encoding` still names an earlier rectangle.
+    pub encoding: u32,
+    pub rectangles: u32,
+    /// The socket's own smoothed round trip in microseconds; a negative value
+    /// means the platform could not answer, which is not a measured zero.
+    pub tcp_rtt_us: c_int,
 }
 // SAFETY: exclusive worker ownership and the receive/consume protocol above
 // prevent mutation while the caller synchronously borrows these slices.

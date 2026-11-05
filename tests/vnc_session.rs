@@ -39,6 +39,10 @@ const MESSAGE_BELL: u8 = 2;
 const MESSAGE_CUT_TEXT: u8 = 3;
 const ENCODING_RAW: i32 = 0;
 const ENCODING_COPY_RECT: i32 = 1;
+/// The cursor pseudo-encodings, as the signed form of 0xFFFFFF1x on the wire.
+const ENCODING_X_CURSOR: i32 = 0xFFFF_FF10u32 as i32;
+const ENCODING_RICH_CURSOR: i32 = 0xFFFF_FF11u32 as i32;
+const ENCODING_POINTER_POS: i32 = 0xFFFF_FF18u32 as i32;
 
 /// One pixel as the fixture paints it, in the sink's BGRA order.
 const RED: [u8; 4] = [0x00, 0x00, 0xFF, 0xFF];
@@ -311,6 +315,14 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         &RED,
         "the copied pixel landed at (1, 1)"
     );
+    // The wire's own totals, which the client shows as the session's reception
+    // and encoding. One raw rectangle, then one copy rectangle.
+    assert_eq!(session.rectangles(), 2, "two rectangles were decoded");
+    assert_eq!(
+        session.encoding(),
+        Some(ENCODING_COPY_RECT as u32),
+        "the most recent rectangle was a copy"
+    );
 
     session.send_pointer(3, 2, 1).await.expect("pointer");
     session.send_key(0x0041, true).await.expect("key down");
@@ -350,6 +362,16 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         observed.encodings.contains(&ENCODING_COPY_RECT),
         "copy-rect must be advertised"
     );
+    // This build asks for the cursor shape itself. A server left to draw the
+    // cursor into the framebuffer can only send the two colours it picks, which
+    // is what made the pointer a solid silhouette at the peer's resolution.
+    for encoding in [ENCODING_X_CURSOR, ENCODING_RICH_CURSOR, ENCODING_POINTER_POS] {
+        assert!(
+            observed.encodings.contains(&encoding),
+            "the cursor pseudo-encoding {encoding:#x} must be advertised: {:?}",
+            observed.encodings
+        );
+    }
 
     assert_eq!(observed.first_request[0], 3, "FramebufferUpdateRequest");
     assert_eq!(observed.first_request[1], 0, "the first request is full");

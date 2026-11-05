@@ -2970,6 +2970,10 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             "frameWidth": (value.width > 0).then_some(value.width),
             "frameHeight": (value.height > 0).then_some(value.height),
             "networkRttMs": value.network_rtt_ms,
+            // A rectangle protocol carries no delay probe, so this is the
+            // socket's own smoothed round trip in milliseconds and not a peer
+            // measurement. Null means the platform had none to report.
+            "tcpRttMs": value.tcp_rtt_us.map(|micros| f64::from(micros) / 1000.0),
             // Both identities change when the viewer is dialled again, which is
             // what makes the client start a fresh window, and every rate it
             // shows is computed from the cumulative counters below.

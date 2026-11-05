@@ -2120,6 +2120,7 @@ HandleRFBServerMessage(rfbClient* client)
       if (rect.encoding == rfbEncodingXCursor ||
 	  rect.encoding == rfbEncodingRichCursor) {
 
+	rd_vnc_cursor_shape(client, rect.r.w, rect.r.h);
 	if (!HandleCursorShape(client,
 			       rect.r.x, rect.r.y, rect.r.w, rect.r.h,
 			       rect.encoding)) {
@@ -2272,6 +2273,8 @@ HandleRFBServerMessage(rfbClient* client)
 	   between framebuffer updates and cursor drawing operations. */
         client->SoftCursorLockArea(client, rect.r.x, rect.r.y, rect.r.w, rect.r.h);
       }
+
+      rd_vnc_rectangle(client, rect.encoding);
 
       switch (rect.encoding) {
 

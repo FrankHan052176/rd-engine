@@ -17,6 +17,29 @@ use std::fmt;
 pub const DEFAULT_PORT: u16 = 5900;
 pub const MAX_CUT_TEXT: usize = 1024 * 1024;
 
+/// The name of an RFB encoding the wire can carry, or `None` for an identifier
+/// this build does not name.
+///
+/// The identifiers are the protocol's own; these are the encodings this build
+/// advertises plus the ones upstream can decode without extra libraries. A name
+/// here is the encoding a rectangle arrived in, never a decoder implementation,
+/// a vendor or a claim about hardware.
+pub fn encoding_name(encoding: u32) -> Option<&'static str> {
+    Some(match encoding {
+        0 => "Raw",
+        1 => "CopyRect",
+        2 => "RRE",
+        4 => "CoRRE",
+        5 => "Hextile",
+        6 => "Zlib",
+        7 => "Tight",
+        15 => "TRLE",
+        16 => "ZRLE",
+        17 => "ZYWRLE",
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub enum RfbError {
     Transport,
@@ -64,5 +87,33 @@ impl From<std::io::Error> for RfbError {
 impl From<PixelError> for RfbError {
     fn from(_: PixelError) -> Self {
         Self::Geometry
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encoding_name;
+
+    /// The names this build can publish are the encodings it advertises, and an
+    /// identifier it does not know answers nothing rather than a made-up label.
+    #[test]
+    fn names_only_the_encodings_it_knows() {
+        for (identifier, name) in [
+            (0, "Raw"),
+            (1, "CopyRect"),
+            (2, "RRE"),
+            (4, "CoRRE"),
+            (5, "Hextile"),
+            (6, "Zlib"),
+            (16, "ZRLE"),
+        ] {
+            assert_eq!(encoding_name(identifier), Some(name), "{identifier}");
+        }
+        assert_eq!(encoding_name(3), None, "an unassigned identifier");
+        assert_eq!(
+            encoding_name(0xFFFF_FF11),
+            None,
+            "a cursor pseudo-encoding is a shape, not a frame encoding"
+        );
     }
 }

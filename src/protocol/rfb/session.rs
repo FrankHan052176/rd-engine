@@ -51,6 +51,12 @@ pub struct RfbSession {
     desktop: (i32, i32),
     name: String,
     authentication: Authentication,
+    /// Framebuffer rectangles this session has decoded, and the encoding the
+    /// most recent one used. Both come from the wire, never from the request.
+    rectangles: u64,
+    encoding: Option<u32>,
+    /// The socket's own smoothed round trip, when the platform reports one.
+    tcp_rtt_us: Option<u32>,
 }
 impl RfbSession {
     /// Returns after upstream initialization and its initial full update request.
@@ -88,6 +94,9 @@ impl RfbSession {
             desktop: info.desktop,
             name: info.name,
             authentication: info.authentication,
+            rectangles: 0,
+            encoding: None,
+            tcp_rtt_us: None,
         })
     }
     pub fn desktop(&self) -> (i32, i32) {
@@ -101,6 +110,29 @@ impl RfbSession {
     }
     pub fn layout(&self) -> PixelLayout {
         PixelLayout::bgra8888()
+    }
+    /// Framebuffer rectangles this session has decoded so far.
+    ///
+    /// Cumulative, so a client differences it over its own window. It counts
+    /// the rectangle units the server sent, never the requests this side made,
+    /// and a session that has received nothing answers 0.
+    pub fn rectangles(&self) -> u64 {
+        self.rectangles
+    }
+    /// The RFB encoding the most recent framebuffer rectangle arrived in.
+    ///
+    /// This is the encoding the server chose from the list this build
+    /// advertised, which is what the client labels the session's codec with.
+    /// `None` means no rectangle has arrived yet, not an unknown encoding.
+    pub fn encoding(&self) -> Option<u32> {
+        self.encoding
+    }
+    /// The socket's own smoothed round-trip time in microseconds.
+    ///
+    /// RFB has no delay probe, so this kernel estimate is the whole of what a
+    /// direct session can measure. `None` means the platform reported none.
+    pub fn tcp_rtt_us(&self) -> Option<u32> {
+        self.tcp_rtt_us
     }
 
     /// Cancellation-safe: a competing input/policy event may drop this future;
@@ -123,6 +155,16 @@ impl RfbSession {
         let received = receiver.await;
         self.pending = None;
         let frame = received.map_err(|_| RfbError::Closed)??;
+        // A message that carried no pixels leaves the last encoding in place: it
+        // still names what this session decodes, and the count it belongs to is
+        // already in `rectangles`.
+        if frame.rectangles > 0 {
+            self.rectangles = self.rectangles.saturating_add(u64::from(frame.rectangles));
+            self.encoding = Some(frame.encoding);
+        }
+        if frame.tcp_rtt_us > 0 {
+            self.tcp_rtt_us = u32::try_from(frame.tcp_rtt_us).ok();
+        }
         let event = frame.apply(target)?;
         self.desktop = (frame.width, frame.height);
         Ok(event)

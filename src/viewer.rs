@@ -365,6 +365,13 @@ pub struct ViewerSnapshot {
     /// Last positive RTT in milliseconds reported by a peer TestDelay.
     /// `None` means the peer has not supplied a positive measurement.
     pub network_rtt_ms: Option<u32>,
+    /// The socket's own smoothed round trip in microseconds, when the platform
+    /// reports one.
+    ///
+    /// A rectangle protocol has no delay probe on its wire, so this kernel
+    /// estimate is the only round trip such a session can state. `None` is
+    /// every session that reported none, which is not a measured zero.
+    pub tcp_rtt_us: Option<u32>,
     pub received_units: u64,
     pub pushed_units: u64,
     pub render_submissions: u64,
@@ -1242,6 +1249,33 @@ impl State {
     }
     fn route(&self, route: &'static str) {
         lock(&self.inner).snapshot.route = route.into();
+    }
+    /// Publishes the totals a direct rectangle wire reports for itself.
+    ///
+    /// Both counters are cumulative on this producer, so the wire's running
+    /// total replaces the previous reading instead of being added to it; the
+    /// client differences it over its own window. `codec` names the encoding a
+    /// rectangle actually arrived in, which is a fact about this session and
+    /// not a decoder vendor. A message with no pixels carries no new total, and
+    /// an unreadable round trip keeps the last one the platform gave.
+    fn rfb_received(&self, rectangles: u64, encoding: Option<u32>, tcp_rtt_us: Option<u32>) {
+        let mut inner = lock(&self.inner);
+        inner.snapshot.received_units = rectangles;
+        if let Some(codec) = encoding.and_then(crate::protocol::rfb::encoding_name) {
+            inner.snapshot.codec = codec.into();
+        }
+        if tcp_rtt_us.is_some() {
+            inner.snapshot.tcp_rtt_us = tcp_rtt_us;
+        }
+    }
+    /// Counts one framebuffer this session really submitted for display.
+    ///
+    /// It is the present that returned success, so a refused or deferred
+    /// presentation is not counted, and no scanout is claimed.
+    fn submitted(&self) {
+        let mut inner = lock(&self.inner);
+        inner.snapshot.render_submissions =
+            inner.snapshot.render_submissions.saturating_add(1);
     }
     /// Whether this viewer may exchange clipboard content with its peer right
     /// now: the AND of every fact that has to hold, collected in one place.
@@ -4096,7 +4130,13 @@ async fn present_sink(state: &State, surface: &mut Option<Sink>) -> Result<(), V
     });
     let (returned, presented) = returning.await.map_err(|_| ViewerError::TaskFailed)?;
     *surface = Some(returned);
-    presented.map(|_| ()).map_err(ViewerError::Surface)
+    let presented = presented.map_err(ViewerError::Surface)?;
+    // Only a presentation that returned success is a submission; a deferred or
+    // refused one is not, and neither is a scanout.
+    if presented {
+        state.submitted();
+    }
+    Ok(())
 }
 
 async fn presentation_changed(state: &State) {
@@ -4157,7 +4197,11 @@ async fn rfb_stream(
                 continue;
             }
             event = session.pump(surface.as_mut().ok_or(ViewerError::TaskFailed)?) => {
-                event.map_err(rfb_error)?
+                let event = event.map_err(rfb_error)?;
+                // The wire's own totals, published before the frame is matched,
+                // so a reading taken during the present already includes it.
+                state.rfb_received(session.rectangles(), session.encoding(), session.tcp_rtt_us());
+                event
             },
         };
         match event {

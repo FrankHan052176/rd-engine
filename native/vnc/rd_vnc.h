@@ -15,6 +15,14 @@ typedef struct rd_vnc_frame {
     int resized, painted, bell;
     const char *clipboard;
     size_t clipboard_length;
+    /* The encoding of the most recent real framebuffer rectangle in this
+     * message and how many it decoded. `rectangles` 0 means this message
+     * carried no pixels, so `encoding` still names an earlier rectangle. */
+    uint32_t encoding;
+    unsigned int rectangles;
+    /* The socket's own smoothed round trip in microseconds; -1 is unknown, and
+     * 0 would be indistinguishable from "no ACK measured yet". */
+    int tcp_rtt_us;
 } rd_vnc_frame;
 
 enum rd_vnc_error {
