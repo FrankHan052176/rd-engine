@@ -414,10 +414,6 @@ async fn a_vnc_target_drives_the_viewer_shell_end_to_end() {
         (WIDTH as i32, HEIGHT as i32)
     );
     assert_eq!(snapshot.route, "direct_tcp");
-    assert_eq!(
-        snapshot.codec, "",
-        "RFB paints pixels, it does not pick a codec"
-    );
     assert_eq!(snapshot.protocol, "vnc", "the snapshot names the wire");
     assert!(
         snapshot.keyboard_allowed,
@@ -444,6 +440,26 @@ async fn a_vnc_target_drives_the_viewer_shell_end_to_end() {
         (i32::from(WIDTH), i32::from(HEIGHT), usize::from(WIDTH) * 4)
     );
     assert_eq!(bytes, RED.repeat(usize::from(WIDTH) * usize::from(HEIGHT)));
+
+    // The wire's own accounting now reaches the client: the rectangle the
+    // fixture painted, the encoding it arrived in, and the one submission that
+    // put it on the sink. A VNC session names its encoding and never a codec
+    // vendor, and neither counter is inferred from the FPS window.
+    let streamed = viewer.snapshot();
+    assert_eq!(
+        streamed.codec, "Raw",
+        "the codec is the encoding this rectangle arrived in"
+    );
+    assert!(
+        streamed.received_units >= 1,
+        "the painted rectangle is counted: {}",
+        streamed.received_units
+    );
+    assert!(
+        streamed.render_submissions >= 1,
+        "a successful present is a submission: {}",
+        streamed.render_submissions
+    );
 
     // Closing proves reclamation rather than merely stopping.
     timeout(LIMIT, viewer.close())
