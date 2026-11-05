@@ -104,6 +104,9 @@ jobs:
           cargo test --locked --lib audio::tests
           cargo test --locked --lib viewer::tests
           cargo test --locked --lib 'protocol::rdp::'
+          cargo test --locked --lib surface::tests
+          cargo test --locked --lib viewer::rfb_failure_identity
+          cargo test --locked --test vnc_session --test viewer_vnc
           cargo test --locked --lib reader_progress
           cargo test --locked --lib video_payload
           cargo test --locked --lib pipeline_timing

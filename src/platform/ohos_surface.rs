@@ -483,6 +483,32 @@ impl PixelTarget for OhosSurface {
     }
 }
 
+/// Copies the canonical framebuffer into one buffer from the native queue.
+/// Buffers rotate and may be new or contain an older frame: copying only the
+/// latest damage would leave stale pixels outside that region. Native padding
+/// is left untouched; a buffer too small for the frame is refused before writing.
+#[cfg(any(target_env = "ohos", test))]
+fn copy_framebuffer(dst: &mut [u8], dst_stride: usize, fb: &Framebuffer) -> bool {
+    if dst_stride < fb.stride {
+        return false;
+    }
+    let last = fb.height as usize - 1;
+    let fits = last
+        .checked_mul(dst_stride)
+        .and_then(|start| start.checked_add(fb.stride))
+        .is_some_and(|end| end <= dst.len());
+    if !fits {
+        return false;
+    }
+    for row in 0..=last {
+        let src_start = row * fb.stride;
+        let dst_start = row * dst_stride;
+        dst[dst_start..dst_start + fb.stride]
+            .copy_from_slice(&fb.pixels[src_start..src_start + fb.stride]);
+    }
+    true
+}
+
 /// Bound on natives the sink is allowed to own, and the accounting that keeps
 /// the bound real.
 ///
@@ -523,10 +549,11 @@ mod native {
         ffi::c_void,
         ptr,
         sync::{LazyLock, Mutex, MutexGuard},
+        time::{Duration, Instant},
     };
 
     use super::{
-        Arc, BYTES_PER_PIXEL, Framebuffer, Rect, SurfaceError, SurfaceLease,
+        Arc, Framebuffer, Rect, SurfaceError, SurfaceLease,
         ownership::{MAX_OWNERS, OwnerBudget},
     };
 
@@ -540,21 +567,23 @@ mod native {
         _opaque: [u8; 0],
     }
     /// `BufferHandle` from `native_window/buffer_handle.h`. Field order and
-    /// types are the header's; the two the sink blits through are `stride`
-    /// (bytes per row) and `vir_addr`. Fields nothing reads are
-    /// underscore-prefixed, which leaves the layout untouched. The header's
-    /// trailing `int32_t reserve[0]` is a flexible array member of no size, so
-    /// it is not bound here.
+    /// types are the header's; the ones the sink blits through are `fd` and
+    /// `size` (what it maps) and `stride` (bytes per row). `virAddr` is the
+    /// address in the process that allocated the buffer, not a mapping this
+    /// process may write through, so the sink never reads it. Fields nothing
+    /// reads are underscore-prefixed, which leaves the layout untouched. The
+    /// header's trailing `int32_t reserve[0]` is a flexible array member of no
+    /// size, so it is not bound here.
     #[repr(C)]
     struct BufferHandle {
-        _fd: i32,
+        fd: i32,
         width: i32,
         stride: i32,
         height: i32,
-        _size: i32,
+        size: i32,
         _format: i32,
         _usage: u64,
-        vir_addr: *mut c_void,
+        _vir_addr: *mut c_void,
         _key: i32,
         _phy_addr: u64,
         _reserve_fds: u32,
@@ -583,16 +612,48 @@ mod native {
     const SET_BUFFER_GEOMETRY: i32 = 0;
     /// `NativeWindowOperation::SET_FORMAT`.
     const SET_FORMAT: i32 = 3;
+    /// `NativeWindowOperation::SET_USAGE`; this producer writes mapped CPU memory.
+    const SET_USAGE: i32 = 5;
+    /// CPU_READ | CPU_WRITE | MEM_DMA from `native_buffer/native_buffer.h`.
+    const CPU_BUFFER_USAGE: u64 = (1 << 0) | (1 << 1) | (1 << 3);
     /// `OH_NativeBuffer_Format::NATIVEBUFFER_PIXEL_FMT_BGRA_8888`: blue, green,
     /// red, alpha in memory order, which is what `PixelLayout::bgra8888()`
     /// writes with the red channel at shift 16 and blue at shift 0.
     const NATIVEBUFFER_PIXEL_FMT_BGRA_8888: i32 = 20;
 
     unsafe extern "C" {
-        // Required by the SDK, not chosen here: "when the fenceFd is used up,
-        // you need to close it", and only the flush closes it for us.
+        // The SDK's request hands over a release fence that this sink owns: it
+        // waits on it before writing and closes it, and the flush is given none.
         fn close(fd: i32) -> i32;
+        // The buffer's `fd` is the only way this process can write the pixels:
+        // the handle's `virAddr` belongs to the allocating process.
+        fn mmap(
+            addr: *mut c_void,
+            length: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut c_void;
+        fn munmap(addr: *mut c_void, length: usize) -> i32;
+        fn poll(fds: *mut PollFd, count: core::ffi::c_ulong, timeout_ms: i32) -> i32;
     }
+
+    /// `struct pollfd` of the target libc.
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+
+    const PROT_READ: i32 = 1;
+    const PROT_WRITE: i32 = 2;
+    const MAP_SHARED: i32 = 1;
+    const POLLIN: i16 = 1;
+    /// How long the consumer may keep the buffer before the sink gives it back
+    /// unwritten, matching the 3000 ms the SDK documents for the request.
+    const FENCE_WAIT_MS: i32 = 3000;
 
     #[link(name = "native_window")]
     unsafe extern "C" {
@@ -739,6 +800,9 @@ mod native {
             buffer_result(unsafe {
                 OH_NativeWindow_NativeWindowHandleOpt(handle, SET_BUFFER_GEOMETRY, width, height)
             })?;
+            buffer_result(unsafe {
+                OH_NativeWindow_NativeWindowHandleOpt(handle, SET_USAGE, CPU_BUFFER_USAGE)
+            })?;
             Ok(opened)
         }
 
@@ -757,8 +821,8 @@ mod native {
             })
         }
 
-        /// Copies the damaged rows of `fb` into one requested buffer and flushes
-        /// it, returning the buffer to the queue on every path.
+        /// Copies the current frame into one requested buffer and flushes its
+        /// damage region. A buffer whose return fails remains owned for close.
         pub(super) fn present(
             &mut self,
             fb: &Framebuffer,
@@ -779,16 +843,23 @@ mod native {
                 OH_NativeWindow_NativeWindowRequestBuffer(window, &mut buffer, &mut fence)
             })?;
             if buffer.is_null() {
+                unsafe { release_fence(fence) };
                 return Err(SurfaceError::NativeBufferUnavailable);
             }
             inner.outstanding = Some(buffer as usize);
+            // The consumer's release fence is ours from here: the SDK requires
+            // waiting for it before writing, then closing it. It is never
+            // handed back to the flush, whose acquire fence must be a different
+            // descriptor.
+            let released = unsafe { wait_release_fence(fence) };
             let handle = unsafe { OH_NativeWindow_GetBufferHandleFromNative(buffer) };
-            let blitted = match unsafe { handle.as_ref() } {
-                Some(handle) => unsafe { blit_rows(handle, fb, damage) },
-                None => false,
-            };
+            let blitted = released
+                && match unsafe { handle.as_ref() } {
+                    Some(handle) => unsafe { blit_rows(handle, fb) },
+                    None => false,
+                };
             if !blitted {
-                inner.abort(window, fence);
+                inner.abort(window);
                 return Err(SurfaceError::NativeBufferUnavailable);
             }
             let mut rect = RegionRect {
@@ -801,15 +872,20 @@ mod native {
                 OH_NativeWindow_NativeWindowFlushBuffer(
                     window,
                     buffer,
-                    fence,
+                    -1,
                     Region {
                         rects: &mut rect,
                         rect_number: 1,
                     },
                 )
             };
-            // Flushed or refused, the buffer is back in the queue now.
-            inner.outstanding = None;
+            if code == 0 {
+                inner.outstanding = None;
+            } else {
+                // A failed flush does not prove that the queue took ownership.
+                // Abort it, retaining the outstanding handle if that also fails.
+                inner.abort(window);
+            }
             buffer_result(code)
         }
 
@@ -855,10 +931,10 @@ mod native {
     }
 
     impl Inner {
-        /// Returns the outstanding buffer to the queue and closes the request's
-        /// fence descriptor. A failed abort keeps the handle: it is retried once
-        /// at teardown and reported if it fails again.
-        fn abort(&mut self, window: *mut NativeWindow, fence: i32) {
+        /// Returns the outstanding buffer to the queue. A failed abort keeps
+        /// the handle: it is retried once at teardown and reported if it fails
+        /// again. The request's fence was already consumed by the caller.
+        fn abort(&mut self, window: *mut NativeWindow) {
             if let Some(buffer) = self.outstanding.take() {
                 let code = unsafe {
                     OH_NativeWindow_NativeWindowAbortBuffer(
@@ -870,46 +946,96 @@ mod native {
                     self.outstanding = Some(buffer);
                 }
             }
-            if fence >= 0 {
-                // The SDK closes this only in the flush, so an aborted request
-                // still owns it, and leaking it would cost a descriptor per
-                // failed frame. A close that fails is not actionable here.
-                let _ = unsafe { close(fence) };
-            }
         }
     }
 
-    /// Copies the damaged rows of `fb` into the requested buffer.
+    /// Closes a release fence the sink owns. A close that fails is not
+    /// actionable here.
     ///
-    /// Returns false without writing anything when the buffer cannot hold the
-    /// frame. The window may hand back a wider stride and padding rows, never a
-    /// smaller buffer, and a buffer that disagrees is a window bug rather than
-    /// something to clip around.
+    /// # Safety
+    /// `fence` must be -1 or a descriptor this caller owns and does not use
+    /// afterwards.
+    unsafe fn release_fence(fence: i32) {
+        if fence >= 0 {
+            let _ = unsafe { close(fence) };
+        }
+    }
+
+    /// Waits until the consumer is done with a freshly requested buffer, then
+    /// closes the fence. False means the buffer may still be read by the
+    /// consumer, so it must not be written.
+    ///
+    /// # Safety
+    /// Same as [`release_fence`], which this ends with.
+    unsafe fn wait_release_fence(fence: i32) -> bool {
+        if fence < 0 {
+            return true;
+        }
+        let mut entry = PollFd {
+            fd: fence,
+            events: POLLIN,
+            revents: 0,
+        };
+        let deadline = Instant::now() + Duration::from_millis(FENCE_WAIT_MS as u64);
+        let ready = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break false;
+            }
+            let code = unsafe { poll(&mut entry, 1, remaining.as_millis().max(1) as i32) };
+            if code > 0 {
+                break entry.revents & POLLIN != 0;
+            }
+            let interrupted = code < 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+            if !interrupted {
+                break false;
+            }
+        };
+        unsafe { release_fence(fence) };
+        ready
+    }
+
+    /// Maps the requested buffer through its own descriptor and copies the
+    /// canonical framebuffer into it, independent of the buffer's previous age.
+    ///
+    /// Returns false without a partial write when the buffer cannot hold the
+    /// frame or cannot be mapped. The window may hand back a wider stride and
+    /// padding rows, never a smaller buffer, and a buffer that disagrees is a
+    /// window bug rather than something to clip around.
     ///
     /// # Safety
     /// `handle` must be the handle of a buffer currently requested from a
-    /// window, which is what makes `vir_addr` valid for the buffer's geometry.
-    unsafe fn blit_rows(handle: &BufferHandle, fb: &Framebuffer, damage: Rect) -> bool {
-        if handle.vir_addr.is_null()
+    /// window, which is what makes its `fd` and `size` describe that buffer.
+    unsafe fn blit_rows(handle: &BufferHandle, fb: &Framebuffer) -> bool {
+        if handle.fd < 0
+            || handle.size <= 0
             || i64::from(handle.width) < i64::from(fb.width)
             || i64::from(handle.height) < i64::from(fb.height)
-            || i64::from(handle.stride) < i64::from(fb.width) * BYTES_PER_PIXEL as i64
+            || handle.stride < 0
         {
             return false;
         }
-        let row_bytes = damage.width as usize * BYTES_PER_PIXEL;
-        let base = handle.vir_addr as *mut u8;
-        for row in 0..damage.height {
-            let src_start =
-                (damage.y + row) as usize * fb.stride + damage.x as usize * BYTES_PER_PIXEL;
-            let dst_start = (damage.y + row) as usize * handle.stride as usize
-                + damage.x as usize * BYTES_PER_PIXEL;
-            let Some(src) = fb.pixels.get(src_start..src_start + row_bytes) else {
-                return false;
-            };
-            unsafe { ptr::copy_nonoverlapping(src.as_ptr(), base.add(dst_start), row_bytes) };
+        let length = handle.size as usize;
+        let mapped = unsafe {
+            mmap(
+                ptr::null_mut(),
+                length,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                handle.fd,
+                0,
+            )
+        };
+        if mapped as usize == usize::MAX {
+            return false;
         }
-        true
+        // SAFETY: the mapping is `length` writable bytes owned by this call
+        // until the `munmap` below.
+        let pixels = unsafe { std::slice::from_raw_parts_mut(mapped as *mut u8, length) };
+        let copied = super::copy_framebuffer(pixels, handle.stride as usize, fb);
+        let _ = unsafe { munmap(mapped, length) };
+        copied
     }
 }
 
@@ -1278,6 +1404,50 @@ mod tests {
             OhosSurface::open(lease(), MAX_DIMENSION, MAX_DIMENSION).err(),
             Some(SurfaceError::UnsupportedPlatform)
         );
+    }
+
+    /// The consumer's buffer is written through its own stride, so a wider or
+    /// padded buffer receives every current pixel and padding stays untouched.
+    #[test]
+    fn copy_framebuffer_honours_the_consumer_stride_and_leaves_padding() {
+        let mut fb = Framebuffer::new(4, 3).unwrap();
+        for (index, byte) in fb.pixels.iter_mut().enumerate() {
+            *byte = index as u8 + 1;
+        }
+        let dst_stride = 6 * BYTES_PER_PIXEL;
+        let mut dst = vec![0xAAu8; dst_stride * 4];
+        assert!(copy_framebuffer(&mut dst, dst_stride, &fb));
+        for row in 0..4usize {
+            for byte in 0..dst_stride {
+                let inside = row < 3 && byte < fb.stride;
+                let expected = if inside {
+                    fb.pixels[row * fb.stride + byte]
+                } else {
+                    0xAA
+                };
+                assert_eq!(dst[row * dst_stride + byte], expected, "row {row} byte {byte}");
+            }
+        }
+    }
+
+    /// A buffer that cannot hold the region is a window bug: it is refused
+    /// without a partial write, whichever way it falls short.
+    #[test]
+    fn copy_framebuffer_refuses_a_buffer_that_cannot_hold_the_frame() {
+        let mut fb = Framebuffer::new(4, 3).unwrap();
+        fb.pixels.fill(7);
+        // Narrower than the framebuffer rows.
+        let mut narrow = vec![0u8; 3 * BYTES_PER_PIXEL * 3];
+        assert!(!copy_framebuffer(&mut narrow, 3 * BYTES_PER_PIXEL, &fb));
+        assert!(narrow.iter().all(|byte| *byte == 0));
+        // Wide enough rows, but one row short at the bottom.
+        let stride = 4 * BYTES_PER_PIXEL;
+        let mut short = vec![0u8; stride * 2 + stride - 1];
+        assert!(!copy_framebuffer(&mut short, stride, &fb));
+        assert!(short.iter().all(|byte| *byte == 0));
+        let mut exact = vec![0u8; stride * 3];
+        assert!(copy_framebuffer(&mut exact, stride, &fb));
+        assert!(exact.iter().all(|byte| *byte == 7));
     }
 
     #[test]

@@ -503,6 +503,16 @@ pub struct PeerDisplayInfo {
 pub enum ViewerError {
     InvalidOptions,
     UnsupportedPlatform,
+    /// A rectangle protocol's presentation sink (RFB, RDP) refused to open or
+    /// present, with the sink's own reason. Never folded into
+    /// [`ViewerError::UnsupportedPlatform`], which is reserved for a build that
+    /// has no such capability at all.
+    Surface(crate::surface::SurfaceError),
+    /// The client bound no Surface within the wait the viewer allows, which is
+    /// a missing binding rather than an unsupported platform.
+    SurfaceNotBound,
+    /// A native protocol library could not allocate its session data.
+    OutOfMemory,
     NoHardwareCodec,
     /// No software VP8/VP9 decoder is usable in this build, and why.
     ///
@@ -599,6 +609,7 @@ impl fmt::Display for ViewerError {
         // embed peer LoginError/MessageBox/CloseReason strings or I/O diagnostics.
         match self {
             Self::Decoder(error) => write!(f, "Surface decoder: {error:?}"),
+            Self::Surface(error) => write!(f, "Surface sink: {error:?}"),
             Self::Rdp(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
             Self::FileClipboard(error) => write!(f, "{error}"),
@@ -4008,7 +4019,7 @@ async fn open_sink(
             Ok(true) => {}
             // Closing while no Surface exists is a stop, not a failure.
             _ if state.cancel.is_cancelled() => return Ok(None),
-            _ => return Err(ViewerError::UnsupportedPlatform),
+            _ => return Err(ViewerError::SurfaceNotBound),
         }
     }
     if state.cancel.is_cancelled() {
@@ -4028,9 +4039,9 @@ async fn open_sink(
         // `open` releases everything it acquired before it reports a refusal,
         // so a lease or geometry it rejected leaves nothing behind; only the
         // unwind in the arm below leaves native ownership unproven.
-        Ok(Err(_)) => {
+        Ok(Err(error)) => {
             state.resources_unconfirmed.store(false, Ordering::Release);
-            return Err(ViewerError::UnsupportedPlatform);
+            return Err(ViewerError::Surface(error));
         }
         Err(_) => return Err(ViewerError::TaskFailed),
     };
@@ -4085,7 +4096,7 @@ async fn present_sink(state: &State, surface: &mut Option<Sink>) -> Result<(), V
     });
     let (returned, presented) = returning.await.map_err(|_| ViewerError::TaskFailed)?;
     *surface = Some(returned);
-    presented.map(|_| ()).map_err(|_| ViewerError::UnsupportedPlatform)
+    presented.map(|_| ()).map_err(ViewerError::Surface)
 }
 
 async fn presentation_changed(state: &State) {
@@ -4191,7 +4202,7 @@ fn rfb_error(error: crate::protocol::rfb::RfbError) -> ViewerError {
         RfbError::Transport => ViewerError::TransportFailed,
         RfbError::Closed => ViewerError::RemoteClosed,
         RfbError::Geometry | RfbError::Sink => ViewerError::InvalidPeerGeometry,
-        RfbError::Allocation => ViewerError::UnsupportedPlatform,
+        RfbError::Allocation => ViewerError::OutOfMemory,
         RfbError::Cancelled => ViewerError::Closed,
         RfbError::Protocol(_) => ViewerError::InvalidVideoRecord,
     }
@@ -5094,3 +5105,28 @@ fn rdp_error(error: crate::protocol::rdp::RdpError) -> ViewerError {
 
 #[cfg(test)]
 mod tests;
+
+/// RFB presentation failures are reported as what they are. They used to be
+/// folded into `UnsupportedPlatform`, which sent a device failure (an
+/// unmappable buffer, a missing Surface, an allocation refusal) to the user as
+/// "this platform is unsupported".
+#[cfg(test)]
+mod rfb_failure_identity {
+    use super::{ViewerError, rfb_error};
+    use crate::{protocol::rfb::RfbError, surface::SurfaceError};
+
+    #[test]
+    fn allocation_and_surface_failures_do_not_masquerade_as_unsupported_platform() {
+        assert!(matches!(rfb_error(RfbError::Allocation), ViewerError::OutOfMemory));
+        for error in [
+            SurfaceError::NativeBufferUnavailable,
+            SurfaceError::LeaseInvalid,
+            SurfaceError::InvalidGeometry,
+        ] {
+            let text = ViewerError::Surface(error.clone()).to_string();
+            assert!(text.contains(&format!("{error:?}")), "{text}");
+            assert!(!text.contains("UnsupportedPlatform"), "{text}");
+        }
+        assert_eq!(ViewerError::SurfaceNotBound.to_string(), "SurfaceNotBound");
+    }
+}
