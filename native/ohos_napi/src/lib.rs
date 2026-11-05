@@ -11,6 +11,7 @@ use napi_ohos::{
 };
 use rd_engine::conn_token::ConnToken;
 use rd_engine::protocol::Target;
+use rd_engine::protocol::rdp::{certificate_pin, CertificateChallenge};
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
     direct_address, CursorImage, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer,
@@ -213,6 +214,11 @@ struct SessionRecord {
     reclaimed: Option<bool>,
     password: String,
     conn_token: Option<ConnToken>,
+    /// The RDP leaf fingerprint this session was registered with, when an
+    /// explicit decision about that one certificate supplied it. It travels to
+    /// the next dial exactly as registered and is never filled in from an
+    /// observed certificate.
+    rdp_certificate_sha256: Option<[u8; 32]>,
     /// Last accepted FPS request, queued for the running writer or saved for
     /// login. This is not the peer's effective cap or an applied-rate receipt.
     fps: u32,
@@ -320,6 +326,10 @@ struct Reported {
     /// The last peer-issued 2FA challenge shown to this consumer.
     second_factor_challenge: u64,
     password_challenge: u64,
+    /// The peer's refused leaf already reported for the running viewer, so one
+    /// refusal is one prompt: a repeated poll repeats the session state without
+    /// raising the same certificate decision twice.
+    certificate: Option<CertificateChallenge>,
     cursor_revision: u64,
     cursor_position_revision: u64,
     /// Last exported image, only to split data/id over a limited poll. Earlier
@@ -409,6 +419,15 @@ impl Reported {
                 }
             }
         }
+        // A certificate decision is about a connection that has already failed,
+        // so it is reported ahead of the close that follows it: behind the close,
+        // no client could still act on it.
+        if let Some(challenge) = &snapshot.certificate_challenge {
+            if self.certificate.as_ref() != Some(challenge) {
+                self.certificate = Some(challenge.clone());
+                events.push(certificate_event(challenge));
+            }
+        }
         // `State::finish` is what sets `closed`; `"closing"` is a teardown that
         // has not finished, and an error a running decoder reports is not one.
         if snapshot.closed && !self.finished {
@@ -494,6 +513,25 @@ impl Reported {
         }
         Ok(events)
     }
+}
+
+/// The one public leaf a TLS refusal described, in the client's event shape.
+///
+/// Every field is what that boundary observed about the certificate the peer
+/// presented; `pinnedSha256` is the pin this session carried and is empty when it
+/// carried none. No credential or account is part of it.
+fn certificate_event(challenge: &CertificateChallenge) -> serde_json::Value {
+    serde_json::json!({
+        "name": "certificate_untrusted",
+        "target": challenge.target,
+        "sha256": challenge.sha256_hex(),
+        "subject": challenge.subject,
+        "issuer": challenge.issuer,
+        "notBefore": challenge.not_before,
+        "notAfter": challenge.not_after,
+        "reason": challenge.reason.as_str(),
+        "pinnedSha256": challenge.pinned_sha256_hex().unwrap_or_default(),
+    })
 }
 
 static SESSIONS: Mutex<Option<HashMap<String, SessionRecord>>> = Mutex::new(None);
@@ -763,6 +801,7 @@ fn dial(record: &mut SessionRecord) -> Result<Arc<Viewer>, String> {
         local_name: LOCAL_NAME.to_owned(),
         password: record.password.clone(),
         conn_token: record.conn_token.take(),
+        rdp_certificate_sha256: record.rdp_certificate_sha256,
         requested_fps: record.fps,
         input_policy: record.input_policy,
         session_options: record.session_options.clone(),
@@ -920,6 +959,28 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
         Ok(value) => value,
         Err(message) => return error_json(&message),
     };
+    // An explicit RDP leaf pin: exactly 64 hexadecimal digits, decoded here so the
+    // engine only ever compares the 32 bytes. An empty option is the client's
+    // "no pin" and leaves trust to system roots; any other unparseable value is
+    // refused by name instead of silently becoming that default.
+    let rdp_certificate_sha256 = match options.get("rdpCertificateSha256") {
+        None => None,
+        Some(serde_json::Value::String(value)) if value.is_empty() => None,
+        Some(serde_json::Value::String(value)) => match certificate_pin(value) {
+            Some(pin) => Some(pin),
+            None => {
+                return error_json(
+                    "rdpCertificateSha256 must be exactly 64 hexadecimal characters",
+                );
+            }
+        },
+        Some(_) => return error_json("rdpCertificateSha256 must be a hexadecimal string"),
+    };
+    if rdp_certificate_sha256.is_some()
+        && viewer_target.protocol() != rd_engine::protocol::Protocol::Rdp
+    {
+        return error_json("rdpCertificateSha256 requires the RDP protocol");
+    }
     let mode = match options.get("isFileTransfer") {
         None | Some(serde_json::Value::Bool(false)) => SessionMode::Desktop,
         Some(serde_json::Value::Bool(true)) => SessionMode::FileTransfer,
@@ -1033,6 +1094,7 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
             reclaimed: None,
             password: std::mem::take(&mut credentials.password),
             conn_token,
+            rdp_certificate_sha256,
             fps,
             session_options: SessionOptions::default(),
             dials: 0,
@@ -3292,12 +3354,14 @@ pub fn har_surface_manifest() -> String {
 mod tests {
     use super::{
         apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
-        expected_input_generation, input_keysym, parse_viewer_target, policy_json, record_terminal_reclamation,
-        refusal_json, resolve_mouse_coordinates, session_acknowledge_close, session_add,
-        session_cancel_job, session_poll_events, with_sessions, ApprovedRoute, CloseWork,
-        InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported, SurfaceBinding,
-        SurfaceLease, ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
+        expected_input_generation, input_keysym, parse_viewer_target, policy_json,
+        record_terminal_reclamation, refusal_json, resolve_mouse_coordinates,
+        session_acknowledge_close, session_add, session_cancel_job, session_poll_events,
+        with_sessions, ApprovedRoute, CertificateChallenge, CloseWork, InputPolicyOutcome,
+        LoginFailure, PendingSurfaceLease, Reported, SurfaceBinding, SurfaceLease,
+        ViewerInputPolicy, ViewerSnapshot, ViewerTarget, MAX_SAFE_INPUT_GENERATION,
     };
+    use rd_engine::protocol::rdp::{certificate_pin, CertificateRejection};
     use std::sync::Arc;
 
     /// A destination the bridge only needs an id from. These tests exercise the
@@ -3345,6 +3409,153 @@ mod tests {
         let epoch = added["session"]["lifecycleEpoch"].as_str().unwrap();
         assert!(epoch.parse::<u64>().unwrap() > 0);
         epoch.to_owned()
+    }
+
+    /// `sessionAdd` accepts exactly what the client's own certificate field can
+    /// hold: 64 hexadecimal digits, or the empty value it uses for "no pin". A typo
+    /// is refused by name rather than silently becoming the system-roots default.
+    #[test]
+    fn a_certificate_pin_is_accepted_only_in_its_exact_form() {
+        let id = "napi-test-rdp-pin";
+        let pin = "d7627513f8876ef4424d2f6caafef5941de543fe058d7900b873b9bedb1ae157";
+        let added = json(session_add(
+            id.to_owned(),
+            "rdp://operator@10.0.0.9:3389".to_owned(),
+            format!(r#"{{"password":"test-only","rdpCertificateSha256":"{pin}"}}"#),
+        ));
+        assert_eq!(added["ok"], true);
+        assert_eq!(added["session"]["kind"], "rdp");
+        with_sessions(|sessions| {
+            let record = sessions.get(id).expect("the record is registered");
+            assert_eq!(record.rdp_certificate_sha256, certificate_pin(pin));
+            assert!(record.viewer.is_none(), "registration does not dial");
+        });
+        // The empty value leaves trust with the platform's own roots.
+        let no_pin = json(session_add(
+            "napi-test-rdp-no-pin".to_owned(),
+            "rdp://operator@10.0.0.9:3389".to_owned(),
+            r#"{"password":"test-only","rdpCertificateSha256":""}"#.to_owned(),
+        ));
+        assert_eq!(no_pin["ok"], true);
+        with_sessions(|sessions| {
+            let record = sessions.get("napi-test-rdp-no-pin").expect("registered");
+            assert_eq!(record.rdp_certificate_sha256, None);
+        });
+        for (index, refused) in [
+            r#"{"rdpCertificateSha256":"  "}"#,
+            r#"{"rdpCertificateSha256":"abc"}"#,
+            r#"{"rdpCertificateSha256":"d7627513f8876ef4424d2f6caafef5941de543fe058d7900b873b9bedb1ae157ff"}"#,
+            r#"{"rdpCertificateSha256":"fc:f9"}"#,
+            r#"{"rdpCertificateSha256":7}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let answer = json(session_add(
+                format!("napi-test-rdp-bad-pin-{index}"),
+                "rdp://operator@10.0.0.9:3389".to_owned(),
+                refused.to_owned(),
+            ));
+            assert_eq!(answer["ok"], false, "{refused}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("rdpCertificateSha256")),
+                "{answer}"
+            );
+        }
+        // A pin names one RDP leaf: on another wire it is refused, not ignored.
+        let wrong_wire = json(session_add(
+            "napi-test-vnc-pin".to_owned(),
+            "vnc://10.0.0.9:5900".to_owned(),
+            format!(r#"{{"rdpCertificateSha256":"{pin}"}}"#),
+        ));
+        assert_eq!(wrong_wire["ok"], false);
+        assert!(
+            wrong_wire["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("RDP")),
+            "{wrong_wire}"
+        );
+        // None of these dialled, so each registered record retires the same way a
+        // never-started session does.
+        for id in [id, "napi-test-rdp-no-pin"] {
+            let epoch = with_sessions(|sessions| {
+                sessions
+                    .get(id)
+                    .map(|record| record.lifecycle_epoch.to_string())
+            });
+            if let Some(epoch) = epoch {
+                assert_eq!(json(CloseWork::prepare(id.to_owned()).run())["ok"], true);
+                assert_eq!(json(session_acknowledge_close(id.to_owned(), epoch))["ok"], true);
+            }
+        }
+    }
+
+    /// The client's event is the refusal the engine recorded - its own endpoint, the
+    /// peer's certificate fields, the reason and the pin it carried - and it is
+    /// reported once and before the close that follows it.
+    #[test]
+    fn a_refused_certificate_is_reported_once_and_before_the_close() {
+        let challenge = CertificateChallenge {
+            target: "10.0.0.9:3389".to_owned(),
+            sha256: [0xab; 32],
+            subject: "CN=peer".to_owned(),
+            issuer: "CN=peer".to_owned(),
+            not_before: "2026-01-01T00:00:00Z".to_owned(),
+            not_after: "2036-01-01T00:00:00Z".to_owned(),
+            reason: CertificateRejection::PinMismatch,
+            pinned_sha256: Some([0x11; 32]),
+        };
+        let mut snapshot = ViewerSnapshot {
+            phase: "failed".into(),
+            certificate_challenge: Some(challenge.clone()),
+            closed: true,
+            ..Default::default()
+        };
+        let mut reported = Reported::default();
+        let events = reported.events(&snapshot);
+        let certificate = events
+            .iter()
+            .position(|event| event["name"] == "certificate_untrusted")
+            .expect("the refusal is reported");
+        let close = events
+            .iter()
+            .position(|event| event["name"] == "close")
+            .expect("the close that follows it is reported");
+        assert!(
+            certificate < close,
+            "a decision that only arrives after the close cannot be acted on"
+        );
+        let event = &events[certificate];
+        assert_eq!(event["target"], "10.0.0.9:3389");
+        assert_eq!(event["sha256"], "ab".repeat(32));
+        assert_eq!(event["subject"], "CN=peer");
+        assert_eq!(event["issuer"], "CN=peer");
+        assert_eq!(event["notBefore"], "2026-01-01T00:00:00Z");
+        assert_eq!(event["notAfter"], "2036-01-01T00:00:00Z");
+        assert_eq!(event["reason"], "pin_mismatch");
+        assert_eq!(event["pinnedSha256"], "1".repeat(64));
+        // One refusal is one prompt: a repeated poll repeats the session state
+        // without raising the same decision again.
+        let repeated = reported.events(&snapshot);
+        assert!(
+            repeated
+                .iter()
+                .all(|event| event["name"] != "certificate_untrusted"),
+            "{repeated:?}"
+        );
+        // An attempt that carried no pin names no other certificate.
+        snapshot.certificate_challenge = Some(CertificateChallenge {
+            pinned_sha256: None,
+            ..challenge
+        });
+        let event = Reported::default()
+            .events(&snapshot)
+            .into_iter()
+            .find(|event| event["name"] == "certificate_untrusted")
+            .expect("the refusal is reported");
+        assert_eq!(event["pinnedSha256"], "");
     }
 
     #[test]

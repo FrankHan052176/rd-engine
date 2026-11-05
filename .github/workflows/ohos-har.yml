@@ -103,6 +103,7 @@ jobs:
           cargo test --locked --lib cliprdr
           cargo test --locked --lib audio::tests
           cargo test --locked --lib viewer::tests
+          cargo test --locked --lib 'protocol::rdp::'
           cargo test --locked --lib reader_progress
           cargo test --locked --lib video_payload
           cargo test --locked --lib pipeline_timing

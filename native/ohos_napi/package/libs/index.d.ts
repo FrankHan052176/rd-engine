@@ -39,6 +39,11 @@ export declare function lanPeerRemove(ownerGeneration: string, expectedScanId: s
  * add/start/poll/close carry session:{sessionId,coreSessionId,lifecycleEpoch,
  * kind,target,phase}. lifecycleEpoch is a nonzero native decimal string, renewed
  * whenever a sessionId is registered again after ACK.
+ * RDP certificate trust: options.rdpCertificateSha256 is an optional explicit leaf
+ * pin for an RDP target only - absent or empty leaves trust to the platform's
+ * system roots, and anything other than exactly 64 hexadecimal characters is
+ * refused with ok:false instead of falling back. A pin replaces name/chain trust
+ * for that one certificate and never skips the TLS signature check.
  */
 export declare function sessionAdd(sessionId: string, peerTarget: string, optionsJson: string): string
 
@@ -87,6 +92,12 @@ export declare function sessionBindSurface(sessionId: string, display: number, c
  * Final error, input-release counters, telemetry and released/settle/surfaces survive
  * reclamation until sessionAcknowledgeClose(sessionId,lifecycleEpoch);
  * close/authorization events remain one-shot. Return type remains JSON string.
+ * A refused RDP certificate is reported as events[] entry
+ * {name:"certificate_untrusted", target:"host:port", sha256, subject, issuer,
+ * notBefore, notAfter, reason:"untrusted"|"name_mismatch"|"expired"|"not_yet_valid"|"pin_mismatch",
+ * pinnedSha256} with 64-hex digests, ISO-8601 UTC times and an empty pinnedSha256
+ * when the attempt carried no pin. It is emitted once per viewer, before the
+ * `close` event of the same failure, and the poll itself still answers ok:true.
  */
 export declare function sessionPollEvents(sessionId: string, limit: number): string
 

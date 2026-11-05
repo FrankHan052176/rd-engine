@@ -59,6 +59,162 @@ pub enum RdpTrust {
     CertificateSha256([u8; 32]),
 }
 
+/// Why the peer's own certificate was refused, in the categories a client acts
+/// on. Malformed certificates and cryptographic failures are not trust decisions
+/// and do not produce a challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateRejection {
+    /// No chain to a trusted root, or no platform trust store.
+    Untrusted,
+    /// The certificate does not name the host this session dialled.
+    NameMismatch,
+    /// The certificate's validity period is over.
+    Expired,
+    /// The certificate's validity period has not begun.
+    NotYetValid,
+    /// The explicit leaf pin this session carried names a different
+    /// certificate.
+    PinMismatch,
+}
+
+impl CertificateRejection {
+    /// The stable token a client matches on.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::NameMismatch => "name_mismatch",
+            Self::Expired => "expired",
+            Self::NotYetValid => "not_yet_valid",
+            Self::PinMismatch => "pin_mismatch",
+        }
+    }
+}
+
+/// The public metadata of the leaf certificate a TLS refusal observed.
+///
+/// It holds what a client needs to ask its operator about that one certificate,
+/// and nothing else: no credential, no account, and no connection detail beyond
+/// the endpoint this session itself dialled. `sha256` is the digest of the whole
+/// leaf certificate exactly as the peer sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateChallenge {
+    /// `host:port` of the endpoint this session dialled, taken from the session's
+    /// own immutable options and never from anything the peer sent.
+    pub target: String,
+    pub sha256: [u8; 32],
+    pub subject: String,
+    pub issuer: String,
+    /// ISO-8601 in UTC (`YYYY-MM-DDTHH:MM:SSZ`), so a client can parse it.
+    pub not_before: String,
+    pub not_after: String,
+    pub reason: CertificateRejection,
+    /// The pin this session carried, when it carried one. `None` is the
+    /// system-roots attempt; it is never filled in from the observed leaf.
+    pub pinned_sha256: Option<[u8; 32]>,
+}
+
+impl CertificateChallenge {
+    pub fn sha256_hex(&self) -> String {
+        hex(&self.sha256)
+    }
+
+    pub fn pinned_sha256_hex(&self) -> Option<String> {
+        self.pinned_sha256.map(|pin| hex(&pin))
+    }
+}
+
+/// A connection attempt that did not become a session, with the leaf the TLS
+/// boundary described while refusing the peer.
+///
+/// `certificate` is `Some` only when a certificate was really presented and
+/// refused. A missing account, a refused TCP connection, or a failed
+/// authentication after a successful handshake carries `None` rather than
+/// metadata this side did not observe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RdpConnectError {
+    pub error: RdpError,
+    pub certificate: Option<CertificateChallenge>,
+}
+
+impl From<RdpError> for RdpConnectError {
+    fn from(error: RdpError) -> Self {
+        Self {
+            error,
+            certificate: None,
+        }
+    }
+}
+
+impl fmt::Display for RdpConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for RdpConnectError {}
+
+/// A leaf fingerprint as an explicit option carries it: exactly 64 hexadecimal
+/// digits in either case, decoded into the 32 bytes the pin comparison uses.
+///
+/// Anything else is refused here instead of silently falling back to system
+/// roots, so a typo can never become a different trust decision.
+pub fn certificate_pin(value: &str) -> Option<[u8; 32]> {
+    let raw = value;
+    if raw.len() != 64 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut pin = [0; 32];
+    for (index, byte) in pin.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&raw[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(pin)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    text
+}
+
+/// `host:port` of the endpoint this session dialled: a bare target with no
+/// scheme and no account, with an IPv6 literal bracketed the way the client's
+/// own address parser expects.
+fn endpoint_target(endpoint: &Endpoint) -> String {
+    if endpoint.host.contains(':') {
+        format!("[{}]:{}", endpoint.host, endpoint.port)
+    } else {
+        format!("{}:{}", endpoint.host, endpoint.port)
+    }
+}
+
+/// One failed attempt's error, carrying the leaf the TLS boundary described.
+fn connect_failure(
+    error: RdpError,
+    roots_unavailable: bool,
+    watch: &tls::CertificateWatch,
+    target: String,
+) -> RdpConnectError {
+    // A build with no platform trust store refuses every certificate. That
+    // missing store is the failure to report; the refusal it forced is its
+    // consequence, not a second answer.
+    let error = if roots_unavailable {
+        match error {
+            RdpError::Trust(_) => RdpError::Trust(TrustFailure::RootsUnavailable),
+            other => other,
+        }
+    } else {
+        error
+    };
+    RdpConnectError {
+        error,
+        certificate: watch.challenge(target),
+    }
+}
+
 pub struct RdpOptions {
     /// `endpoint.user` is the actual RDP account, including a domain if needed.
     pub endpoint: Endpoint,
@@ -161,22 +317,30 @@ impl RdpSession {
     /// Requires NLA; legacy graphical-login-only RDP is not treated as an
     /// authenticated connection. Cancelling this future drops any TCP/TLS
     /// connection created so far. No native protocol worker is spawned.
-    pub async fn connect(mut options: RdpOptions) -> Result<Self, RdpError> {
+    pub async fn connect(mut options: RdpOptions) -> Result<Self, RdpConnectError> {
         let user = options
             .endpoint
             .user
             .as_deref()
             .ok_or(RdpError::MissingUser)?;
         if user.trim().is_empty() {
-            return Err(RdpError::MissingUser);
+            return Err(RdpError::MissingUser.into());
         }
         if user.contains('\0') || options.password.contains(&0) {
-            return Err(RdpError::InvalidCredentials);
+            return Err(RdpError::InvalidCredentials.into());
         }
         validate_desktop(options.width, options.height)?;
+        // The client's own endpoint, captured before anything is dialled: a
+        // certificate decision belongs to this session's target and never to
+        // anything the peer says about itself.
+        let target = endpoint_target(&options.endpoint);
         let server_name = rustls::pki_types::ServerName::try_from(options.endpoint.host.clone())
             .map_err(|_| RdpError::Trust(TrustFailure::InvalidServerName))?;
-        let tls_config = tls::config(options.trust).await?;
+        let watch = tls::CertificateWatch::default();
+        let tls::Setup {
+            config: tls_config,
+            roots_unavailable,
+        } = tls::config(options.trust, watch.clone()).await?;
         let stream = TcpStream::connect((options.endpoint.host.as_str(), options.endpoint.port))
             .await
             .map_err(transport_error)?;
@@ -209,12 +373,19 @@ impl RdpSession {
             .await
             .map_err(connector_error)?;
         let (stream, leftover) = framed.into_inner();
-        let (stream, public_key) = tls::upgrade(
+        let (stream, public_key) = match tls::upgrade(
             tls::PrefixedTcp::new(stream, leftover),
             server_name,
             tls_config,
         )
-        .await?;
+        .await
+        {
+            Ok(upgraded) => upgraded,
+            // A refused certificate is the one failure that carries something a
+            // client can act on: the peer's own public leaf, described where the
+            // check that refused it still had it.
+            Err(error) => return Err(connect_failure(error, roots_unavailable, &watch, target)),
+        };
         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector.0);
         let mut framed = TokioFramed::new(stream);
         let mut network = ironrdp_tokio::reqwest::ReqwestNetworkClient::new();
@@ -863,7 +1034,12 @@ mod tests {
     //! reach it through `transport_error`: a hangup ends the close normally, and
     //! every other failure still reaches the caller.
 
-    use super::{RdpError, peer_hung_up, transport_error};
+    use super::tls::CertificateWatch;
+    use super::{
+        CertificateChallenge, CertificateRejection, Endpoint, RdpConnectError, RdpError,
+        TrustFailure, certificate_pin, connect_failure, endpoint_target, peer_hung_up,
+        transport_error,
+    };
     use std::io;
     use tokio::io::AsyncReadExt as _;
     use tokio::net::{TcpListener, TcpStream};
@@ -933,6 +1109,142 @@ mod tests {
         assert!(
             !peer_hung_up(&transport_error(error)),
             "a refused connection must not close successfully"
+        );
+    }
+
+    /// A pin is exactly what an explicit option may carry: 64 hexadecimal digits
+    /// in either case, naming the same 32 bytes. Anything else is refused here
+    /// rather than becoming a silent fall back to system roots.
+    #[test]
+    fn an_explicit_pin_is_exactly_sixty_four_hexadecimal_digits() {
+        let lower = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let upper = "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF";
+        assert_eq!(certificate_pin(upper), certificate_pin(lower));
+        // The bytes are the value, not just the length: 01 12 … ff, in order.
+        assert_eq!(certificate_pin(upper).map(|pin| pin[1]), Some(0x11));
+        assert_eq!(certificate_pin(upper).map(|pin| pin[15]), Some(0xff));
+        // The boundary accepts exactly the pin, not extra option text.
+        assert_eq!(
+            certificate_pin(&format!("  {lower}\n")),
+            None
+        );
+
+        for refused in [
+            "",
+            "   ",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeef",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff0",
+            "00:11:22:33:44:55:66:77:88:99:aabbccddeeff00112233445566778899aabbccddeeff",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeg",
+        ] {
+            assert_eq!(certificate_pin(refused), None, "{refused:?}");
+        }
+    }
+
+    /// The reason tokens are the client's own vocabulary, so a reason this side
+    /// invents cannot reach a client that acts on these five.
+    #[test]
+    fn certificate_rejections_keep_the_client_vocabulary() {
+        assert_eq!(CertificateRejection::Untrusted.as_str(), "untrusted");
+        assert_eq!(CertificateRejection::NameMismatch.as_str(), "name_mismatch");
+        assert_eq!(CertificateRejection::Expired.as_str(), "expired");
+        assert_eq!(CertificateRejection::NotYetValid.as_str(), "not_yet_valid");
+        assert_eq!(CertificateRejection::PinMismatch.as_str(), "pin_mismatch");
+    }
+
+    /// A challenge names the bare endpoint this session dialled - no scheme, no
+    /// account - and prints its fingerprint as lowercase hexadecimal, both in the
+    /// form the client parses.
+    #[test]
+    fn a_challenge_names_the_endpoint_and_prints_its_fingerprint() {
+        let challenge = CertificateChallenge {
+            target: endpoint_target(&Endpoint {
+                host: "10.0.0.9".into(),
+                port: 3389,
+                user: Some("operator".into()),
+            }),
+            sha256: [0xab; 32],
+            subject: "CN=peer".into(),
+            issuer: "CN=peer".into(),
+            not_before: "2026-01-01T00:00:00Z".into(),
+            not_after: "2036-01-01T00:00:00Z".into(),
+            reason: CertificateRejection::Untrusted,
+            pinned_sha256: None,
+        };
+        assert_eq!(challenge.target, "10.0.0.9:3389");
+        assert_eq!(challenge.sha256_hex(), "ab".repeat(32));
+        assert_eq!(
+            challenge.pinned_sha256_hex(),
+            None,
+            "an unpinned attempt names no other certificate"
+        );
+        // An IPv6 literal stays one address, bracketed as the client expects.
+        assert_eq!(
+            endpoint_target(&Endpoint {
+                host: "::1".into(),
+                port: 3389,
+                user: None,
+            }),
+            "[::1]:3389"
+        );
+    }
+
+    /// A connection that never had a certificate refused carries no metadata: a
+    /// challenge is only what a real refusal observed.
+    #[test]
+    fn a_connect_failure_without_a_refused_leaf_carries_no_metadata() {
+        let failure =
+            RdpConnectError::from(RdpError::Transport(io::ErrorKind::ConnectionRefused));
+        assert_eq!(
+            failure.error,
+            RdpError::Transport(io::ErrorKind::ConnectionRefused)
+        );
+        assert!(failure.certificate.is_none());
+        assert_eq!(
+            failure.to_string(),
+            "RDP transport failed: ConnectionRefused"
+        );
+    }
+
+    /// With no platform trust store, the refusal it forces is not the answer the
+    /// client is given: the missing store is. Every other failure keeps its own
+    /// meaning, and none of them invents a certificate.
+    #[test]
+    fn a_missing_root_store_is_reported_as_itself() {
+        let watch = CertificateWatch::default();
+        let refused = connect_failure(
+            RdpError::Trust(TrustFailure::CertificateRejected),
+            true,
+            &watch,
+            "host:3389".to_owned(),
+        );
+        assert_eq!(
+            refused.error,
+            RdpError::Trust(TrustFailure::RootsUnavailable)
+        );
+        assert!(refused.certificate.is_none());
+
+        let kept = connect_failure(
+            RdpError::Trust(TrustFailure::CertificateRejected),
+            false,
+            &watch,
+            "host:3389".to_owned(),
+        );
+        assert_eq!(
+            kept.error,
+            RdpError::Trust(TrustFailure::CertificateRejected)
+        );
+
+        let transport = connect_failure(
+            RdpError::Transport(io::ErrorKind::ConnectionRefused),
+            true,
+            &watch,
+            "host:3389".to_owned(),
+        );
+        assert_eq!(
+            transport.error,
+            RdpError::Transport(io::ErrorKind::ConnectionRefused),
+            "a missing root store does not relabel a transport failure"
         );
     }
 }

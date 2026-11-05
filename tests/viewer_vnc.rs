@@ -171,6 +171,7 @@ fn options(endpoint: Endpoint) -> ViewerOptions {
         local_name: "test".into(),
         password: PASSWORD.into(),
         conn_token: None,
+        rdp_certificate_sha256: None,
         requested_fps: 30,
         input_policy: ViewerInputPolicy::interactive(),
         mode: rd_engine::session::SessionMode::Desktop,

@@ -2788,6 +2788,9 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
         // viewer's own authenticated credential. `None` is what a password-only
         // attempt carries.
         conn_token,
+        // This bridge serves the RustDesk wire only; an RDP leaf pin has no
+        // meaning here, so it never supplies one.
+        rdp_certificate_sha256: None,
         requested_fps,
         input_policy: session.input_policy(),
         // What this session asked for while it had not dialled: the login

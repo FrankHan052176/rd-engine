@@ -9,7 +9,7 @@
 use rd_engine::{
     protocol::{
         Target,
-        rdp::{RdpEvent, RdpOptions, RdpSession, RdpTrust},
+        rdp::{RdpEvent, RdpOptions, RdpSession, RdpTrust, certificate_pin},
         rect::PixelTarget,
     },
     surface::MemorySurface,
@@ -27,7 +27,11 @@ fn main() -> ProbeResult<()> {
     let mut args = std::env::args().skip(1);
     let target = args.next().ok_or("Expected rdp://user@host[:port]")?;
     let trust = match args.next() {
-        Some(value) => RdpTrust::CertificateSha256(parse_fingerprint(&value)?),
+        Some(value) => RdpTrust::CertificateSha256(
+            certificate_pin(&value).ok_or(
+                "The trusted leaf SHA-256 must contain exactly 64 hexadecimal digits",
+            )?,
+        ),
         None => RdpTrust::SystemRoots,
     };
     if args.next().is_some() {
@@ -69,20 +73,31 @@ fn main() -> ProbeResult<()> {
         .block_on(run(options))
 }
 
-fn parse_fingerprint(value: &str) -> ProbeResult<[u8; 32]> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("The trusted leaf SHA-256 must contain exactly 64 hexadecimal digits".into());
-    }
-    let mut fingerprint = [0; 32];
-    for (index, byte) in fingerprint.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)?;
-    }
-    Ok(fingerprint)
-}
-
 async fn run(options: RdpOptions) -> ProbeResult<()> {
     let mut session =
-        tokio::time::timeout(Duration::from_secs(40), RdpSession::connect(options)).await??;
+        match tokio::time::timeout(Duration::from_secs(40), RdpSession::connect(options)).await? {
+            Ok(session) => session,
+            Err(failure) => {
+                // A refused certificate is printed exactly as the engine observed
+                // it, so an operator can accept that one leaf out of band. The
+                // probe still fails: printing it is not a trust decision.
+                if let Some(challenge) = &failure.certificate {
+                    println!(
+                        "certificate_refused target={} sha256={} reason={} pinned_sha256={} subject={:?} issuer={:?} not_before={} not_after={}",
+                        challenge.target,
+                        challenge.sha256_hex(),
+                        challenge.reason.as_str(),
+                        challenge.pinned_sha256_hex().unwrap_or_default(),
+                        challenge.subject,
+                        challenge.issuer,
+                        challenge.not_before,
+                        challenge.not_after,
+                    );
+                }
+                let failure: Box<dyn Error> = Box::new(failure);
+                return Err(failure);
+            }
+        };
     let (width, height) = session.desktop();
     let mut surface = MemorySurface::new(width, height)?;
     let received = tokio::time::timeout(Duration::from_secs(20), async {

@@ -263,6 +263,13 @@ pub struct ViewerOptions {
     pub password: String,
     /// Password-equivalent material explicitly supplied for this RustDesk login.
     pub conn_token: Option<ConnToken>,
+    /// The RDP peer's leaf fingerprint, when an explicit decision about that one
+    /// certificate supplied it.
+    ///
+    /// `None` leaves certificate trust to the platform's own roots. A pin
+    /// replaces name/chain trust for that certificate, so it means nothing on
+    /// any other wire and `start` refuses it there instead of ignoring it.
+    pub rdp_certificate_sha256: Option<[u8; 32]>,
     pub requested_fps: u32,
     /// The local input policy this viewer is started under.
     ///
@@ -342,6 +349,14 @@ pub struct ViewerSnapshot {
     /// Recognized RustDesk close reason, published only after a RemoteClosed
     /// result and confirmed native reclamation. Arbitrary peer text is not kept.
     pub peer_close_reason: Option<PeerCloseReason>,
+    /// The peer's own leaf certificate, as the TLS boundary refused it, kept for
+    /// the client's explicit decision about that one certificate.
+    ///
+    /// It describes a refusal and never a trust decision: a session that carries
+    /// this did not authenticate. `None` is every other session, including one
+    /// whose PKI validation passed. The terminal snapshot keeps it, so a client
+    /// that polls after the close still sees what it was asked to decide about.
+    pub certificate_challenge: Option<crate::protocol::rdp::CertificateChallenge>,
     pub width: i32,
     pub height: i32,
     pub codec: String,
@@ -1174,6 +1189,17 @@ impl State {
     fn phase(&self, phase: &str) {
         lock(&self.inner).snapshot.phase = phase.into();
     }
+    /// Publishes the peer's refused leaf for the client's own decision.
+    ///
+    /// The RDP driver calls this before returning that failure, so the challenge
+    /// is in the snapshot before the session finishes and the client receives it
+    /// ahead of the close it belongs to. It records what the TLS boundary
+    /// observed; nothing here trusts it.
+    fn certificate_challenge(&self, challenge: Option<crate::protocol::rdp::CertificateChallenge>) {
+        if let Some(challenge) = challenge {
+            lock(&self.inner).snapshot.certificate_challenge = Some(challenge);
+        }
+    }
     fn geometry(&self, geometry: Geometry) {
         let mut inner = lock(&self.inner);
         inner.geometry = Some(geometry);
@@ -1714,6 +1740,10 @@ impl Viewer {
             || options.local_name.len() > 512
             || options.password.len() > 4096
             || (options.conn_token.is_some() && options.target.protocol() != Protocol::RustDesk)
+            // A pin names one RDP leaf. On another wire it would be silently
+            // meaningless, so it is refused instead of ignored.
+            || (options.rdp_certificate_sha256.is_some()
+                && options.target.protocol() != Protocol::Rdp)
             || (options.mode == SessionMode::Desktop && !(1..=240).contains(&options.requested_fps))
             || (options.mode == SessionMode::FileTransfer
                 && options.target.protocol() != Protocol::RustDesk)
@@ -4946,17 +4976,32 @@ async fn run_rdp(
 ) -> Result<(), ViewerError> {
     use crate::protocol::rdp::{RdpOptions, RdpSession, RdpTrust};
     state.phase("connecting");
+    // No pin means the platform's own roots. A pin is the operator's explicit
+    // decision about this one certificate and replaces name/chain trust for it.
+    let trust = options
+        .rdp_certificate_sha256
+        .map_or(RdpTrust::SystemRoots, RdpTrust::CertificateSha256);
     let connecting = RdpSession::connect(RdpOptions {
         endpoint,
         password: std::mem::take(&mut options.password).into_bytes(),
         width: 1280,
         height: 720,
-        trust: RdpTrust::SystemRoots,
+        trust,
     });
     let mut session = tokio::select! {
         biased;
         _ = state.cancel.cancelled() => return Ok(()),
-        result = connecting => result.map_err(rdp_error)?,
+        result = connecting => match result {
+            Ok(session) => session,
+            Err(failure) => {
+                // The peer's own leaf, described where TLS refused it, reaches
+                // the client before the close that follows: that client's
+                // decision is about this certificate and it has to be able to
+                // act on it.
+                state.certificate_challenge(failure.certificate);
+                return Err(rdp_error(failure.error));
+            }
+        },
     };
     // connect has completed NLA and certificate validation, not merely dialled.
     {
