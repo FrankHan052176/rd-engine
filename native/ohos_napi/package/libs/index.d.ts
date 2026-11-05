@@ -105,6 +105,13 @@ export declare function sessionSetVideoPaused(sessionId: string, paused: boolean
 /** Rearms native_render_ready; historical counters cannot satisfy this generation. */
 export declare function sessionOnWaitingForImageDialogShow(sessionId: string): string
 
+/**
+ * JSON cumulative counters, not physical presentation FPS. pipelineTimings v1
+ * exposes recordAdmission, decoderAdmission, inputWait, inputDispatch, pushApi
+ * and renderApi as null (unmeasured) or {samples,totalNs,peakNs,over8Ms}.
+ * peakNs is a dial-lifetime maximum; over8Ms counts samples strictly above 8 ms.
+ * Legacy queueCalls/queueNs/busyFrames are null, not measured zero waits.
+ */
 export declare function sessionGetFrameRateSnapshot(sessionId: string, display: number): string
 
 export declare function sessionSendMouse(sessionId: string, mouseJson: string, inputGeneration: number): string

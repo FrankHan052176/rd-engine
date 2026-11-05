@@ -155,6 +155,13 @@ export function sessionOnWaitingForImageDialogShow(sessionId: string): string {
   return native.sessionOnWaitingForImageDialogShow(sessionId);
 }
 
+/**
+ * JSON cumulative counters, not physical presentation FPS. pipelineTimings v1
+ * exposes recordAdmission, decoderAdmission, inputWait, inputDispatch, pushApi
+ * and renderApi as null (unmeasured) or {samples,totalNs,peakNs,over8Ms}.
+ * peakNs is a dial-lifetime maximum; over8Ms counts samples strictly above 8 ms.
+ * Legacy queueCalls/queueNs/busyFrames are null, not measured zero waits.
+ */
 export function sessionGetFrameRateSnapshot(sessionId: string, display: number): string {
   return native.sessionGetFrameRateSnapshot(sessionId, display);
 }

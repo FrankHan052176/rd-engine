@@ -30,6 +30,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -246,6 +247,26 @@ pub trait VideoOwner: Send + Sync + 'static {
     fn video_phase(&self, phase: &'static str);
     /// Compressed units received from the peer, counted before admission.
     fn video_received(&self, units: u64);
+    /// This session's compressed-record path is instrumented from now on.
+    ///
+    /// Stated once, where the pipeline is built, so a stage with no samples yet
+    /// is a measured stage rather than an unmeasured one: a client can tell
+    /// "nothing admitted yet" from "this path is not instrumented". An owner that
+    /// publishes no diagnostics leaves the default, which is that absence.
+    fn video_timings_enabled(&self) {}
+    /// One record admission operation completed: validation passed, the slot and
+    /// byte permits were taken, and the record reached the feeder.
+    ///
+    /// It is an operation and not a scheduling wait — the interval contains this
+    /// path's own permit and channel work, never the peer's or the decoder's —
+    /// and a refusal or a cancellation is not an admission, so neither is
+    /// reported here.
+    fn video_record_admission(&self, _elapsed: Duration) {}
+    /// One access unit was accepted by the decoder, measured over the submit
+    /// itself. That submit waits for the decoder's own capacity when it is full,
+    /// so this is an operation too, not CPU time. A rejection is returned to the
+    /// feeder and is never reported here.
+    fn video_decoder_admission(&self, _elapsed: Duration) {}
     /// A decoder opened for `codec` at `geometry`; the session is now decoding.
     fn video_decoder_opened(
         &self,
@@ -291,6 +312,10 @@ pub fn pipeline<H: VideoOwner>(
     caps: Decoders,
     source: Geometry,
 ) -> (VideoAdmission<H>, VideoFeed<H>) {
+    // Both admission stages are instrumented from the moment this pipeline
+    // exists, so an empty aggregate later means nothing was admitted yet rather
+    // than that nothing was measured.
+    owner.video_timings_enabled();
     let (video, feed) = mpsc::channel(VIDEO_RECORDS);
     (
         VideoAdmission {
@@ -368,6 +393,11 @@ impl<H: VideoOwner> VideoAdmission<H> {
         }
         self.owner.video_received(frames.len() as u64);
         let cancel = self.owner.cancellation();
+        // The admission operation, from the end of validation to the record
+        // reaching the feeder: the slot and byte permits, then the send. It is
+        // this path's own work and queue occupancy, which is what makes it an
+        // operation rather than a pure scheduling wait.
+        let admission = Instant::now();
         // Transport itself bounds the one not-yet-admitted RX record. Admitted
         // records INCLUDING the feeder's are byte+slot bound.
         let record = tokio::select! {
@@ -384,6 +414,7 @@ impl<H: VideoOwner> VideoAdmission<H> {
             _ = cancel.cancelled() => return Ok(Admitted::Cancelled),
             sent = self.video.send(record) => sent.map_err(|_| ViewerError::Closed)?,
         }
+        self.owner.video_record_admission(admission.elapsed());
         Ok(Admitted::Queued)
     }
 
@@ -589,12 +620,17 @@ async fn feed_loop<H: VideoOwner>(
                 pts_us,
                 kind: AccessUnitKind::Frame { key: frame.key },
             };
+            // The decoder admission operation: the submit itself, including a
+            // wait for the decoder's own capacity when it is full. Only an
+            // accepted unit is a sample; a rejection returns below.
+            let admission = Instant::now();
             if let Err(rejected) = decoder.submit_cancellable(unit, cancel).await {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
                 return Err(ViewerError::Decoder(rejected.reason));
             }
+            owner.video_decoder_admission(admission.elapsed());
         }
     }
 }

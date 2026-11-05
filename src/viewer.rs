@@ -40,7 +40,10 @@ use base::message_proto::{
     option_message::BoolOption, permission_info::Permission,
 };
 pub use decoder::SurfaceLease;
-use decoder::{DecoderError, DecoderObserver, DecoderProjection, RenderTiming, VideoCodec};
+use decoder::{
+    DecoderError, DecoderObserver, DecoderProjection, DecoderStageTimings, RenderTiming, StageTiming,
+    VideoCodec,
+};
 use ironrdp_pdu::input::{
     MousePdu, MouseRelPdu, MouseXPdu,
     fast_path::{FastPathInputEvent, KeyboardFlags},
@@ -277,6 +280,49 @@ impl Drop for ViewerOptions {
     }
 }
 
+/// This session's own pipeline stages, one aggregate each.
+///
+/// They are one record because they describe one frame's journey through this
+/// session: a record admitted, an access unit taken by the decoder, both sides of
+/// the handoff to the SDK's input buffer, and the two SDK calls that carry the
+/// unit in and its picture out. Each field is `None` when that stage was never
+/// instrumented in this session, which is how an unmeasured stage stays distinct
+/// from a measured one that has no samples yet.
+///
+/// The invariants a reader keeps in mind:
+///  * `record_admission` and `decoder_admission` are operations. They include
+///    this engine's own queue and wakeup work, so they are never CPU time.
+///  * `input_wait` is the time an access unit waited for an input buffer, and it
+///    is zero when a buffer was already waiting: no SDK latency is invented.
+///  * `input_dispatch` starts where `input_wait` ends and stops when the worker
+///    starts the push, so the two split one handoff instead of overlapping.
+///  * `push_api` and `render_api` are the SDK calls alone, with no copy, no
+///    attribute write and no residency: the residency is `render_timing`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PipelineTimings {
+    pub record_admission: Option<StageTiming>,
+    pub decoder_admission: Option<StageTiming>,
+    pub input_wait: Option<StageTiming>,
+    pub input_dispatch: Option<StageTiming>,
+    pub push_api: Option<StageTiming>,
+    pub render_api: Option<StageTiming>,
+}
+
+impl PipelineTimings {
+    /// Adds one decoder's own stages to this session's record.
+    ///
+    /// A decoder reports totals for its own lifetime, so a live one is added to
+    /// the copy a caller reads and never written back, while a finished one is
+    /// added exactly once, when its final projection arrives. Both use this, so
+    /// neither path can add a decoder's samples a second time.
+    fn merge_decoder(&mut self, stages: DecoderStageTimings) {
+        StageTiming::merge(&mut self.input_wait, Some(stages.input_wait));
+        StageTiming::merge(&mut self.input_dispatch, Some(stages.input_dispatch));
+        StageTiming::merge(&mut self.push_api, Some(stages.push_api));
+        StageTiming::merge(&mut self.render_api, Some(stages.render_api));
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ViewerSnapshot {
     pub phase: String,
@@ -310,6 +356,9 @@ pub struct ViewerSnapshot {
     /// Measured push-to-submission latency, aggregated only over actual samples.
     /// `None` means this session has no actual timing observation.
     pub render_timing: Option<RenderTiming>,
+    /// This session's per-stage diagnostics, kept apart from the residency above
+    /// because they answer different questions about the same frame.
+    pub pipeline_timings: PipelineTimings,
     /// Units admitted but not yet pushed into the decoder at this snapshot.
     pub queued_units: u64,
     /// This session's audio playback, or `None` when the session never had an
@@ -1321,6 +1370,13 @@ impl State {
                     .render_submissions
                     .saturating_add(stats.render_submissions);
                 RenderTiming::accumulate(&mut out.render_timing, stats.render_timing);
+                // The live decoder's own stages are added to the closed ones in
+                // the copy a caller reads and never written back: the next poll
+                // reads the decoder's totals again, so nothing here counts a
+                // sample twice.
+                if let Some(stages) = stats.stage_timings {
+                    out.pipeline_timings.merge_decoder(stages);
+                }
                 out.queued_units = stats.queued_units;
                 if let Some(error) = stats.failure {
                     out.error = Some(ViewerError::Decoder(error).to_string());
@@ -1451,6 +1507,37 @@ impl video::VideoOwner for State {
     fn video_received(&self, units: u64) {
         lock(&self.inner).snapshot.received_units += units;
     }
+    fn video_timings_enabled(&self) {
+        let mut inner = lock(&self.inner);
+        let timings = &mut inner.snapshot.pipeline_timings;
+        // Both admission stages exist from here on. A measured stage with no
+        // samples yet stays present, so a client reads "nothing admitted yet"
+        // instead of "not instrumented".
+        timings
+            .record_admission
+            .get_or_insert_with(StageTiming::default);
+        timings
+            .decoder_admission
+            .get_or_insert_with(StageTiming::default);
+    }
+    fn video_record_admission(&self, elapsed: Duration) {
+        let mut inner = lock(&self.inner);
+        inner
+            .snapshot
+            .pipeline_timings
+            .record_admission
+            .get_or_insert_with(StageTiming::default)
+            .record(elapsed);
+    }
+    fn video_decoder_admission(&self, elapsed: Duration) {
+        let mut inner = lock(&self.inner);
+        inner
+            .snapshot
+            .pipeline_timings
+            .decoder_admission
+            .get_or_insert_with(StageTiming::default)
+            .record(elapsed);
+    }
     fn video_decoder_opened(
         &self,
         codec: VideoCodec,
@@ -1475,6 +1562,12 @@ impl video::VideoOwner for State {
                 .render_submissions
                 .saturating_add(stats.render_submissions);
             RenderTiming::accumulate(&mut inner.snapshot.render_timing, stats.render_timing);
+            // The finished decoder's stages are added exactly once, here, and the
+            // observer is dropped below: a later snapshot has no live decoder to
+            // read them from, so its samples cannot be counted again.
+            if let Some(stages) = stats.stage_timings {
+                inner.snapshot.pipeline_timings.merge_decoder(stages);
+            }
         }
         inner.decoder = None;
     }

@@ -260,6 +260,90 @@ impl RenderTiming {
     }
 }
 
+/// One pipeline stage, aggregated over its actual samples.
+///
+/// It is deliberately not [`RenderTiming`]: that value means exactly one thing —
+/// the residency from a successful push to the render submission of its picture
+/// — and it is published on every backend. This is the general per-stage shape a
+/// client's diagnostics read, so no caller has to interpret a residency as a
+/// stage duration or a stage as a residency.
+///
+/// Every field is a non-negative count of nanoseconds or of samples. A record
+/// with `samples == 0` is a stage that was instrumented but observed nothing
+/// yet: it is not a measured zero-duration stage, and the absence of a stage is
+/// stated one level up by `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageTiming {
+    /// Observations behind `total_ns`/`peak_ns`/`over_8_ms`.
+    pub samples: u64,
+    /// Sum of every observation, saturating instead of wrapping.
+    pub total_ns: u64,
+    /// The worst single observation.
+    pub peak_ns: u64,
+    /// Observations strictly longer than [`Self::LONG_SAMPLE_NS`].
+    pub over_8_ms: u64,
+}
+
+impl StageTiming {
+    /// A sample over this long is counted in `over_8_ms`. One 120Hz frame lasts
+    /// 8.3ms, so a stage longer than this cannot hold that rate on its own.
+    pub const LONG_SAMPLE_NS: u64 = 8_000_000;
+
+    /// Adds one observed duration.
+    pub fn record(&mut self, elapsed: std::time::Duration) {
+        self.record_ns(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+    }
+
+    /// Adds one observation already measured in nanoseconds.
+    pub fn record_ns(&mut self, ns: u64) {
+        self.samples = self.samples.saturating_add(1);
+        self.total_ns = self.total_ns.saturating_add(ns);
+        self.peak_ns = self.peak_ns.max(ns);
+        if ns > Self::LONG_SAMPLE_NS {
+            self.over_8_ms = self.over_8_ms.saturating_add(1);
+        }
+    }
+
+    /// Adds one aggregate to a running one.
+    ///
+    /// Presence decides that a stage was measured, not its sample count: a
+    /// measured stage with no samples yet stays present, and `None` stays the
+    /// one way to say a stage was never instrumented.
+    pub fn merge(total: &mut Option<Self>, incoming: Option<Self>) {
+        let Some(incoming) = incoming else {
+            return;
+        };
+        let total = total.get_or_insert_with(Self::default);
+        total.samples = total.samples.saturating_add(incoming.samples);
+        total.total_ns = total.total_ns.saturating_add(incoming.total_ns);
+        total.peak_ns = total.peak_ns.max(incoming.peak_ns);
+        total.over_8_ms = total.over_8_ms.saturating_add(incoming.over_8_ms);
+    }
+}
+
+/// The stages one OpenHarmony decoder measured for itself.
+///
+/// All four are that backend's own readings of one handoff: an access unit the
+/// decoder accepted, the input buffer the SDK gave it for that unit, and the two
+/// SDK calls that carry the unit in and its picture out. A backend that measures
+/// none of them answers `None` for this whole record rather than four zeroes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecoderStageTimings {
+    /// From the decoder accepting an access unit to the input callback that
+    /// carries it, when that callback arrived after the unit. Zero when the
+    /// buffer was already waiting, because nothing then waited on the SDK.
+    pub input_wait: StageTiming,
+    /// From the later of those two moments to the worker starting the push:
+    /// callback enqueue, lock, worker wakeup and handoff. Our own latency, not
+    /// CPU time and not the SDK's work.
+    pub input_dispatch: StageTiming,
+    /// `OH_VideoDecoder_PushInputBuffer` call time only, whatever it returned.
+    pub push_api: StageTiming,
+    /// `OH_VideoDecoder_RenderOutputBufferAtTime` call time only, whatever it
+    /// returned. Freed (non-presented) pictures make no such call and no sample.
+    pub render_api: StageTiming,
+}
+
 /// What one open decoder has done, in the seam's terms.
 ///
 /// It is the neutral view of a backend's counters — the ones every backend
@@ -274,6 +358,9 @@ pub struct DecoderProjection {
     pub render_submissions: u64,
     /// `None` means this backend has no actual latency observation yet.
     pub render_timing: Option<RenderTiming>,
+    /// The stages this backend measured for itself; `None` when it measures none
+    /// of them, which is every backend but OpenHarmony's hardware path.
+    pub stage_timings: Option<DecoderStageTimings>,
     /// Units admitted but not yet handed to the backend at this snapshot.
     pub queued_units: u64,
     pub closed: bool,
@@ -641,5 +728,50 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         assert_eq!(failure.error, DecoderError::UnsupportedPlatform);
         assert_eq!(failure.cleanup, CleanupVerdict::Confirmed);
+    }
+
+    /// A stage that was instrumented with nothing measured yet is a different
+    /// answer from a stage that was never instrumented, and merging never
+    /// collapses one into the other.
+    #[test]
+    fn pipeline_timing_a_measured_empty_stage_stays_measured() {
+        let mut total = None;
+        StageTiming::merge(&mut total, None);
+        assert_eq!(total, None);
+        StageTiming::merge(&mut total, Some(StageTiming::default()));
+        assert_eq!(total, Some(StageTiming::default()));
+        StageTiming::merge(&mut total, None);
+        assert_eq!(total, Some(StageTiming::default()));
+    }
+
+    /// Samples accumulate into one aggregate, saturating instead of wrapping,
+    /// and an empty aggregate neither adds a sample nor hides a stage.
+    #[test]
+    fn pipeline_timing_samples_accumulate_into_one_aggregate() {
+        let mut total = None;
+        let mut first = StageTiming::default();
+        first.record_ns(1_000_000);
+        first.record_ns(9_000_000);
+        StageTiming::merge(&mut total, Some(first));
+        StageTiming::merge(&mut total, Some(StageTiming::default()));
+        assert_eq!(
+            total,
+            Some(StageTiming {
+                samples: 2,
+                total_ns: 10_000_000,
+                peak_ns: 9_000_000,
+                over_8_ms: 1,
+            })
+        );
+        let mut saturated = StageTiming {
+            samples: u64::MAX,
+            total_ns: u64::MAX,
+            peak_ns: 0,
+            over_8_ms: u64::MAX,
+        };
+        saturated.record_ns(1);
+        assert_eq!(saturated.samples, u64::MAX);
+        assert_eq!(saturated.total_ns, u64::MAX);
+        assert_eq!(saturated.over_8_ms, u64::MAX);
     }
 }

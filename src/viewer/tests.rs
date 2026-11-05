@@ -2567,3 +2567,78 @@ async fn a_typed_password_settles_a_login_that_awaits_the_peers_operator() {
     .await
     .expect("the whole exchange must finish within one budget");
 }
+
+/// One session's record of the pipeline stages: the two admission operations are
+/// samples of their own, a finished decoder contributes its stages exactly once,
+/// and polling again publishes the same answer.
+#[test]
+fn pipeline_timing_a_session_counts_each_stage_once() {
+    use super::PipelineTimings;
+    use super::decoder::{DecoderProjection, DecoderStageTimings, StageTiming};
+    use super::video::VideoOwner;
+
+    let state = writer_state();
+    // A session with no compressed-record path reports no stage at all, which is
+    // how "not instrumented" stays distinct from "measured, nothing yet".
+    assert_eq!(
+        state.snapshot().pipeline_timings,
+        PipelineTimings::default()
+    );
+
+    state.video_timings_enabled();
+    let idle = state.snapshot().pipeline_timings;
+    assert_eq!(idle.record_admission, Some(StageTiming::default()));
+    assert_eq!(idle.decoder_admission, Some(StageTiming::default()));
+    // No decoder exists yet, so its four stages are not claimed either way.
+    assert_eq!(idle.input_wait, None);
+    assert_eq!(idle.input_dispatch, None);
+    assert_eq!(idle.push_api, None);
+    assert_eq!(idle.render_api, None);
+
+    state.video_record_admission(Duration::from_millis(1));
+    state.video_record_admission(Duration::from_millis(9));
+    state.video_decoder_admission(Duration::from_millis(2));
+    let admitted = state.snapshot().pipeline_timings;
+    assert_eq!(
+        admitted.record_admission,
+        Some(StageTiming {
+            samples: 2,
+            total_ns: 10_000_000,
+            peak_ns: 9_000_000,
+            over_8_ms: 1,
+        })
+    );
+    assert_eq!(admitted.decoder_admission.map(|timing| timing.samples), Some(1));
+
+    let mut input_wait = StageTiming::default();
+    input_wait.record_ns(3_000_000);
+    let mut push_api = StageTiming::default();
+    push_api.record_ns(4_000_000);
+    state.video_decoder_closed(Some(DecoderProjection {
+        pushed_units: 1,
+        render_submissions: 1,
+        render_timing: None,
+        stage_timings: Some(DecoderStageTimings {
+            input_wait,
+            input_dispatch: StageTiming::default(),
+            push_api,
+            render_api: StageTiming::default(),
+        }),
+        queued_units: 0,
+        closed: true,
+        quarantined: false,
+        failure: None,
+    }));
+
+    // The finished decoder's stages are stored once, with its observer gone: the
+    // same totals on every later poll, and the admission samples recorded while
+    // it lived are untouched.
+    let closed = state.snapshot().pipeline_timings;
+    assert_eq!(closed.input_wait, Some(input_wait));
+    assert_eq!(closed.push_api, Some(push_api));
+    assert_eq!(closed.input_dispatch, Some(StageTiming::default()));
+    assert_eq!(closed.render_api, Some(StageTiming::default()));
+    assert_eq!(closed.record_admission.map(|timing| timing.samples), Some(2));
+    assert_eq!(state.snapshot().pipeline_timings, closed);
+    assert_eq!(state.snapshot().pushed_units, 1);
+}

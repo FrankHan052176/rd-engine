@@ -307,6 +307,9 @@ fn projection(counters: &Counters) -> DecoderProjection {
             total_ns: counters.render_ns,
             peak_ns: counters.render_peak_ns,
         }),
+        // A CPU decoder keeps no per-stage clock: this backend measures none of
+        // the OpenHarmony stages and states that absence instead of zeroes.
+        stage_timings: None,
         queued_units: counters.queued_units,
         closed: counters.closed,
         quarantined: counters.quarantined,

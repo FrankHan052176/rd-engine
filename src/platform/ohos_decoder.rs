@@ -21,7 +21,10 @@
 //! Close explicitly cancels queued access units; normal playback never flushes
 //! or drops accepted P frames. For a new stream, close the old decoder first.
 
-use super::{CleanupVerdict, DecoderProjection, OpenFailure, RenderTarget, RenderTiming};
+use super::{
+    CleanupVerdict, DecoderProjection, DecoderStageTimings, OpenFailure, RenderTarget, RenderTiming,
+    StageTiming,
+};
 use std::sync::Arc;
 
 /// Implemented only by a trusted presentation owner, including the HAR Surface owner.
@@ -174,6 +177,19 @@ pub struct DecoderStats {
     pub render_ns: u64,
     /// The worst single observation behind `render_ns` since this decoder opened.
     pub render_peak_ns: u64,
+    /// Accepted units that waited for the SDK's input callback before the worker
+    /// could start pushing them, and how long that wait was: the SDK's own
+    /// readiness, never a network or idle interval.
+    pub input_wait: StageTiming,
+    /// From that pairing to the worker starting the push. It contains our own
+    /// callback enqueue, lock and worker wakeup, so it is a handoff and not CPU
+    /// time.
+    pub input_dispatch: StageTiming,
+    /// `OH_VideoDecoder_PushInputBuffer` call time alone, whatever it returned.
+    pub push_api: StageTiming,
+    /// `OH_VideoDecoder_RenderOutputBufferAtTime` call time alone, whatever it
+    /// returned. A picture freed instead of presented makes no such call.
+    pub render_api: StageTiming,
     pub non_frame_outputs: u64,
     /// Decoded pictures freed without rendering by the local presentation gate.
     pub suppressed_outputs: u64,
@@ -202,6 +218,15 @@ impl DecoderStats {
                 samples: self.render_samples,
                 total_ns: self.render_ns,
                 peak_ns: self.render_peak_ns,
+            }),
+            // This backend measures every one of its four stages from the first
+            // unit on, so the record is always present and a stage with no
+            // samples yet reads as measured-and-empty, never as unmeasured.
+            stage_timings: Some(DecoderStageTimings {
+                input_wait: self.input_wait,
+                input_dispatch: self.input_dispatch,
+                push_api: self.push_api,
+                render_api: self.render_api,
             }),
             queued_units: self.queued_units,
             closed: self.closed,
@@ -445,6 +470,25 @@ mod engine {
         m.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// One interval of this process's monotonic clock, in nanoseconds, saturating
+    /// at `u64::MAX` instead of wrapping into a plausible-looking number.
+    pub fn elapsed_ns(from: Instant, to: Instant) -> u64 {
+        u64::try_from(to.saturating_duration_since(from).as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// What one access unit and one input buffer settle when the worker pairs
+    /// them: how long the unit waited for a buffer, and the moment every later
+    /// stage counts from.
+    ///
+    /// `accepted` is when the decoder took the unit and `entered` when the SDK's
+    /// input callback began, both stamped in this process's one monotonic domain.
+    /// A buffer that was already waiting makes the wait zero — nothing waited on
+    /// the SDK — and leaves the whole interval from acceptance to the dispatch.
+    pub fn pairing(accepted: Instant, entered: Instant) -> (u64, Instant) {
+        let queued = accepted.max(entered);
+        (elapsed_ns(accepted, queued), queued)
+    }
+
     #[derive(Debug, Clone, Copy)]
     pub struct Buffer {
         pub index: u32,
@@ -452,20 +496,42 @@ mod engine {
     }
     #[derive(Debug, Clone, Copy)]
     pub enum Event {
-        Input(Buffer),
+        /// One reusable input buffer, with the moment the SDK's input callback
+        /// began. That moment is taken before this module's lock, so it is the
+        /// SDK's readiness and not our own enqueue.
+        Input { buffer: Buffer, entered: Instant },
         Output(Buffer),
         StreamChanged { width: i32, height: i32 },
     }
     pub enum Action {
         Event(Event),
-        Submit(Buffer, AccessUnit),
+        /// One access unit paired with the input buffer that will carry it, and
+        /// the later of the two moments it waited from.
+        Submit {
+            buffer: Buffer,
+            unit: AccessUnit,
+            queued: Instant,
+        },
         Stop,
     }
 
+    /// The stage a worker measurement belongs to.
+    #[derive(Debug, Clone, Copy)]
+    pub enum WorkerStage {
+        /// Paired unit and buffer to the worker starting its push path.
+        InputDispatch,
+        /// One `PushInputBuffer` call, whatever it returned.
+        PushApi,
+        /// One `RenderOutputBufferAtTime` call, whatever it returned.
+        RenderApi,
+    }
+
     struct State {
-        packets: VecDeque<AccessUnit>,
+        /// Admitted units, each with the moment this decoder accepted it.
+        packets: VecDeque<(AccessUnit, Instant)>,
         events: VecDeque<Event>,
-        inputs: VecDeque<Buffer>,
+        /// Reusable input buffers, each with the moment its callback began.
+        inputs: VecDeque<(Buffer, Instant)>,
         input_indices: HashSet<u32>,
         output_indices: HashSet<u32>,
         // Includes the access unit removed by the worker until Push returns.
@@ -554,7 +620,10 @@ mod engine {
             state.reserved_units += 1;
             state.reserved_bytes += unit.bytes.len();
             state.stats.accepted_units += 1;
-            state.packets.push_back(unit);
+            // The moment this decoder took the unit, in the same monotonic domain
+            // as the SDK's input callback: one sample of the wait below counts
+            // from here, not from the caller's own clock.
+            state.packets.push_back((unit, Instant::now()));
             self.wake.notify_one();
             Ok(())
         }
@@ -572,7 +641,7 @@ mod engine {
                 state.stats.failure = Some(DecoderError::CallbackOverflow);
             } else {
                 let duplicate = match event {
-                    Event::Input(b) => !state.input_indices.insert(b.index),
+                    Event::Input { buffer, .. } => !state.input_indices.insert(buffer.index),
                     Event::Output(b) => !state.output_indices.insert(b.index),
                     Event::StreamChanged { .. } => false,
                 };
@@ -609,17 +678,37 @@ mod engine {
                     return Action::Event(event);
                 }
                 if !state.inputs.is_empty() && !state.packets.is_empty() {
-                    return Action::Submit(
-                        state.inputs.pop_front().unwrap(),
-                        state.packets.pop_front().unwrap(),
-                    );
+                    // Pairing is where the two stages split: the unit's wait for
+                    // a buffer is settled here, and everything from the later of
+                    // the two moments belongs to the worker's handoff.
+                    let (buffer, entered) = state.inputs.pop_front().unwrap();
+                    let (unit, accepted) = state.packets.pop_front().unwrap();
+                    let (wait, queued) = pairing(accepted, entered);
+                    state.stats.input_wait.record_ns(wait);
+                    return Action::Submit {
+                        buffer,
+                        unit,
+                        queued,
+                    };
                 }
                 state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner());
             }
         }
 
-        pub fn input_available(&self, buffer: Buffer) {
-            lock(&self.state).inputs.push_back(buffer);
+        pub fn input_available(&self, buffer: Buffer, entered: Instant) {
+            lock(&self.state).inputs.push_back((buffer, entered));
+        }
+        /// Records one observation of a stage the worker measured around its own
+        /// handoff or SDK call. Locked, but only after that call returned, so no
+        /// SDK call is ever made while this state is held.
+        pub fn stage(&self, stage: WorkerStage, ns: u64) {
+            let mut state = lock(&self.state);
+            let target = match stage {
+                WorkerStage::InputDispatch => &mut state.stats.input_dispatch,
+                WorkerStage::PushApi => &mut state.stats.push_api,
+                WorkerStage::RenderApi => &mut state.stats.render_api,
+            };
+            target.record_ns(ns);
         }
         // Transfer index ownership BEFORE calling Push/Render/Free. Those SDK
         // calls may synchronously recycle the same index through a callback.
@@ -751,6 +840,7 @@ mod native {
             atomic::{AtomicUsize, Ordering},
         },
         thread,
+        time::Instant,
     };
 
     #[repr(C)]
@@ -945,12 +1035,20 @@ mod native {
         buffer: *mut NativeBuffer,
         data: *mut c_void,
     ) {
+        // Taken strictly before this module's lock, which `post` would otherwise
+        // be the first thing to acquire: this is the moment the SDK said an input
+        // buffer is ready, so the wait it retires is the SDK's own and every
+        // later nanosecond is this module's handoff.
+        let entered = Instant::now();
         unsafe {
             callback(data, |s| {
-                s.post(Event::Input(Buffer {
-                    index,
-                    address: buffer as usize,
-                }))
+                s.post(Event::Input {
+                    buffer: Buffer {
+                        index,
+                        address: buffer as usize,
+                    },
+                    entered,
+                })
             })
         };
     }
@@ -1235,9 +1333,16 @@ mod native {
             OH_AVBuffer_SetBufferAttr(native, &attr)
         })?;
         shared.returning_input(buffer.index);
-        check("OH_VideoDecoder_PushInputBuffer", unsafe {
-            OH_VideoDecoder_PushInputBuffer(codec, buffer.index)
-        })
+        // Only the SDK call is timed: the copy and attribute above are this
+        // module's work, and a client must not read them as the decoder's.
+        let started = Instant::now();
+        let code = unsafe { OH_VideoDecoder_PushInputBuffer(codec, buffer.index) };
+        let elapsed = elapsed_ns(started, Instant::now());
+        // Kept whatever the call returned: a failed push is still a real API
+        // call, and `submitted(.., false)` below is what keeps it out of the
+        // successful-push count.
+        shared.stage(WorkerStage::PushApi, elapsed);
+        check("OH_VideoDecoder_PushInputBuffer", code)
     }
 
     fn render(
@@ -1268,9 +1373,15 @@ mod native {
             // RenderOutputBuffer API never drops for display-rate mismatch and
             // can fill the NativeWindow FIFO for seconds in interactive use.
             let render_timestamp_ns = monotonic_time_ns()?;
-            check("OH_VideoDecoder_RenderOutputBufferAtTime", unsafe {
+            // The clock read above is ours and stays outside the measured call;
+            // this stage is the SDK submission alone.
+            let started = Instant::now();
+            let code = unsafe {
                 OH_VideoDecoder_RenderOutputBufferAtTime(codec, buffer.index, render_timestamp_ns)
-            })?;
+            };
+            let elapsed = elapsed_ns(started, Instant::now());
+            shared.stage(WorkerStage::RenderApi, elapsed);
+            check("OH_VideoDecoder_RenderOutputBufferAtTime", code)?;
         } else {
             check("OH_VideoDecoder_FreeOutputBuffer", unsafe {
                 OH_VideoDecoder_FreeOutputBuffer(codec, buffer.index)
@@ -1317,8 +1428,8 @@ mod native {
         loop {
             let result = match shared.next() {
                 Action::Stop => break,
-                Action::Event(Event::Input(buffer)) => {
-                    shared.input_available(buffer);
+                Action::Event(Event::Input { buffer, entered }) => {
+                    shared.input_available(buffer, entered);
                     Ok(())
                 }
                 Action::Event(Event::Output(buffer)) => {
@@ -1329,7 +1440,18 @@ mod native {
                     shared.stream_changed();
                     Ok(())
                 }
-                Action::Submit(buffer, unit) => {
+                Action::Submit {
+                    buffer,
+                    unit,
+                    queued,
+                } => {
+                    // The worker starts the push path here, which is where the
+                    // dispatch stage ends: everything after this point belongs to
+                    // the copy and the SDK call.
+                    shared.stage(
+                        WorkerStage::InputDispatch,
+                        elapsed_ns(queued, Instant::now()),
+                    );
                     let result = push(codec, buffer, &unit, &shared);
                     shared.submitted(unit.bytes.len(), result.is_ok());
                     result
@@ -1356,6 +1478,8 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::{engine::*, *};
+    use std::time::{Duration, Instant};
+
     fn config() -> DecoderConfig {
         DecoderConfig {
             codec: VideoCodec::H265,
@@ -1401,17 +1525,20 @@ mod tests {
     fn in_progress_quota_and_synchronous_index_recycling_are_safe() {
         let shared = Shared::new(config()).unwrap();
         shared.submit(packet()).unwrap();
-        shared.post(Event::Input(Buffer {
-            index: 2,
-            address: 1,
-        }));
-        if let Action::Event(Event::Input(buffer)) = shared.next() {
-            shared.input_available(buffer);
+        shared.post(Event::Input {
+            buffer: Buffer {
+                index: 2,
+                address: 1,
+            },
+            entered: Instant::now(),
+        });
+        if let Action::Event(Event::Input { buffer, entered }) = shared.next() {
+            shared.input_available(buffer, entered);
         } else {
             panic!();
         }
         let (buffer, unit) = match shared.next() {
-            Action::Submit(b, u) => (b, u),
+            Action::Submit { buffer, unit, .. } => (buffer, unit),
             _ => panic!(),
         };
         assert_eq!(
@@ -1420,10 +1547,13 @@ mod tests {
         );
         shared.returning_input(buffer.index);
         // Simulates metadata delivery while the SDK Push call is on the stack.
-        shared.post(Event::Input(Buffer {
-            index: 2,
-            address: 1,
-        }));
+        shared.post(Event::Input {
+            buffer: Buffer {
+                index: 2,
+                address: 1,
+            },
+            entered: Instant::now(),
+        });
         assert!(shared.stats().failure.is_none());
         shared.submitted(unit.bytes.len(), true);
         shared.submit(packet()).unwrap();
@@ -1438,10 +1568,16 @@ mod tests {
             let mut unit = packet();
             unit.pts_us = pts;
             shared.submit(unit).unwrap();
-            shared.post(Event::Input(Buffer { index: 2, address: 1 }));
-            let Action::Event(Event::Input(buffer)) = shared.next() else { panic!() };
-            shared.input_available(buffer);
-            let Action::Submit(buffer, unit) = shared.next() else { panic!() };
+            shared.post(Event::Input {
+                buffer: Buffer {
+                    index: 2,
+                    address: 1,
+                },
+                entered: Instant::now(),
+            });
+            let Action::Event(Event::Input { buffer, entered }) = shared.next() else { panic!() };
+            shared.input_available(buffer, entered);
+            let Action::Submit { buffer, unit, .. } = shared.next() else { panic!() };
             assert_eq!(unit.pts_us, pts);
             assert_eq!(unit.kind, AccessUnitKind::Frame { key: false });
             shared.returning_input(buffer.index);
@@ -1508,5 +1644,105 @@ mod tests {
         let rejected = shared.submit(packet()).unwrap_err();
         assert_eq!(rejected.reason, DecoderError::EndOfStreamAlreadySubmitted);
         assert_eq!(rejected.unit.bytes, vec![1, 2, 3]);
+    }
+
+    /// A unit that arrived first really waits, and only the interval from the
+    /// SDK's own callback onwards belongs to the handoff.
+    #[test]
+    fn pipeline_timing_a_waiting_unit_splits_its_wait_from_the_dispatch() {
+        let base = Instant::now();
+        let accepted = base - Duration::from_millis(10);
+        let entered = base - Duration::from_millis(4);
+        let (wait, queued) = pairing(accepted, entered);
+        assert_eq!(wait, 6_000_000);
+        assert_eq!(queued, entered);
+        assert_eq!(
+            elapsed_ns(queued, entered + Duration::from_millis(3)),
+            3_000_000
+        );
+    }
+
+    /// A buffer already waiting when the unit arrived makes no wait of its own:
+    /// the whole interval from acceptance is the handoff, so no sample reports
+    /// SDK latency the SDK never spent.
+    #[test]
+    fn pipeline_timing_a_waiting_buffer_leaves_no_wait_stage() {
+        let base = Instant::now();
+        let entered = base - Duration::from_millis(10);
+        let accepted = base - Duration::from_millis(4);
+        let (wait, queued) = pairing(accepted, entered);
+        assert_eq!(wait, 0);
+        assert_eq!(queued, accepted);
+        assert_eq!(
+            elapsed_ns(queued, accepted + Duration::from_millis(5)),
+            5_000_000
+        );
+    }
+
+    /// The pairing the worker really performs settles one wait sample, and the
+    /// stages it measures land in their own fields of the projection.
+    #[test]
+    fn pipeline_timing_a_real_pairing_records_one_sample_per_stage() {
+        let shared = Shared::new(config()).unwrap();
+        shared.post(Event::Input {
+            buffer: Buffer {
+                index: 2,
+                address: 1,
+            },
+            entered: Instant::now(),
+        });
+        let Action::Event(Event::Input { buffer, entered }) = shared.next() else { panic!() };
+        shared.input_available(buffer, entered);
+        shared.submit(packet()).unwrap();
+        let Action::Submit { buffer, unit, .. } = shared.next() else { panic!() };
+        shared.stage(WorkerStage::InputDispatch, 1_000_000);
+        shared.stage(WorkerStage::PushApi, 2_000_000);
+        shared.stage(WorkerStage::RenderApi, 3_000_000);
+        let stats = shared.stats();
+        assert_eq!(stats.input_wait.samples, 1);
+        assert_eq!(stats.input_dispatch.samples, 1);
+        assert_eq!(stats.push_api.samples, 1);
+        assert_eq!(stats.render_api.samples, 1);
+        let stages = stats
+            .projection()
+            .stage_timings
+            .expect("this backend measures its own stages");
+        assert_eq!(stages.input_wait.samples, 1);
+        assert_eq!(stages.input_dispatch.total_ns, 1_000_000);
+        assert_eq!(stages.push_api.total_ns, 2_000_000);
+        assert_eq!(stages.render_api.total_ns, 3_000_000);
+        shared.returning_input(buffer.index);
+        shared.submitted(unit.bytes.len(), true);
+    }
+
+    /// A call that failed still took time and is still not a successful push:
+    /// the stage keeps the observation and the counters keep the failure.
+    #[test]
+    fn pipeline_timing_a_failed_push_keeps_its_duration_only() {
+        let shared = Shared::new(config()).unwrap();
+        shared.submit(packet()).unwrap();
+        shared.post(Event::Input {
+            buffer: Buffer {
+                index: 2,
+                address: 1,
+            },
+            entered: Instant::now(),
+        });
+        let Action::Event(Event::Input { buffer, entered }) = shared.next() else { panic!() };
+        shared.input_available(buffer, entered);
+        let Action::Submit { buffer, .. } = shared.next() else { panic!() };
+        // What the worker does around a call that returned an error: the index is
+        // handed back before the call, the call is timed either way, and the
+        // failure is what `submitted` records.
+        shared.returning_input(buffer.index);
+        shared.stage(WorkerStage::PushApi, 9_000_000);
+        shared.submitted(3, false);
+        let stats = shared.stats();
+        assert_eq!(stats.push_api.samples, 1);
+        assert_eq!(stats.push_api.total_ns, 9_000_000);
+        assert_eq!(stats.push_api.over_8_ms, 1);
+        assert_eq!(stats.pushed_units, 0);
+        assert_eq!(stats.render_submissions, 0);
+        assert_eq!(stats.cancelled_units, 1);
     }
 }

@@ -2839,6 +2839,32 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
     })
 }
 
+fn stage_timing_json(timing: Option<rd_engine::viewer::decoder::StageTiming>) -> serde_json::Value {
+    match timing {
+        Some(timing) => serde_json::json!({
+            "samples": timing.samples,
+            "totalNs": timing.total_ns,
+            "peakNs": timing.peak_ns,
+            "over8Ms": timing.over_8_ms,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Each aggregate is cumulative for this dial, including closed decoders.
+/// Null means uninstrumented; zero samples means enabled with no observations.
+fn pipeline_timings_json(value: &rd_engine::viewer::PipelineTimings) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "recordAdmission": stage_timing_json(value.record_admission),
+        "decoderAdmission": stage_timing_json(value.decoder_admission),
+        "inputWait": stage_timing_json(value.input_wait),
+        "inputDispatch": stage_timing_json(value.input_dispatch),
+        "pushApi": stage_timing_json(value.push_api),
+        "renderApi": stage_timing_json(value.render_api),
+    })
+}
+
 /// Cumulative counters from `Viewer::snapshot`. The engine reports totals, not
 /// window rates, so the client owns the sampling window; this never invents an
 /// average it did not measure.
@@ -2862,6 +2888,8 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             "available": true,
             "source": "engine_viewer_snapshot",
             "display": value.current_display,
+            "frameWidth": (value.width > 0).then_some(value.width),
+            "frameHeight": (value.height > 0).then_some(value.height),
             "networkRttMs": value.network_rtt_ms,
             // Both identities change when the viewer is dialled again, which is
             // what makes the client start a fresh window, and every rate it
@@ -2892,11 +2920,14 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             "conversionNs": 0,
             "targetCalls": 0,
             "targetNs": 0,
-            // Admission never waits for a slot: a full queue is refused rather
-            // than queued behind, so no frame ever spends time waiting in one.
-            "queueCalls": 0,
-            "queueNs": 0,
-            "busyFrames": 0,
+            // The old generic queue fields never measured the reader/decoder
+            // waits. Keep them explicitly unknown; the named stage timings
+            // below distinguish admission, SDK input return and dispatch.
+            "queueCalls": null,
+            "queueNs": null,
+            "busyFrames": null,
+            "queueTimingAvailable": false,
+            "pipelineTimings": pipeline_timings_json(&value.pipeline_timings),
             // The interval this path measures runs from taking a unit to the
             // submission of its picture: the round trip through the codec,
             // pipeline delay included, not the decode work itself. The client's
