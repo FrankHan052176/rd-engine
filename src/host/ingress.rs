@@ -72,12 +72,15 @@ pub(super) async fn serve(
             _ = state.cancel.cancelled() => break,
             joined = peers.join_next_with_id(), if !peers.is_empty() => {
                 if let Some(joined) = joined {
-                    if let Err(error) = retire_peer(&state, joined) {
-                        state.progress(|s| s.error = Some(error));
-                        if error == HostError::ReclamationUnconfirmed {
-                            unconfirmed = true;
-                            state.cancel.cancel();
-                        }
+                    // One peer's own end is that peer's outcome, recorded on its
+                    // own record by `retire_peer`: a controller that cancelled
+                    // while this machine was still deciding, closed a finished
+                    // session, or never authenticated leaves this run listening.
+                    // Only an unconfirmed native teardown, which this process
+                    // cannot prove it released, ends the run with it.
+                    if retire_peer(&state, joined) == Err(HostError::ReclamationUnconfirmed) {
+                        unconfirmed = true;
+                        state.cancel.cancel();
                     }
                 }
                 continue;
