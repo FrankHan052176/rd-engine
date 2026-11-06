@@ -397,6 +397,27 @@ fn approval_two_factor_trusted_and_role_states_fail_closed() {
         auth.poll_approval(),
         AuthAction::Authorized { .. }
     ));
+    // Password-or-click answers the very first, passwordless attempt with the
+    // password challenge, because the controller picks the credential. The
+    // local request must stay open so a click here still admits it.
+    let approved = Arc::new(AtomicBool::new(false));
+    let mut cfg = config(b"fixture");
+    cfg.policy = PrimaryPolicy::PasswordOrClick;
+    cfg.approval = Box::new(Manual(approved.clone()));
+    let mut auth = HostAuthentication::new(cfg).unwrap();
+    assert!(matches!(
+        auth.login(login()),
+        AuthAction::Error {
+            message: WRONG_PASSWORD,
+            terminal: false
+        }
+    ));
+    assert_eq!(auth.state(), HostAuthState::AwaitApproval);
+    approved.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        auth.poll_approval(),
+        AuthAction::Authorized { .. }
+    ));
     let mut auth = HostAuthentication::new(config(b"fixture")).unwrap();
     let mut request = login();
     request.set_file_transfer(Default::default());

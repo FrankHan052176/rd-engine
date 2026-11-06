@@ -343,9 +343,12 @@ impl HostAuthentication {
         }
         self.state = HostAuthState::AwaitApproval;
         match self.poll_approval() {
-            AuthAction::PendingApproval
-                if self.config.policy == PrimaryPolicy::PasswordOrClick && nonempty =>
-            {
+            // Password-or-click asks the controller for its password on the very
+            // first, empty attempt: the client shows its password prompt instead
+            // of a neutral wait. The state stays AwaitApproval, so the pending
+            // local request remains live and a click on this machine admits the
+            // same frozen request.
+            AuthAction::PendingApproval if self.config.policy == PrimaryPolicy::PasswordOrClick => {
                 self.error(WRONG_PASSWORD, false)
             }
             other => other,
