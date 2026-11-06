@@ -93,7 +93,8 @@ pub enum SessionOptionChange {
     /// session, so asking for audio here cannot make a peer that withheld it
     /// heard.
     AudioEnabled(bool),
-    /// Whether the peer should include its own cursor in the video it sends.
+    /// Subscribe to the peer's separate cursor image and position messages.
+    /// This does not ask the peer to embed cursor pixels in its video.
     ShowRemoteCursor(bool),
     /// Show another of the peer's displays, by its own index.
     SwitchDisplay(i32),

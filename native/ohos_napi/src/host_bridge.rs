@@ -360,6 +360,7 @@ fn capture_value(capture: &HostCaptureSnapshot) -> Value {
         "queuedBytes": capture.queued_bytes,
         "width": capture.width,
         "height": capture.height,
+        "openedAtMs": if capture.opened_unix_ms == 0 { Value::Null } else { json!(capture.opened_unix_ms) },
         "error": capture.error.as_ref().map(ToString::to_string),
     })
 }
@@ -380,15 +381,22 @@ fn peer_value(run_epoch: u64, peer: &HostPeerSnapshot) -> Value {
     })
 }
 
-/// The capture owner this service currently has, preferring the one that really
-/// reported consent. There is no aggregate claim when no publisher exists: a
-/// listening host with no controller has no capture at all.
+/// The capture owner this service currently has. The run's own owner comes
+/// first: it exists from the start of the run, with or without a controller, and
+/// is read from the platform publisher. A per-peer owner is only a fallback for
+/// a host that does not own a run-level capture. There is no aggregate claim when
+/// no publisher exists.
 fn aggregate_capture(status: &HostServiceStatus) -> Option<&HostCaptureSnapshot> {
     status
-        .peers
-        .iter()
-        .filter_map(|peer| peer.capture.as_ref())
-        .find(|capture| capture.authorized)
+        .capture
+        .as_ref()
+        .or_else(|| {
+            status
+                .peers
+                .iter()
+                .filter_map(|peer| peer.capture.as_ref())
+                .find(|capture| capture.authorized)
+        })
         .or_else(|| status.peers.iter().find_map(|peer| peer.capture.as_ref()))
 }
 
@@ -570,6 +578,23 @@ fn status_document(action: &str, status: Option<&HostServiceStatus>, my_id: &str
         None => Value::Null,
     };
     document["captureActive"] = json!(capture.is_some() && !terminal);
+    // Who owns the capture, and the cadence it was really opened with. The run's
+    // owner is requested at start; `systemCaptureConfirmed` is the consent and
+    // `framesObserved` the encoded units, so a requested capture is never
+    // reported as one that produces frames.
+    document["captureOwner"] = if status.capture.is_some() {
+        json!("run")
+    } else if capture.is_some() {
+        json!("peer")
+    } else {
+        Value::Null
+    };
+    document["captureOpenedAtMs"] = match capture {
+        Some(capture) if capture.opened_unix_ms != 0 => json!(capture.opened_unix_ms),
+        _ => Value::Null,
+    };
+    document["captureFps"] = json!(status.capture_fps);
+    document["captureEncodedBytes"] = json!(capture.map_or(0, |capture| capture.bytes));
     document["systemCaptureConfirmed"] = json!(capture.is_some_and(|capture| capture.authorized));
     document["consentState"] = match capture {
         Some(capture) => json!(capture.state),
@@ -1025,7 +1050,7 @@ pub fn controlled_screen_configure(config_json: String) -> String {
                 "height": screen.height,
                 "frameRate": screen.fps,
                 "frozen": false,
-                "message": "the next host run publishes this geometry; the frame cadence follows the controller's signed request",
+                "message": "the next host run publishes this geometry; the run's one capture starts with the run at the platform's fixed cadence, and a controller's requested frame rate is recorded but does not change it",
             })
             .to_string()
         }

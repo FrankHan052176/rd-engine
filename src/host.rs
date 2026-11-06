@@ -1,5 +1,9 @@
 //! Explicitly approved viewing host. No legacy app runtime.
 //! Authentication is not capture consent; the publisher retains the OS prompt.
+//! A host started with [`Host::start_run_capture`] owns one screen capture for
+//! the whole run, requested before the host is ready and kept while nobody is
+//! connected; every authorized peer consumes it. [`Host::start`] keeps the
+//! capture per peer.
 //! Remote keyboard/pointer input is a separate local grant that stays off unless
 //! this machine asked for it, and it exists only where an injection adapter and
 //! a bound output do. Clipboard/file/audio adapters are absent and never granted.
@@ -490,6 +494,11 @@ pub struct HostSnapshot {
     pub sent_units: u64,
     pub sent_bytes: u64,
     pub closed: bool,
+    /// The run-level screen-capture owner's own facts, when this host owns one
+    /// ([`Host::start_run_capture`]). `None` for a host whose capture belongs to
+    /// each peer. It is read from the platform publisher and never inferred from
+    /// a phase, a request or a sent counter.
+    pub capture: Option<HostCaptureSnapshot>,
 }
 impl HostSnapshot {
     /// A closing host and a host that reached a terminal phase own their status.
@@ -555,6 +564,11 @@ pub struct HostCaptureSnapshot {
     pub height: i32,
     /// The owner's own failure reason, retained after teardown.
     pub error: Option<PublisherError>,
+    /// Wall-clock time (Unix ms) at which this host run's capture owner was
+    /// really created, i.e. when the system capture request was issued. `0` for
+    /// a per-peer owner, which carries no run-level open time. It says nothing
+    /// about consent or frames: those are `authorized` and `frames`.
+    pub opened_unix_ms: u64,
 }
 impl HostCaptureSnapshot {
     /// Projects the publisher's own stats. `terminal` is the real close verdict;
@@ -584,6 +598,7 @@ impl HostCaptureSnapshot {
             width: stats.width,
             height: stats.height,
             error,
+            opened_unix_ms: 0,
         }
     }
     /// A publisher that never opened. The SDK reported no state at all (`-1`),
@@ -604,6 +619,7 @@ impl HostCaptureSnapshot {
             width: 0,
             height: 0,
             error: Some(error),
+            opened_unix_ms: 0,
         }
     }
 }
@@ -829,6 +845,21 @@ impl State {
         }
     }
 
+    /// Publishes the run-level capture owner's own facts. Only the pump that
+    /// really holds the publisher calls this. Unlike `progress`, a terminal host
+    /// phase does not freeze it: the owner's final verdict is still reported.
+    fn set_capture(&self, capture: HostCaptureSnapshot) {
+        let changed = {
+            let mut snapshot = lock(&self.snapshot);
+            let changed = snapshot.capture.as_ref() != Some(&capture);
+            snapshot.capture = Some(capture);
+            changed
+        };
+        if changed {
+            self.changed();
+        }
+    }
+
     /// Registers this epoch's request, keeping the entry and any decision
     /// already latched for it when the same peer asks again.
     fn request_approval(&self, epoch: u64, origin: &str) -> Arc<PendingApproval> {
@@ -963,9 +994,33 @@ pub struct Host {
     join: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl Host {
+    /// Starts a host whose screen capture belongs to each authorized peer: the
+    /// platform publisher (and its OS consent) is opened per session.
     pub fn start(
         options: HostOptions,
         routes: Option<mpsc::Receiver<IncomingHostRoute>>,
+    ) -> Result<Self, HostError> {
+        Self::start_owned(options, routes, false)
+    }
+
+    /// Starts a host whose screen capture belongs to the run.
+    ///
+    /// The one platform publisher (and its OS consent) is created when the run
+    /// starts, before the host is reported ready, and is kept for the whole run
+    /// whether or not anyone is watching. Every authorized peer consumes that
+    /// same capture; none creates one. The run's codec and cadence are fixed by
+    /// that single owner (see [`RUN_CAPTURE_FPS`]).
+    pub fn start_run_capture(
+        options: HostOptions,
+        routes: Option<mpsc::Receiver<IncomingHostRoute>>,
+    ) -> Result<Self, HostError> {
+        Self::start_owned(options, routes, true)
+    }
+
+    fn start_owned(
+        options: HostOptions,
+        routes: Option<mpsc::Receiver<IncomingHostRoute>>,
+        run_capture: bool,
     ) -> Result<Self, HostError> {
         if options.id.is_empty()
             || options.id.len() > 512
@@ -1074,11 +1129,19 @@ impl Host {
                 sent_units: 0,
                 sent_bytes: 0,
                 closed: false,
+                capture: None,
             }),
         });
         let task_state = state.clone();
         let join = runtime.spawn(async move {
-            let result = serve(task_state.clone(), Arc::new(options), display, routes).await;
+            let result = serve(
+                task_state.clone(),
+                Arc::new(options),
+                display,
+                routes,
+                run_capture,
+            )
+            .await;
             task_state.finish(result);
         });
         Ok(Self {
@@ -1624,6 +1687,7 @@ async fn peer(
     record: Arc<PeerRecord>,
     commands: mpsc::Receiver<PeerCommand>,
     permit: tokio::sync::OwnedSemaphorePermit,
+    capture: Option<Arc<RunCapture>>,
 ) -> Result<(), HostError> {
     let control = record
         .control
@@ -1689,13 +1753,20 @@ async fn peer(
         &record,
         matches!(parts.context.security, Security::Encrypted { .. }),
     );
+    // The singular fields below describe this session. With a run-level capture
+    // the cadence is the one the run's owner really captures at, which a peer's
+    // request cannot change; the request itself stays recorded beside it.
+    let (phase, published_fps) = match &capture {
+        Some(capture) => (capture_phase(&capture.snapshot()), capture.fps),
+        None => ("awaiting_capture_consent", request.target_fps),
+    };
     state.progress(|s| {
-        s.phase = "awaiting_capture_consent";
+        s.phase = phase;
         // The singular codec/rate fields describe the session that last began;
         // both rates come from this one resolved request under this lock, and
         // `connected`/`active_peers`/`encrypted` are the live-peer aggregate.
         s.client_requested_fps = request.client_requested_fps;
-        s.fps = request.target_fps;
+        s.fps = published_fps;
         s.codec = match codec {
             Codec::H264 => "H264",
             Codec::H265 => "H265",
@@ -1714,7 +1785,16 @@ async fn peer(
         )?
     };
     let (tx, rx) = mpsc::channel(16);
-    let config = publisher_config(&options, &display, codec, request.target_fps);
+    // A run-level capture is consumed, never opened: this peer owns no capture.
+    let source = match &capture {
+        Some(capture) => CaptureSource::Run(capture.subscribe()),
+        None => CaptureSource::Own(publisher_config(
+            &options,
+            &display,
+            codec,
+            request.target_fps,
+        )),
+    };
     let writer = parts.writer;
     let reading = read_peer(
         parts.reader,
@@ -1730,7 +1810,15 @@ async fn peer(
         granted,
         remote_disabled,
     );
-    let publishing = publish(state.clone(), writer, rx, cancel.clone(), config, record);
+    let publishing = publish(
+        state.clone(),
+        writer,
+        rx,
+        cancel.clone(),
+        source,
+        codec,
+        record,
+    );
     // Both halves are this task's own futures: every path below waits for each
     // one's own cleanup, so nothing is left detached from the peer that owns it.
     tokio::pin! {
@@ -2112,11 +2200,17 @@ fn project_capture(
     stats: &PublisherStats,
     terminal: Option<&PublisherError>,
 ) {
-    let Some(control) = record.control.as_ref() else {
-        return;
-    };
-    let capture = HostCaptureSnapshot::of_stats(stats, terminal);
-    let phase = if capture.authorized {
+    apply_capture(
+        state,
+        record,
+        HostCaptureSnapshot::of_stats(stats, terminal),
+    );
+}
+
+/// The peer phase a capture owner's facts imply. `streaming` needs encoded
+/// frames the owner really produced, not a request or a granted prompt.
+fn capture_phase(capture: &HostCaptureSnapshot) -> &'static str {
+    if capture.authorized {
         if capture.frames > 0 {
             "streaming"
         } else {
@@ -2124,7 +2218,15 @@ fn project_capture(
         }
     } else {
         "awaiting_capture_consent"
+    }
+}
+
+/// Puts an owner's already-read facts on the peer that consumes them.
+fn apply_capture(state: &State, record: &PeerRecord, capture: HostCaptureSnapshot) {
+    let Some(control) = record.control.as_ref() else {
+        return;
     };
+    let phase = capture_phase(&capture);
     let changed = {
         let mut snapshot = lock(&control.snapshot);
         let mut changed = snapshot.capture.as_ref() != Some(&capture);
@@ -2183,15 +2285,334 @@ fn video(unit: &EncodedUnit, codec: Codec) -> Result<Message, HostError> {
     Ok(message)
 }
 
+/// Cadence of a run-level capture. The one platform owner is opened with it, and
+/// it is the highest the platform screen source accepts. A peer's signed request
+/// can neither raise nor lower it: delivering fewer frames would mean dropping
+/// access units out of the encoder's reference chain, and the publisher has no
+/// way to reconfigure a live capture. `HostSnapshot::fps` reports this value;
+/// the request stays beside it as `client_requested_fps`.
+pub const RUN_CAPTURE_FPS: u32 = 60;
+/// Access units one consumer may hold before the run's pump waits for it. It
+/// matches the publisher's own admission credit, so memory stays bounded by the
+/// credit and not by the number of viewers.
+const SUBSCRIBER_DEPTH: usize = 2;
+
+/// Where one peer's access units come from.
+enum CaptureSource {
+    /// A capture this peer opens, owns and closes (`Host::start`).
+    Own(PublisherConfig),
+    /// A consumer of the run's capture (`Host::start_run_capture`).
+    Run(Subscription),
+}
+
+/// The peer-side view of [`CaptureSource`] once it is live.
+enum Frames {
+    Own(Publisher),
+    Run(Subscription),
+}
+impl Frames {
+    async fn recv(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Arc<EncodedUnit>>, PublisherError> {
+        match self {
+            Self::Own(publisher) => publisher.recv(cancel).await.map(|unit| unit.map(Arc::new)),
+            Self::Run(subscription) => subscription.recv(cancel).await,
+        }
+    }
+    fn request_keyframe(&self) -> Result<(), PublisherError> {
+        match self {
+            Self::Own(publisher) => publisher.request_keyframe(),
+            Self::Run(subscription) => {
+                subscription.hub.keyframe.notify_one();
+                Ok(())
+            }
+        }
+    }
+    /// Reads the owner's facts onto this peer. Observational only.
+    fn project(&self, state: &State, record: &PeerRecord) {
+        match self {
+            Self::Own(publisher) => project_capture(state, record, &publisher.stats(), None),
+            Self::Run(subscription) => apply_capture(state, record, subscription.hub.snapshot()),
+        }
+    }
+}
+
+struct Subscriber {
+    id: u64,
+    tx: mpsc::Sender<Arc<EncodedUnit>>,
+    /// Set until the first key unit after joining: a video decoder can only
+    /// start at a key unit, and earlier delta units are of no use to it.
+    waiting_key: Arc<AtomicBool>,
+}
+
+/// The run's one screen-capture owner, as the peers see it. The platform
+/// publisher itself is owned by [`run_capture_pump`]; this is the fan-out
+/// point and the published facts.
+struct RunCapture {
+    fps: u32,
+    opened_unix_ms: u64,
+    subscribers: Mutex<Vec<Subscriber>>,
+    next_subscriber: AtomicU64,
+    /// A joining viewer or a protocol refresh asks the one owner for a key unit.
+    keyframe: tokio::sync::Notify,
+    /// The owner's last published facts, read by consuming peers.
+    facts: Mutex<HostCaptureSnapshot>,
+    /// Ends the pump. Cancelled only after every peer has been joined, or by the
+    /// pump itself when the owner failed.
+    stop: CancellationToken,
+}
+impl RunCapture {
+    fn snapshot(&self) -> HostCaptureSnapshot {
+        lock(&self.facts).clone()
+    }
+
+    /// A new consumer. It receives nothing until the next key unit.
+    fn subscribe(self: &Arc<Self>) -> Subscription {
+        let (tx, rx) = mpsc::channel(SUBSCRIBER_DEPTH);
+        let id = self.next_subscriber.fetch_add(1, Ordering::Relaxed);
+        lock(&self.subscribers).push(Subscriber {
+            id,
+            tx,
+            waiting_key: Arc::new(AtomicBool::new(true)),
+        });
+        self.keyframe.notify_one();
+        Subscription {
+            id,
+            hub: self.clone(),
+            rx,
+        }
+    }
+
+    /// Publishes the owner's own live stats (host-wide and for its consumers).
+    fn publish(&self, state: &State, stats: &PublisherStats) {
+        let mut capture = HostCaptureSnapshot::of_stats(stats, None);
+        capture.opened_unix_ms = self.opened_unix_ms;
+        *lock(&self.facts) = capture.clone();
+        state.set_capture(capture);
+    }
+
+    /// Publishes the owner's last facts together with its real close verdict.
+    /// A close this process could not confirm is `quarantined`; a confirmed one
+    /// is `stopped` and no longer authorized, with any earlier failure reason
+    /// kept.
+    fn publish_final(
+        &self,
+        state: &State,
+        stats: &PublisherStats,
+        closed: Option<&PublisherError>,
+    ) {
+        let mut capture = HostCaptureSnapshot::of_stats(stats, closed);
+        if closed.is_none() {
+            capture.state = "stopped";
+            capture.authorized = false;
+        }
+        capture.opened_unix_ms = self.opened_unix_ms;
+        *lock(&self.facts) = capture.clone();
+        state.set_capture(capture);
+    }
+
+    /// Hands one access unit to every consumer in turn and waits for each to
+    /// take it: a slow consumer paces the encoder through the publisher's
+    /// admission credit, exactly as a single peer always did, and no unit is
+    /// thinned. The credit is released when the last consumer drops its handle.
+    /// Returns `false` when the pump was asked to stop while waiting.
+    async fn deliver(&self, unit: EncodedUnit) -> bool {
+        let targets: Vec<(u64, mpsc::Sender<Arc<EncodedUnit>>, Arc<AtomicBool>)> = lock(
+            &self.subscribers,
+        )
+        .iter()
+        .map(|s| (s.id, s.tx.clone(), s.waiting_key.clone()))
+        .collect();
+        if targets.is_empty() {
+            // Nobody is watching: the unit is released straight back to the
+            // owner, which keeps capturing.
+            return true;
+        }
+        let unit = Arc::new(unit);
+        let mut gone = Vec::new();
+        for (id, tx, waiting) in targets {
+            if waiting.load(Ordering::Acquire) {
+                if !unit.key {
+                    continue;
+                }
+                waiting.store(false, Ordering::Release);
+            }
+            tokio::select! {
+                biased;
+                _ = self.stop.cancelled() => return false,
+                sent = tx.send(unit.clone()) => {
+                    if sent.is_err() {
+                        gone.push(id);
+                    }
+                }
+            }
+        }
+        if !gone.is_empty() {
+            lock(&self.subscribers).retain(|s| !gone.contains(&s.id));
+        }
+        true
+    }
+}
+
+/// One peer's consumption of the run's capture. Dropping it leaves the capture
+/// running.
+struct Subscription {
+    id: u64,
+    hub: Arc<RunCapture>,
+    rx: mpsc::Receiver<Arc<EncodedUnit>>,
+}
+impl Subscription {
+    async fn recv(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Arc<EncodedUnit>>, PublisherError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(PublisherError::Closed),
+            unit = self.rx.recv() => Ok(unit),
+        }
+    }
+}
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        lock(&self.hub.subscribers).retain(|s| s.id != self.id);
+    }
+}
+
+/// The run-level capture and the pump task that owns its publisher.
+struct RunCaptureOwner {
+    hub: Arc<RunCapture>,
+    pump: tokio::task::JoinHandle<Result<(), HostError>>,
+}
+impl RunCaptureOwner {
+    /// Creates the run's one capture: the real `Publisher::open`, with its OS
+    /// consent request. It returns once the system capture is *requested*; the
+    /// consent and every frame are then reported only as the owner observes
+    /// them. A refused open fails the run instead of leaving it ready.
+    async fn start(
+        state: &Arc<State>,
+        options: &HostOptions,
+        display: &DisplayBinding,
+        codec: Codec,
+    ) -> Result<Self, HostError> {
+        let config = publisher_config(options, display, codec, RUN_CAPTURE_FPS);
+        // Native creation is never abandoned halfway; the pump joins it below.
+        let publisher = match Publisher::open(config).await {
+            Ok(publisher) => publisher,
+            Err(error) => {
+                state.set_capture(HostCaptureSnapshot::refused(error.clone()));
+                return Err(publisher_failure(error).unwrap_or(HostError::CaptureFailed));
+            }
+        };
+        let opened_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(0);
+        // The owner's first facts are its own, read right after the request.
+        let mut first = HostCaptureSnapshot::of_stats(&publisher.stats(), None);
+        first.opened_unix_ms = opened_unix_ms;
+        state.set_capture(first.clone());
+        let hub = Arc::new(RunCapture {
+            fps: RUN_CAPTURE_FPS,
+            opened_unix_ms,
+            subscribers: Mutex::new(Vec::new()),
+            next_subscriber: AtomicU64::new(0),
+            keyframe: tokio::sync::Notify::new(),
+            facts: Mutex::new(first),
+            stop: CancellationToken::new(),
+        });
+        let pump = tokio::spawn(run_capture_pump(state.clone(), hub.clone(), publisher));
+        Ok(Self { hub, pump })
+    }
+
+    /// Stops the capture and joins the pump, which closes the publisher. Only
+    /// called after every peer has been joined. An unconfirmed native teardown
+    /// (or a pump that panicked while holding the publisher) is reported as
+    /// such.
+    async fn close(self) -> Result<(), HostError> {
+        self.hub.stop.cancel();
+        match self.pump.await {
+            Ok(result) => result,
+            Err(_) => Err(HostError::ReclamationUnconfirmed),
+        }
+    }
+}
+
+/// The only consumer of the run's `Publisher`. It never touches a peer's wire:
+/// it drains encoded units whether or not anyone is subscribed, fans them out,
+/// and samples the owner's own stats outside the frame path.
+async fn run_capture_pump(
+    state: Arc<State>,
+    hub: Arc<RunCapture>,
+    publisher: Publisher,
+) -> Result<(), HostError> {
+    let mut sample = tokio::time::interval(CAPTURE_SAMPLE);
+    sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let result = async {
+        loop {
+            let unit = tokio::select! {
+                biased;
+                _ = hub.stop.cancelled() => return Ok(()),
+                _ = sample.tick() => {
+                    hub.publish(&state, &publisher.stats());
+                    continue;
+                }
+                _ = hub.keyframe.notified() => {
+                    if let Some(error) = publisher
+                        .request_keyframe()
+                        .err()
+                        .and_then(publisher_failure)
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
+                unit = publisher.recv(&hub.stop) => match unit {
+                    Ok(Some(unit)) => unit,
+                    Ok(None) => return Ok(()),
+                    Err(error) => return match publisher_failure(error) {
+                        Some(error) => Err(error),
+                        None => Ok(()),
+                    },
+                },
+            };
+            if !hub.deliver(unit).await {
+                return Ok(());
+            }
+        }
+    }
+    .await;
+    if let Err(error) = result {
+        // The capture failed (consent withdrawn or refused, SDK error, ...).
+        // The host must not stay ready while nothing is being recorded: report
+        // the owner's failure and close, so serve joins every peer and then
+        // this pump.
+        state.progress(|s| s.error = Some(error));
+        state.request_close();
+    }
+    // Waiting viewers see their feed end; the next one subscribes to nothing.
+    lock(&hub.subscribers).clear();
+    // The owner's own last facts, then its real close verdict.
+    let terminal = publisher.stats();
+    publisher.request_close();
+    let closed = publisher.close().await;
+    hub.publish_final(&state, &terminal, closed.as_ref().err());
+    if closed.is_err() {
+        return Err(HostError::ReclamationUnconfirmed);
+    }
+    result
+}
+
 async fn publish(
     state: Arc<State>,
     mut writer: WireWriter,
     mut control: mpsc::Receiver<Control>,
     cancel: CancellationToken,
-    config: PublisherConfig,
+    source: CaptureSource,
+    codec: Codec,
     record: Arc<PeerRecord>,
 ) -> Result<(), HostError> {
-    let codec = config.codec;
     // A peer may disconnect between spawning this future and its first poll.
     // Do not open a native capture or display a system consent prompt after the
     // session is already cancelled. Once open starts, however, it must finish
@@ -2199,23 +2620,29 @@ async fn publish(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    // Marked before the capture/encoder exists, so a panic inside `open` is still
-    // attributed to a task that may own native resources.
-    record.native.store(true, Ordering::Release);
-    // Never abort a native creation/join just because its caller canceled.
-    let publisher = match Publisher::open(config).await {
-        Ok(value) => value,
-        Err(error) => {
-            // The owner never existed; that is published as such, not as consent.
-            project_capture_refusal(&state, &record, &error);
-            return match publisher_failure(error) {
-                Some(error) => Err(error),
-                None => Ok(()),
-            };
+    // A per-peer capture is created here; a run-level one already exists and is
+    // only consumed. Marked before the capture/encoder exists, so a panic inside
+    // `open` is still attributed to a task that may own native resources.
+    let mut frames = match source {
+        CaptureSource::Own(config) => {
+            record.native.store(true, Ordering::Release);
+            // Never abort a native creation/join just because its caller canceled.
+            match Publisher::open(config).await {
+                Ok(value) => Frames::Own(value),
+                Err(error) => {
+                    // The owner never existed; that is published as such, not as consent.
+                    project_capture_refusal(&state, &record, &error);
+                    return match publisher_failure(error) {
+                        Some(error) => Err(error),
+                        None => Ok(()),
+                    };
+                }
+            }
         }
+        CaptureSource::Run(subscription) => Frames::Run(subscription),
     };
     // The first capture fact this peer publishes is the owner's own.
-    project_capture(&state, &record, &publisher.stats(), None);
+    frames.project(&state, &record);
     let mut sample = tokio::time::interval(CAPTURE_SAMPLE);
     sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = async {
@@ -2226,7 +2653,7 @@ async fn publish(
                 // Observational only: reading the owner's stats never starts,
                 // stops or reconfigures capture.
                 _ = sample.tick() => {
-                    project_capture(&state, &record, &publisher.stats(), None);
+                    frames.project(&state, &record);
                     continue;
                 }
                 value = control.recv() => match value {
@@ -2273,7 +2700,7 @@ async fn publish(
                         return sent;
                     }
                     Some(Control::Keyframe) => {
-                        if let Some(error) = publisher
+                        if let Some(error) = frames
                             .request_keyframe()
                             .err()
                             .and_then(publisher_failure)
@@ -2284,7 +2711,7 @@ async fn publish(
                     }
                     None => return Ok(()),
                 },
-                unit = publisher.recv(&cancel) => match unit {
+                unit = frames.recv(&cancel) => match unit {
                     Ok(Some(unit)) => { let m = video(&unit, codec)?; (m, Some(unit)) },
                     Ok(None) => return Ok(()),
                     Err(error) => return match publisher_failure(error) {
@@ -2310,14 +2737,23 @@ async fn publish(
     // before waiting for native close; queued PermissionInfo acknowledgments
     // cannot keep the controller actor waiting behind capture retirement.
     cancel.cancel();
-    // The owner's own last facts, then its real close verdict: a close this
-    // process could not confirm is published as quarantined, never as stopped.
-    let terminal = publisher.stats();
-    publisher.request_close();
-    let closed = publisher.close().await;
-    project_capture(&state, &record, &terminal, closed.as_ref().err());
-    if closed.is_err() {
-        return Err(HostError::ReclamationUnconfirmed);
+    // A per-peer owner is closed here and its real verdict published. A
+    // run-level owner is not this peer's to close: leaving only drops the
+    // subscription, and the run's pump keeps capturing for the next viewer.
+    match frames {
+        Frames::Own(publisher) => {
+            // The owner's own last facts, then its real close verdict: a close
+            // this process could not confirm is published as quarantined, never
+            // as stopped.
+            let terminal = publisher.stats();
+            publisher.request_close();
+            let closed = publisher.close().await;
+            project_capture(&state, &record, &terminal, closed.as_ref().err());
+            if closed.is_err() {
+                return Err(HostError::ReclamationUnconfirmed);
+            }
+        }
+        Frames::Run(subscription) => drop(subscription),
     }
     result
 }
@@ -2363,6 +2799,7 @@ mod tests {
                 sent_units: 0,
                 sent_bytes: 0,
                 closed: false,
+                capture: None,
             }),
         }
     }

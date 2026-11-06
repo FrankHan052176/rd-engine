@@ -3,11 +3,15 @@
 //! epoch.
 //!
 //! This is the HarmonyOS host container, not the Windows-only `HostController`:
-//! it never reads or writes the official desktop configuration, never touches a
-//! Win32 producer and never claims a capture fact on its own. Starting waits for
-//! the Host's own listener/route admission only — a session with no controller
-//! really is `listening` with no capture, and that is a normal, sustainable
-//! state rather than a failed start.
+//! it never reads or writes the official desktop configuration and never touches
+//! a Win32 producer. Its Host owns one screen capture for the whole run
+//! ([`Host::start_run_capture`]): the system capture is requested when the run
+//! starts, whether or not a controller ever connects, and a controller consumes
+//! it once authorized. Starting waits for the Host's own listener/route
+//! admission, which follows the capture *request* — never the user's consent or
+//! a first frame, which are reported only as the capture owner observes them.
+//! A capture that cannot be created fails the start; one that later fails fails
+//! the run.
 use super::security::HostSecurity;
 use super::*;
 use crate::authentication::{Passwords, PrimaryPolicy};
@@ -205,6 +209,13 @@ pub struct HostServiceStatus {
     pub approve_mode_scoped: bool,
     /// A correct password authorizes without a local click under `both`.
     pub local_approval_enforced: bool,
+    /// The run's own screen-capture owner, read from the platform publisher:
+    /// consent, encoded frames and its terminal verdict. `None` only when no run
+    /// is live or the capture was never created. "Requested" is not
+    /// `authorized`, and `authorized` is not `frames > 0`.
+    pub capture: Option<HostCaptureSnapshot>,
+    /// The cadence the run's one capture is opened with.
+    pub capture_fps: u32,
 }
 
 /// The request token a consumer answers. It names the run epoch, the peer, the
@@ -387,8 +398,9 @@ impl HostService {
             input_authorization_request_id: options.input_authorization_request_id,
             codec_selection: CodecSelection::Auto,
         };
-        let host =
-            Arc::new(Host::start(host_options, Some(route_rx)).map_err(HostServiceError::Host)?);
+        let host = Arc::new(
+            Host::start_run_capture(host_options, Some(route_rx)).map_err(HostServiceError::Host)?,
+        );
         let cancel = CancellationToken::new();
         let (states, state_rx) = watch::channel(RegistrationState::Registering);
         let report = Arc::new(Mutex::new(HostRegistration::Registering));
@@ -568,6 +580,7 @@ impl HostService {
         let mut width = 0;
         let mut height = 0;
         let mut input_enabled = false;
+        let mut capture = None;
         if let Some(run) = run {
             id = run.id.clone();
             width = run.width;
@@ -575,6 +588,7 @@ impl HostService {
             let snapshot = run.host.snapshot();
             input_enabled = snapshot.input_enabled;
             host_phase = snapshot.phase;
+            capture = snapshot.capture.clone();
             // The Host's own terminal verdict owns the service state.
             if matches!(state, "starting" | "listening")
                 && (snapshot.closed || snapshot.error.is_some())
@@ -612,6 +626,8 @@ impl HostService {
             },
             approve_mode_scoped: run.is_some(),
             local_approval_enforced: run.as_ref().is_some_and(|run| run.require_local_approval),
+            capture,
+            capture_fps: if run.is_some() { RUN_CAPTURE_FPS } else { 0 },
         }
     }
 
