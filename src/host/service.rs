@@ -159,6 +159,12 @@ pub struct HostServiceOptions {
     /// is what makes the run reachable by `IP:port`, so it stays the caller's
     /// decision instead of being implied by `ready`.
     pub listen: Option<SocketAddr>,
+    /// Whether the direct listener may serve the protocol's plain handshake.
+    /// A controller that dialled an address holds no pinned peer key, so it
+    /// cannot complete the signed exchange; direct IP access is that legacy
+    /// path. Peers admitted through hbbs are unaffected: their routes always
+    /// require encryption.
+    pub allow_legacy_plain: bool,
     pub require_local_approval: bool,
     /// Explicit local keyboard/pointer grant. On OHOS the process must already
     /// have dialog injection authorization; starting never requests it.
@@ -355,7 +361,7 @@ impl HostService {
         let (routes, route_rx) = mpsc::channel::<IncomingHostRoute>(8);
         let host_options = HostOptions {
             listen: options.listen,
-            allow_legacy_plain: false,
+            allow_legacy_plain: options.allow_legacy_plain,
             id: options.id.clone(),
             display_name: options.display_name,
             signing_key: options.signing_key,

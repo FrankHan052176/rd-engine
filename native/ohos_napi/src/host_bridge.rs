@@ -772,6 +772,12 @@ impl HostWork {
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 DIRECT_ACCESS_PORT,
             )),
+            // A controller that dialled this address cannot verify a signed
+            // identity: it has no pinned key for this device. Direct IP access
+            // is the plain path for that reason, and the run still requires the
+            // password and the on-device approval. Routed hbbs peers keep
+            // requiring encryption.
+            allow_legacy_plain: true,
             require_local_approval: request.require_local_approval,
             allow_input: request.allow_input,
             #[cfg(target_env = "ohos")]
