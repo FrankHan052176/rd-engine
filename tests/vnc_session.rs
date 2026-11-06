@@ -362,13 +362,14 @@ async fn a_real_rfb_dialogue_negotiates_authenticates_and_paints() {
         observed.encodings.contains(&ENCODING_COPY_RECT),
         "copy-rect must be advertised"
     );
-    // This build asks for the cursor shape itself. A server left to draw the
-    // cursor into the framebuffer can only send the two colours it picks, which
-    // is what made the pointer a solid silhouette at the peer's resolution.
+    // No cursor shape is requested: the server then draws its pointer into the
+    // framebuffer it sends, against the real background, and this build keeps
+    // those pixels as they are instead of compositing a shape that cannot say
+    // "invert".
     for encoding in [ENCODING_X_CURSOR, ENCODING_RICH_CURSOR, ENCODING_POINTER_POS] {
         assert!(
-            observed.encodings.contains(&encoding),
-            "the cursor pseudo-encoding {encoding:#x} must be advertised: {:?}",
+            !observed.encodings.contains(&encoding),
+            "the cursor pseudo-encoding {encoding:#x} must not be advertised: {:?}",
             observed.encodings
         );
     }

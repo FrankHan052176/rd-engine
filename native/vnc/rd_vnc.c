@@ -26,14 +26,6 @@ struct rd_vnc {
     unsigned int reads; /* ReadFromRFBServer calls in the current message */
     uint32_t encoding;
     unsigned int rectangles;
-    /* Remote cursor: the shape the peer sent, where this client last reported
-     * the pointer, and the pixels its own paint covered. */
-    int pointer_known, pointer_x, pointer_y;
-    int cursor_known, cursor_hot_x, cursor_hot_y;
-    int cursor_width, cursor_height;
-    int cursor_drawn, cursor_paint_x, cursor_paint_y, cursor_paint_width, cursor_paint_height;
-    uint8_t *cursor_under;
-    size_t cursor_under_capacity;
 };
 static char client_tag;
 
@@ -151,8 +143,6 @@ static rfbBool allocate_frame(rfbClient *client) {
     session->pixel_length = (size_t)length;
     client->frameBuffer = pixels;
     session->damage_count = 0;
-    /* A new framebuffer holds none of the cursor this viewer painted. */
-    session->cursor_drawn = 0;
     session->resized = 1;
     return TRUE;
 }
@@ -210,104 +200,10 @@ void rd_vnc_rectangle(rfbClient *client, uint32_t encoding) {
 }
 
 /* --- remote cursor -------------------------------------------------------
- * With cursor support announced the server stops drawing the cursor into the
- * framebuffer and sends the shape instead, so the viewer paints it where the
- * pointer last was. The pixels under that paint are saved, so the next library
- * write starts from what the server actually sent. */
-void rd_vnc_cursor_shape(rfbClient *client, int width, int height) {
-    rd_vnc *session = owner(client);
-    if (!session) return;
-    /* A 0x0 shape hides the cursor, and upstream decodes nothing for it. */
-    if (width <= 0 || height <= 0) session->cursor_known = 0;
-}
-static void cursor_ready(rfbClient *client, int xhot, int yhot, int width, int height,
-                         int bytesPerPixel) {
-    rd_vnc *session = owner(client);
-    if (!session) return;
-    if (bytesPerPixel != 4 || width <= 0 || height <= 0) {
-        session->cursor_known = 0;
-        return;
-    }
-    session->cursor_hot_x = xhot;
-    session->cursor_hot_y = yhot;
-    session->cursor_width = width;
-    session->cursor_height = height;
-    session->cursor_known = 1;
-}
-static rfbBool cursor_position(rfbClient *client, int x, int y) {
-    rd_vnc *session = owner(client);
-    if (session) {
-        session->pointer_x = x;
-        session->pointer_y = y;
-        session->pointer_known = 1;
-    }
-    return TRUE;
-}
-static void cursor_undraw(rd_vnc *session) {
-    rfbClient *client = session->client;
-    int row;
-    if (!session->cursor_drawn) return;
-    for (row = 0; row < session->cursor_paint_height; ++row) {
-        memcpy(session->pixels +
-                   ((size_t)(session->cursor_paint_y + row) * (size_t)client->width +
-                    (size_t)session->cursor_paint_x) * 4,
-               session->cursor_under + (size_t)row * (size_t)session->cursor_paint_width * 4,
-               (size_t)session->cursor_paint_width * 4);
-    }
-    session->cursor_drawn = 0;
-}
-/* Paints the shape where the pointer is and reports whether anything was drawn. */
-static int cursor_paint(rd_vnc *session) {
-    rfbClient *client = session->client;
-    int left, top, width, height, skip_x = 0, skip_y = 0, row, column;
-    size_t need;
-    if (!session->cursor_known || !session->pointer_known || !session->pixels ||
-        !client->rcSource || !client->rcMask || client->format.bitsPerPixel != 32)
-        return 0;
-    left = session->pointer_x - session->cursor_hot_x;
-    top = session->pointer_y - session->cursor_hot_y;
-    width = session->cursor_width;
-    height = session->cursor_height;
-    if (left < 0) { skip_x = -left; left = 0; width -= skip_x; }
-    if (top < 0) { skip_y = -top; top = 0; height -= skip_y; }
-    if (left > client->width - width) width = client->width - left;
-    if (top > client->height - height) height = client->height - top;
-    if (width <= 0 || height <= 0) return 0;
-    need = (size_t)width * (size_t)height * 4;
-    if (session->cursor_under_capacity < need) {
-        uint8_t *next = (uint8_t *)realloc(session->cursor_under, need);
-        if (!next) {
-            rd_vnc_fail(client, RD_VNC_MEMORY);
-            return 0;
-        }
-        session->cursor_under = next;
-        session->cursor_under_capacity = need;
-    }
-    for (row = 0; row < height; ++row) {
-        uint8_t *framebuffer = session->pixels +
-            ((size_t)(top + row) * (size_t)client->width + (size_t)left) * 4;
-        const uint8_t *source = client->rcSource +
-            ((size_t)(skip_y + row) * (size_t)session->cursor_width + (size_t)skip_x) * 4;
-        const uint8_t *mask = client->rcMask +
-            (size_t)(skip_y + row) * (size_t)session->cursor_width + (size_t)skip_x;
-        memcpy(session->cursor_under + (size_t)row * (size_t)width * 4, framebuffer,
-               (size_t)width * 4);
-        for (column = 0; column < width; ++column) {
-            uint8_t *out;
-            if (!mask[column]) continue;
-            out = framebuffer + (size_t)column * 4;
-            out[0] = source[(size_t)column * 4];
-            out[1] = source[(size_t)column * 4 + 1];
-            out[2] = source[(size_t)column * 4 + 2];
-            out[3] = 255; /* RFB depth 24 leaves this byte undefined. */
-        }
-    }
-    session->cursor_paint_x = left;
-    session->cursor_paint_y = top;
-    session->cursor_paint_width = width;
-    session->cursor_paint_height = height;
-    return 1;
-}
+ * No cursor shape is requested (see rd_vnc_create), so a server composites its
+ * own pointer into the framebuffer it sends. Whatever it renders, including a
+ * pointer drawn against the real background, arrives as ordinary pixels and is
+ * kept as is: this adapter neither paints nor restores a cursor. */
 #if defined(_WIN32) || defined(__APPLE__)
 /* Neither platform's socket API exposes TCP_INFO, so this measurement is
  * unavailable here rather than zero. */
@@ -350,11 +246,12 @@ rd_vnc *rd_vnc_create(uintptr_t socket, const char *secret, int shared) {
     client->appData.shareDesktop = shared ? TRUE : FALSE;
     client->appData.encodingsString = "zrle zlib hextile corre rre copyrect raw";
     client->appData.enableJPEG = FALSE;
-    /* Ask for the cursor shape itself. A server that draws the cursor into the
-     * framebuffer instead can only send the two colours it decides on, which is
-     * what made the pointer a solid silhouette; the shape carries its own
-     * pixels, and this adapter composites them with the hotspot the peer names. */
-    client->appData.useRemoteCursor = TRUE;
+    /* Cursor shapes are deliberately not requested (useRemoteCursor stays
+     * FALSE, so upstream sends no XCursor/RichCursor/PointerPos encodings). RFB
+     * shapes are fixed colours plus a 1-bit mask and cannot express an inverted
+     * (XOR) pointer; a server that has not been asked for a shape draws its own
+     * pointer into the framebuffer it sends, against the real background. */
+    client->appData.useRemoteCursor = FALSE;
     client->canHandleNewFBSize = TRUE;
     client->format.bigEndian = FALSE;
     client->format.redShift = 16;
@@ -364,8 +261,6 @@ rd_vnc *rd_vnc_create(uintptr_t socket, const char *secret, int shared) {
     client->GetPassword = password;
     client->MallocFrameBuffer = allocate_frame;
     client->GotFrameBufferUpdate = damage;
-    client->GotCursorShape = cursor_ready;
-    client->HandleCursorPos = cursor_position;
     client->GotXCutText = clipboard;
     client->Bell = bell;
     return session;
@@ -381,13 +276,7 @@ int rd_vnc_connect(rd_vnc *session) {
 }
 int rd_vnc_handle(rd_vnc *session, rd_vnc_frame *frame) {
     rfbClient *client = session->client;
-    int had_cursor, had_x, had_y, had_width, had_height;
     if (!client || session->error) return 0;
-    had_cursor = session->cursor_drawn;
-    had_x = session->cursor_paint_x;
-    had_y = session->cursor_paint_y;
-    had_width = session->cursor_paint_width;
-    had_height = session->cursor_paint_height;
     session->damage_count = 0;
     session->resized = session->bell = 0;
     session->reads = 0;
@@ -395,9 +284,6 @@ int rd_vnc_handle(rd_vnc *session, rd_vnc_frame *frame) {
     free(session->clipboard);
     session->clipboard = NULL;
     session->clipboard_length = 0;
-    /* Take this viewer's own cursor paint back out first, so the library writes
-     * onto the pixels the server actually sent rather than onto the cursor. */
-    cursor_undraw(session);
     /* This upstream function sends the next incremental request itself. */
     if (!HandleRFBServerMessage(client)) {
         /* A read/write failure already recorded its own stage; this is every
@@ -405,22 +291,6 @@ int rd_vnc_handle(rd_vnc *session, rd_vnc_frame *frame) {
         rd_vnc_note(client, RD_VNC_STAGE_HANDLE_FALSE, 0, 0);
         rd_vnc_fail(client, RD_VNC_PROTOCOL);
         return 0;
-    }
-    if (session->error) return 0;
-    /* Repaint it where the pointer now is. An unmoved cursor covers the same
-     * pixels it already did, so only a moved one needs its rectangle copied. */
-    if (cursor_paint(session)) {
-        session->cursor_drawn = 1;
-        if (!had_cursor || had_x != session->cursor_paint_x ||
-            had_y != session->cursor_paint_y ||
-            had_width != session->cursor_paint_width ||
-            had_height != session->cursor_paint_height) {
-            damage(client, session->cursor_paint_x, session->cursor_paint_y,
-                   session->cursor_paint_width, session->cursor_paint_height);
-            if (had_cursor) damage(client, had_x, had_y, had_width, had_height);
-        }
-    } else if (had_cursor) {
-        damage(client, had_x, had_y, had_width, had_height);
     }
     if (session->error) return 0;
     frame->pixels = session->pixels;
@@ -446,11 +316,6 @@ int rd_vnc_pointer(rd_vnc *s, int x, int y, int buttons) {
     /* Upstream rfbBool TRUE is -1 on POSIX; reserve -1 here for geometry
      * rejection, not a successful completed socket write. */
     if (!SendPointerEvent(s->client, x, y, buttons)) return 0;
-    /* The peer paints the shape at the position this client reports, so the
-     * acknowledgement of a completed write is what makes the point current. */
-    s->pointer_x = x;
-    s->pointer_y = y;
-    s->pointer_known = 1;
     return 1;
 }
 int rd_vnc_key(rd_vnc *s, uint32_t key, int down) {
@@ -478,7 +343,6 @@ void rd_vnc_destroy(rd_vnc *session) {
     if (session->client) rfbClientCleanup(session->client);
     free(session->pixels);
     free(session->damage);
-    free(session->cursor_under);
     free(session->reason);
     free(session->clipboard);
     free(session);

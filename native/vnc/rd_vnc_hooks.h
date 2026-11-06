@@ -14,7 +14,4 @@ void rd_vnc_prefer_security(uint8_t *types, unsigned int count);
  * pseudo-encoding. Counts the units this session receives and names the
  * encoding the server actually chose. */
 void rd_vnc_rectangle(rfbClient *client, uint32_t encoding);
-/* The size of an incoming cursor shape, called before upstream decodes it, so a
- * 0x0 shape that hides the cursor is seen too. */
-void rd_vnc_cursor_shape(rfbClient *client, int width, int height);
 #endif

@@ -2120,7 +2120,6 @@ HandleRFBServerMessage(rfbClient* client)
       if (rect.encoding == rfbEncodingXCursor ||
 	  rect.encoding == rfbEncodingRichCursor) {
 
-	rd_vnc_cursor_shape(client, rect.r.w, rect.r.h);
 	if (!HandleCursorShape(client,
 			       rect.r.x, rect.r.y, rect.r.w, rect.r.h,
 			       rect.encoding)) {

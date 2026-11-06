@@ -25,9 +25,8 @@ Four upstream files have small integration changes:
   advertised security list before selecting so VNC authentication wins over None;
   enforce the baseline security allowlist also for server-selected RFB 3.3;
   remove writes to the process-global log-suppression flag (simultaneous sessions
-  otherwise write shared state); report an incoming cursor shape's size before
-  upstream decodes it, so a 0x0 shape that hides the cursor is seen too, and
-  report each real framebuffer rectangle's encoding after every pseudo-encoding
+  otherwise write shared state); and report each real framebuffer rectangle's
+  encoding after every pseudo-encoding
   branch, so cursor, pointer-position and capability rects are never counted as
   received pixels. No DES, framing or decoding implementation is replaced.
   Connection failures still retain native logging.
@@ -89,12 +88,13 @@ Capabilities and intentional gaps
 --------------------------------
 Advertised encodings: ZRLE, Zlib, Hextile, CoRRE, RRE, CopyRect, Raw; upstream owns
 NewFBSize/ExtDesktopSize, baseline clipboard, bell, pointer and keysym handling.
-Remote cursor support (XCursor, RichCursor, PointerPos) is advertised, so the
-server sends the shape instead of drawing it into the framebuffer: a server that
-draws it can only use the two colours it picks, which renders the pointer as a
-solid silhouette. The adapter composites the received shape itself, using the
-hotspot the peer names and the mask upstream decodes, and saves the pixels under
-that rectangle so the next library write starts from what the server sent. The
+Remote cursor shapes (XCursor, RichCursor, PointerPos) are deliberately not
+requested (appData.useRemoteCursor stays FALSE). RFB shapes are fixed colours
+plus a 1-bit mask and cannot express an inverted (XOR) pointer, so a server not
+asked for one draws its own pointer into the framebuffer it sends, and those
+pixels are kept exactly as received: the adapter neither paints nor restores a
+cursor. Whether a given server renders an inverted pointer correctly in that
+mode is a property of the server and has to be observed on the device. The
 frame also carries the count of real rectangles decoded, the encoding of the
 most recent one and the socket's own smoothed round trip from TCP_INFO, which is
 the only round trip a wire without a delay probe can state. That reading comes

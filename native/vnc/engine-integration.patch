@@ -99,15 +99,7 @@
      ReadReason(client);
      return FALSE;
  
-@@ -2112,6 +2120,7 @@
-       if (rect.encoding == rfbEncodingXCursor ||
- 	  rect.encoding == rfbEncodingRichCursor) {
- 
-+	rd_vnc_cursor_shape(client, rect.r.w, rect.r.h);
- 	if (!HandleCursorShape(client,
- 			       rect.r.x, rect.r.y, rect.r.w, rect.r.h,
- 			       rect.encoding)) {
-@@ -2244,6 +2253,7 @@
+@@ -2244,6 +2252,7 @@
          if ((rect.r.x + rect.r.w > client->width) ||
  	    (rect.r.y + rect.r.h > client->height))
  	    {
@@ -115,7 +107,7 @@
  	      rfbClientLog("Rect too large: %dx%d at (%d, %d)\n",
  	  	  rect.r.w, rect.r.h, rect.r.x, rect.r.y);
  	      return FALSE;
-@@ -2263,6 +2273,8 @@
+@@ -2263,6 +2272,8 @@
  	   between framebuffer updates and cursor drawing operations. */
          client->SoftCursorLockArea(client, rect.r.x, rect.r.y, rect.r.w, rect.r.h);
        }
