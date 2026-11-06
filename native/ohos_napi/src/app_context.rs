@@ -127,10 +127,25 @@ impl AppContext {
         Ok(())
     }
 
-    fn retire(&mut self) {
-        // Revoke the listener and peers synchronously; its own service still
-        // joins teardown off this thread and reports unconfirmed reclamation.
-        super::host_bridge::close_after_lifecycle_fence();
+    /// Fences the previous generation's admission.
+    ///
+    /// `close_host` is the *new* lifecycle state's own consent answer, never a
+    /// guess about the current one. A fence that keeps privacy consent retires
+    /// discovery, presence and the injection grant, and the consented
+    /// viewed-host run keeps its listener, its peers and its capture in the
+    /// background. A withdrawn consent (or a destroyed environment) closes that
+    /// run and keeps the existing request/join/unconfirmed-close semantics.
+    fn retire(&mut self, close_host: bool) {
+        if close_host {
+            // Revoke the listener and peers synchronously; its own service still
+            // joins teardown off this thread and reports unconfirmed reclamation.
+            super::host_bridge::request_host_close_after_lifecycle_fence();
+        }
+        // Injection authorization never survives a fence, whichever side of a
+        // foreground/background transition the new state is on: a backgrounded
+        // app must not keep a pre-run request, and a request that outlived its
+        // generation must not answer for a later one.
+        super::host_bridge::revoke_input_after_lifecycle_fence();
         // A presence query is cancelled and released even when no discovery
         // owner exists: the fence, not the worker, is what makes its in-flight
         // answer unusable, and its own generation can no longer be cancelled or
@@ -176,7 +191,8 @@ fn detach_environment(environment: usize) {
     // Clearing the environment is itself a fence even if the counter is spent.
     state.environment = None;
     let _ = state.advance();
-    state.retire();
+    // A destroyed environment has no consent left: the run must close.
+    state.retire(true);
 }
 
 fn error_text(previous: Option<String>, next: String) -> String {
@@ -442,18 +458,24 @@ impl Task for AppWork {
 }
 
 /// Every lifecycle update fences synchronously before its AsyncTask is queued,
-/// including a same-state privacy reread. No previous owner/scan is adopted.
+/// including a same-state privacy reread. No previous owner/scan is adopted, and
+/// the fence's own close decision is the new consent answer: with consent the
+/// viewed-host run keeps listening (and capturing) in the background, while
+/// discovery/presence and the injection grant are retired either way. Without
+/// consent the run is closed under the same request/join semantics as before.
 #[napi(ts_return_type = "Promise<string>")]
 pub fn app_set_lifecycle(env: Env, privacy_accepted: bool, foreground: bool) -> AsyncTask<AppWork> {
     let admitted = (|| -> Result<AppWork, String> {
         let mut state = app()?;
         attach_environment(&env, &mut state)?;
         // Fence before changing facts or returning the promise. Even a repeated
-        // true/true refresh has a fresh idle owner once retirement completes.
+        // true/true refresh has a fresh idle discovery owner once retirement
+        // completes; the consented host run is not part of that retirement.
         state.privacy_accepted = false;
         state.foreground = false;
         state.advance()?;
-        state.retire();
+        // The close decision is the *new* consent answer, not the old one.
+        state.retire(!privacy_accepted);
         state.privacy_accepted = privacy_accepted;
         state.foreground = foreground;
         Ok(AppWork {

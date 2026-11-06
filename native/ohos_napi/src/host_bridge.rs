@@ -443,16 +443,32 @@ pub(super) fn republish_host_security(store: &Arc<HostSecurity>) -> Result<(), S
     }
 }
 
-/// App-lifecycle fence hook for the parent-owned app context.
+/// App-lifecycle fence hook that closes the viewed-host service.
 ///
-/// `app_set_lifecycle` is the privacy/foreground boundary; a revocation must not
-/// leave a viewed-host listener accepting. This only *requests* the close: the
-/// owner still joins its own native cleanup through `stop`, so an unconfirmed
-/// teardown is reported as such rather than claimed here.
-pub(super) fn close_after_lifecycle_fence() {
+/// `app_set_lifecycle` is the privacy/foreground boundary. A *withdrawn* consent,
+/// a destroyed Ability or a detached environment must not leave a viewed-host
+/// listener accepting, so those fences close the run. A foreground/background
+/// transition alone does not call this: a consented run keeps its listener, its
+/// peers and its capture in the background, and its own status keeps reporting
+/// the real listening/registration facts because nothing here changes them.
+///
+/// This only *requests* the close: the owner still joins its own native cleanup
+/// through `stop`, so an unconfirmed teardown is reported as such rather than
+/// claimed here.
+pub(super) fn request_host_close_after_lifecycle_fence() {
     if let Some(service) = current_service() {
         HostService::request_close(&service);
     }
+}
+
+/// App-lifecycle fence hook that revokes this app's injection authorization.
+///
+/// Every fence runs this, including the ones that keep a consented run alive: a
+/// backgrounded app must not keep a pre-run injection request, and a request that
+/// outlived its generation must not answer for a later one. A live run owns its
+/// own grant, so the engine's own owner refuses this cancellation; that refusal
+/// is reported, never turned into a claimed revocation.
+pub(super) fn revoke_input_after_lifecycle_fence() {
     // APP is already held by AppContext::retire. Request publication uses
     // APP -> BRIDGE -> engine registry in the same order, so no newer app
     // request can be cancelled by this fence.
@@ -811,8 +827,9 @@ impl HostWork {
             state.local_id = request.id.clone();
         }
         // Publish first, then check the original scope. A fence before
-        // publication is caught here; a fence after it sees this service in
-        // close_after_lifecycle_fence. Cleanup does not depend on JS resolving.
+        // publication is caught here; a closing fence after it sees this service
+        // in request_host_close_after_lifecycle_fence. Cleanup does not depend on
+        // JS resolving.
         if let Some(error) = self.scope.as_ref().and_then(|scope| scope.check().err()) {
             HostService::request_close(&service);
             return HostResult::Done(failure_document("server_start", &error));
