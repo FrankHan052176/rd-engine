@@ -6,6 +6,9 @@ use base::message_proto::{
 use hbb_common::sodiumoxide::{crypto::hash::sha256, randombytes, utils};
 
 pub const WRONG_PASSWORD: &str = "Wrong Password";
+/// The official host's answer when it wants a password the attempt did not
+/// carry: the client opens its password box instead of reporting a failure.
+pub const EMPTY_PASSWORD: &str = "Empty Password";
 pub const TWO_FACTOR_REQUIRED: &str = "2FA Required";
 
 pub fn salted_password(password: &[u8], salt: &str) -> [u8; 32] {
@@ -336,20 +339,28 @@ impl HostAuthentication {
                 if nonempty {
                     WRONG_PASSWORD
                 } else {
-                    "Empty Password"
+                    EMPTY_PASSWORD
                 },
                 false,
             );
         }
         self.state = HostAuthState::AwaitApproval;
         match self.poll_approval() {
-            // Password-or-click asks the controller for its password on the very
-            // first, empty attempt: the client shows its password prompt instead
-            // of a neutral wait. The state stays AwaitApproval, so the pending
-            // local request remains live and a click on this machine admits the
-            // same frozen request.
+            // Password-or-click answers like the official host: a passwordless
+            // attempt is told a password is required (`Empty Password`, which the
+            // official client shows as its password box) and a wrong non-empty
+            // one gets the re-input answer. Neither is a refusal: the state stays
+            // AwaitApproval, so the pending local request remains live and a
+            // click on this machine admits the same frozen request.
             AuthAction::PendingApproval if self.config.policy == PrimaryPolicy::PasswordOrClick => {
-                self.error(WRONG_PASSWORD, false)
+                self.error(
+                    if nonempty {
+                        WRONG_PASSWORD
+                    } else {
+                        EMPTY_PASSWORD
+                    },
+                    false,
+                )
             }
             other => other,
         }

@@ -1,0 +1,13 @@
+{
+  "engine_repository": "https://github.com/FrankHan052176/rd-engine",
+  "engine_sha": "9673acb6a9b46c39db400cfa25d0e8575727dd7f",
+  "har_sha256": "e0d5cbc9ed899ca7957cb5fb823ca2f4c2c202db962fce0ed297e6943164ae85",
+  "kind": "har",
+  "libcxx_sha256": "388e0df23d7bfddc2ea01b4e87f8dc359e33df1a7a44705e0a672609ee45b2f9",
+  "library_sha256": "a404545fc950675c8a829954c54db760563260acb3fcbb3d849793dae0d4a4c9",
+  "package_name": "rustdesk-ohrs",
+  "package_version": "0.1.0-ci.63.1.g9673acb6",
+  "provenance_version": 2,
+  "source_dirty": false,
+  "target": "aarch64-unknown-linux-ohos"
+}

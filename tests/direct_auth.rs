@@ -397,9 +397,10 @@ fn approval_two_factor_trusted_and_role_states_fail_closed() {
         auth.poll_approval(),
         AuthAction::Authorized { .. }
     ));
-    // Password-or-click answers the very first, passwordless attempt with the
-    // password challenge, because the controller picks the credential. The
-    // local request must stay open so a click here still admits it.
+    // Password-or-click answers the very first, passwordless attempt the way the
+    // official host does: the client is told a password is required, not that a
+    // password was wrong. The local request must stay open so a click here still
+    // admits the same attempt.
     let approved = Arc::new(AtomicBool::new(false));
     let mut cfg = config(b"fixture");
     cfg.policy = PrimaryPolicy::PasswordOrClick;
@@ -408,7 +409,7 @@ fn approval_two_factor_trusted_and_role_states_fail_closed() {
     assert!(matches!(
         auth.login(login()),
         AuthAction::Error {
-            message: WRONG_PASSWORD,
+            message: EMPTY_PASSWORD,
             terminal: false
         }
     ));
