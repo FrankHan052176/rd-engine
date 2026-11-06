@@ -35,6 +35,7 @@ use rd_engine::ohos_input::{
     InjectionStatus, InputError,
 };
 use serde_json::{json, Value};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
@@ -42,6 +43,10 @@ const MAX_PEERS_PER_POLL: i32 = 256;
 const MAX_PASSWORD_LENGTH: u32 = 128;
 const HOST_PLATFORM: &str = "HarmonyOS";
 const DEFAULT_DISPLAY_NAME: &str = "HarmonyOS";
+/// Direct-IP access port, the same default the official host serves. Binding it
+/// is what lets a controller reach this device by address; without a listener
+/// the run only exists for routed hbbs connections.
+const DIRECT_ACCESS_PORT: u16 = 21118;
 
 #[derive(Clone, Copy)]
 struct ScreenConfig {
@@ -763,6 +768,10 @@ impl HostWork {
             height: request.screen.height,
             bitrate: request.bitrate,
             platform: HOST_PLATFORM.to_string(),
+            listen: Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                DIRECT_ACCESS_PORT,
+            )),
             require_local_approval: request.require_local_approval,
             allow_input: request.allow_input,
             #[cfg(target_env = "ohos")]

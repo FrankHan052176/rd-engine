@@ -15,6 +15,7 @@ use crate::rendezvous::{
     IncomingHostRoute, RegistrationConfig, RegistrationState, run_host_registration,
 };
 use hbb_common::sodiumoxide::randombytes;
+use std::net::SocketAddr;
 
 /// Default encoded bitrate offered to a controller. It is a real
 /// `PublisherConfig` input, not a reported measurement.
@@ -153,6 +154,11 @@ pub struct HostServiceOptions {
     pub height: i32,
     pub bitrate: i64,
     pub platform: String,
+    /// Direct-access listener this run binds, or `None` when every controller
+    /// must arrive through this run's own hbbs registration. A bound listener
+    /// is what makes the run reachable by `IP:port`, so it stays the caller's
+    /// decision instead of being implied by `ready`.
+    pub listen: Option<SocketAddr>,
     pub require_local_approval: bool,
     /// Explicit local keyboard/pointer grant. On OHOS the process must already
     /// have dialog injection authorization; starting never requests it.
@@ -348,9 +354,7 @@ impl HostService {
         ));
         let (routes, route_rx) = mpsc::channel::<IncomingHostRoute>(8);
         let host_options = HostOptions {
-            // No direct listener on this platform: every controller arrives
-            // through this run's own registration.
-            listen: None,
+            listen: options.listen,
             allow_legacy_plain: false,
             id: options.id.clone(),
             display_name: options.display_name,
