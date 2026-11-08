@@ -11,7 +11,8 @@ use hbb_common::{
     rendezvous_proto::{
         ConnType, ControlPermissions, FetchLocalAddr, IdPk, OnlineResponse, PunchHole,
         PunchHoleResponse, RegisterPeerResponse, RegisterPkResponse, RelayResponse,
-        RendezvousMessage, RequestRelay, register_pk_response, rendezvous_message,
+        RendezvousMessage, RequestRelay, punch_hole_response, register_pk_response,
+        rendezvous_message,
     },
     sodiumoxide::{
         self,
@@ -147,7 +148,7 @@ async fn direct_punch_reuses_source_port_and_preserves_encrypted_auth_handoff() 
         id: "target".into(),
         rendezvous_server: format!("localhost:{}", server_address.port()),
         licence_key: "wire-key".into(),
-        server_key: server_pk,
+        server_key: Some(server_pk),
         relay_server: None,
         connect_timeout: LIMIT,
     })
@@ -272,7 +273,7 @@ async fn relay_fallback_pairs_original_uuid_but_rejects_substituted_peer_key() {
             id: "target".into(),
             rendezvous_server: format!("localhost:{}", server_address.port()),
             licence_key: "wire-key".into(),
-            server_key: server_pk,
+            server_key: Some(server_pk),
             relay_server: None,
             connect_timeout: LIMIT,
         })
@@ -280,6 +281,119 @@ async fn relay_fallback_pairs_original_uuid_but_rejects_substituted_peer_key() {
         .is_err()
     );
     assert_eq!(server.await.unwrap(), relay.await.unwrap());
+}
+
+/// The profile's single Key is the licence on both the hbbs punch request and
+/// the hbbr join of the configured relay; hbbs sees no licence on its relay
+/// negotiation.
+#[tokio::test]
+async fn the_single_key_is_sent_to_hbbs_and_the_configured_hbbr_join() {
+    sodiumoxide::init().unwrap();
+    let (server_pk, server_sk) = sign::gen_keypair();
+    let (peer_pk, _) = sign::gen_keypair();
+    let (_, attacker_sk) = sign::gen_keypair();
+    let hbbs = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = hbbs.local_addr().unwrap();
+    let hbbr = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_address = hbbr.local_addr().unwrap();
+    let unavailable = tokio::net::TcpSocket::new_v4().unwrap();
+    unavailable.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let unavailable_address = unavailable.local_addr().unwrap();
+    let relay_name = format!("localhost:{}", relay_address.port());
+    let advertised = relay_name.clone();
+    let server = tokio::spawn(async move {
+        let (stream, _) = hbbs.accept().await.unwrap();
+        let mut first = wire(stream);
+        let Some(rendezvous_message::Union::PunchHoleRequest(request)) =
+            control(&mut first).await.union
+        else {
+            panic!("Expected PunchHoleRequest")
+        };
+        assert_eq!(request.licence_key, "wire-key");
+        let mut response = RendezvousMessage::new();
+        response.set_punch_hole_response(PunchHoleResponse {
+            socket_addr: AddrMangle::encode(unavailable_address).into(),
+            pk: certificate(&peer_pk.0, &server_sk).into(),
+            relay_server: advertised,
+            ..Default::default()
+        });
+        first.send(&response).await.unwrap();
+        drop(first);
+        let (stream, _) = hbbs.accept().await.unwrap();
+        let mut next = wire(stream);
+        let Some(rendezvous_message::Union::RequestRelay(request)) = control(&mut next).await.union
+        else {
+            panic!("Expected hbbs RequestRelay")
+        };
+        assert!(request.licence_key.is_empty());
+        response.set_relay_response(RelayResponse::new());
+        next.send(&response).await.unwrap();
+        request.uuid
+    });
+    let relay = tokio::spawn(async move {
+        let (stream, _) = hbbr.accept().await.unwrap();
+        let mut wire = wire(stream);
+        let Some(rendezvous_message::Union::RequestRelay(request)) = control(&mut wire).await.union
+        else {
+            panic!("Expected hbbr RequestRelay")
+        };
+        assert_eq!(request.licence_key, "wire-key");
+        // Reject the unverified peer so connect_viewer ends without a session.
+        let (ephemeral, _) = box_::gen_keypair();
+        let mut signed = Message::new();
+        signed.set_signed_id(SignedId {
+            id: certificate(&ephemeral.0, &attacker_sk).into(),
+            ..Default::default()
+        });
+        wire.send(&signed).await.unwrap();
+        request.uuid
+    });
+    assert!(
+        connect_viewer(RendezvousConfig {
+            id: "target".into(),
+            rendezvous_server: format!("localhost:{}", server_address.port()),
+            licence_key: "wire-key".into(),
+            server_key: Some(server_pk),
+            relay_server: Some(relay_name),
+            connect_timeout: LIMIT,
+        })
+        .await
+        .is_err()
+    );
+    assert_eq!(server.await.unwrap(), relay.await.unwrap());
+}
+
+/// hbbs names a licence verdict; it is not folded into "peer unavailable".
+#[tokio::test]
+async fn punch_license_mismatch_is_reported_as_key_mismatch() {
+    sodiumoxide::init().unwrap();
+    let (server_pk, _) = sign::gen_keypair();
+    let hbbs = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = hbbs.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = hbbs.accept().await.unwrap();
+        let mut wire = wire(stream);
+        let _ = control(&mut wire).await;
+        let mut response = RendezvousMessage::new();
+        response.set_punch_hole_response(PunchHoleResponse {
+            failure: punch_hole_response::Failure::LICENSE_MISMATCH.into(),
+            ..Default::default()
+        });
+        wire.send(&response).await.unwrap();
+    });
+    let error = connect_viewer(RendezvousConfig {
+        id: "target".into(),
+        rendezvous_server: format!("localhost:{}", server_address.port()),
+        licence_key: "wire-key".into(),
+        server_key: Some(server_pk),
+        relay_server: None,
+        connect_timeout: LIMIT,
+    })
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(error.to_string(), "Key mismatch");
+    server.await.unwrap();
 }
 
 // ---------------------------------------------------------------------------

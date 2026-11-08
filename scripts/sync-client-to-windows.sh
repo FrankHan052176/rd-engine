@@ -53,11 +53,15 @@
 #
 # The bridge selects the engine's software-vpx feature (native/frb/Cargo.toml).
 # REMOTE_LIBVPX_PREFIX names the remote x64-windows-static-md dependency install,
-# never a prefix from this machine. The driver verifies pinned libvpx 1.15.2 and
-# Zlib 1.3.2 in that same .../installed/x64-windows-static-md prefix, plus the
-# selected CMake toolchain wrapper pointing at its installed root. Cargo receives
-# both LIBVPX_PREFIX and ZLIB_ROOT in its own process environment. This script
-# installs no native dependencies and changes no renderer or feature selection.
+# never a prefix from this machine. The driver verifies pinned libvpx 1.15.2,
+# Zlib 1.3.2 and the static Opus library and headers in that same
+# .../installed/x64-windows-static-md prefix, plus the selected CMake toolchain
+# wrapper pointing at its installed root. Cargo receives LIBVPX_PREFIX and
+# ZLIB_ROOT in its own process environment. magnum-opus reads only VCPKG_ROOT, so
+# the driver mirrors just that Opus library and its headers into the isolated
+# <root>/deps/magnum-opus tree and exports it only to the kernel process. This
+# script installs no native dependencies and changes no renderer or feature
+# selection.
 #
 # `scripts/verify-native-provenance.sh --require-tracked` and the Windows
 # workflow's libvpx overlay (`native/frb/vcpkg-overlays/libvpx`) are how a clean
@@ -82,7 +86,14 @@
 #     actual installed root and x64-windows-static-md triplet for Cargo's native
 #     dependencies. It is not passed to the Flutter runner's CMake configuration.
 #   - REMOTE_LIBVPX_PREFIX: that install's static-md prefix, containing the pinned
-#     libvpx and Zlib headers, libraries and provenance checked by the driver.
+#     libvpx, Zlib and Opus headers, libraries and provenance checked by the
+#     driver. The driver mirrors only the verified static Opus library and
+#     headers into <root>/deps/magnum-opus, the isolated VCPKG_ROOT that
+#     magnum-opus reads (<VCPKG_ROOT>/installed/x64-windows-static on this
+#     target); the supplied prefix itself is only read, never written.
+#   - REMOTE_LIBCLANG_PATH: the directory holding the real libclang.dll that
+#     bindgen (magnum-opus) dlopen()s. A clang.exe on PATH is not that DLL, and
+#     the driver refuses to build without it.
 #   - Git and rustup proxies on the host's PATH; git applies patches to the copied
 #     client (which carries no .git). Network or complete caches for locked Cargo
 #     dependencies and the selected SDK's Windows build artifacts. Client Pub
@@ -115,6 +126,7 @@
 #     REMOTE_CMAKE='C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' \
 #     REMOTE_CMAKE_TOOLCHAIN_FILE=C:/Users/me/rd-build/deps/rd-engine-vcpkg.cmake \
 #     REMOTE_LIBVPX_PREFIX=C:/Users/me/rd-build/deps/vcpkg/installed/x64-windows-static-md \
+#     REMOTE_LIBCLANG_PATH='C:/Program Files/LLVM/bin' \
 #     bash scripts/sync-client-to-windows.sh
 #
 # REMOTE_HOST defaults to rustdesk-windows; REMOTE_ROOT defaults to the authenticated
@@ -137,6 +149,7 @@ flutter_lock_patch="$bridge_dir/patches/official-client-flutter-lock.patch"
 lan_patch="$bridge_dir/patches/official-client-lan-actions.patch"
 scope_patch="$bridge_dir/patches/official-client-product-scope.patch"
 host_patch="$bridge_dir/patches/official-client-host-control.patch"
+pruning_patch="$bridge_dir/patches/official-client-scope-pruning.patch"
 build_driver="$bridge_dir/build-windows.ps1"
 remote_host="${REMOTE_HOST:-rustdesk-windows}"
 remote_http_proxy="${REMOTE_HTTP_PROXY:-}"
@@ -218,6 +231,8 @@ done
   "missing $scope_patch: excluded camera/chat/call capabilities must not reach the client"
 [[ -f "$host_patch" ]] || die \
   "missing $host_patch: controlled-host commands require their authoritative CM consumer"
+[[ -f "$pruning_patch" ]] || die \
+  "missing $pruning_patch: retired features must be removed from the paired consumer"
 [[ -f "$build_driver" ]] || die "missing verified Windows build driver $build_driver"
 upstream_revision="$(sed -n 's/^Commit: //p' "$bridge_dir/UPSTREAM.txt")"
 [[ "$upstream_revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid FRB upstream commit pin"
@@ -282,7 +297,7 @@ cp -R "$client_dir/lib" "$client_dir/assets" "$patch_check_dir/"
 cp "$client_dir/pubspec.yaml" "$client_dir/pubspec.lock" "$patch_check_dir/"
 mkdir -p "$patch_check_dir/windows/runner"
 cp "$client_dir/windows/runner/main.cpp" "$patch_check_dir/windows/runner/"
-for patch in "$cpu_patch" "$account_patch" "$flutter_lock_patch" "$lan_patch" "$scope_patch" "$host_patch"; do
+for patch in "$cpu_patch" "$account_patch" "$flutter_lock_patch" "$lan_patch" "$scope_patch" "$host_patch" "$pruning_patch"; do
   git -c core.autocrlf=false -c core.eol=lf -C "$patch_check_dir" apply --check "$patch" || die \
     "the ordered client patch $patch does not apply to the pinned source"
   git -c core.autocrlf=false -c core.eol=lf -C "$patch_check_dir" apply "$patch" || die \
@@ -372,6 +387,7 @@ remote_vs_root="$(windows_path REMOTE_VS_ROOT "${REMOTE_VS_ROOT:-}")"
 remote_cmake="$(windows_path REMOTE_CMAKE "${REMOTE_CMAKE:-}")"
 remote_cmake_toolchain_file="$(windows_path REMOTE_CMAKE_TOOLCHAIN_FILE "${REMOTE_CMAKE_TOOLCHAIN_FILE:-}")"
 remote_libvpx_prefix="$(windows_path REMOTE_LIBVPX_PREFIX "${REMOTE_LIBVPX_PREFIX:-}")"
+remote_libclang_path="$(windows_path REMOTE_LIBCLANG_PATH "${REMOTE_LIBCLANG_PATH:-}")"
 remote_rust_toolchain="${REMOTE_RUST_TOOLCHAIN:-1.95-x86_64-pc-windows-msvc}"
 [[ "$remote_rust_toolchain" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die \
   "REMOTE_RUST_TOOLCHAIN must be a rustup toolchain name without command metacharacters (do not prefix it with +)"
@@ -406,12 +422,17 @@ esac
 remote_client="$remote_root/client"
 remote_engine="$remote_root/engine"
 remote_bridge="$remote_engine/native/frb"
+# The isolated magnum-opus VCPKG_ROOT this run owns: the driver copies only the
+# verified static Opus library and headers there. It is not the dependency
+# install REMOTE_LIBVPX_PREFIX names, which stays read-only.
+remote_magnum_root="$remote_root/deps/magnum-opus"
 remote_patch="$remote_bridge/patches/official-client-cpu-rgba.patch"
 remote_account_patch="$remote_bridge/patches/official-client-account-safety.patch"
 remote_flutter_lock_patch="$remote_bridge/patches/official-client-flutter-lock.patch"
 remote_lan_patch="$remote_bridge/patches/official-client-lan-actions.patch"
 remote_scope_patch="$remote_bridge/patches/official-client-product-scope.patch"
 remote_host_patch="$remote_bridge/patches/official-client-host-control.patch"
+remote_pruning_patch="$remote_bridge/patches/official-client-scope-pruning.patch"
 remote_engine_dll="$remote_bridge/target/x86_64-pc-windows-msvc/release/rd_engine_flutter.dll"
 remote_driver="$remote_root/build-windows.ps1"
 remote_bundle="$remote_client/build/windows/x64/runner/Release"
@@ -425,6 +446,8 @@ printf -v driver_arguments '%s' \
   "-CMakePath \"$remote_cmake\" " \
   "-CMakeToolchainFile \"$remote_cmake_toolchain_file\" " \
   "-LibvpxPrefix \"$remote_libvpx_prefix\" " \
+  "-MagnumOpusRoot \"$remote_magnum_root\" " \
+  "-LibclangPath \"$remote_libclang_path\" " \
   "-EngineDll \"$remote_engine_dll\""
 echo "    tree: $remote_root"
 
@@ -440,8 +463,10 @@ remote "if not exist \"$remote_root/.\" mkdir \"$remote_root\"" || die \
 scp "$build_driver" "$remote_host:$remote_root/"
 
 step "Preflighting the selected Windows tools and native dependencies"
-# The driver must validate the SDKs, MSVC/CMake and pinned libvpx/Zlib install
-# without reading, creating or modifying the still-absent client/engine trees.
+# The driver must validate the SDKs, MSVC/CMake, the pinned libvpx/Zlib/Opus
+# install and the bindgen libclang without reading, creating or modifying the
+# still-absent client/engine trees. Its only write is the isolated Opus mirror at
+# $remote_magnum_root, which the kernel stage then uses as VCPKG_ROOT.
 run_stage preflight || die \
   "Windows build preflight failed; no client or engine sources were copied; $remote_root is retained"
 
@@ -482,12 +507,12 @@ step "Copying the bridge to $remote_bridge"
 # generated Rust source. No cached targets or historical libraries are copied.
 scp -r "${bridge_sources[@]}" "$remote_host:$remote_bridge/"
 
-step "Applying recorded render, account, LAN, SDK-lock, product-scope and host-control patches"
+step "Applying recorded render, account, LAN, SDK-lock, scope, host and pruning patches"
 # Fresh upstream files receive every required adaptation, fail-closed. The local
 # official checkout, its original lock and its dependency declarations stay intact.
 # Preserve the checked LF bytes despite Git-for-Windows' ambient autocrlf setting.
 # This is per command, not a change to the host's Git configuration.
-for patch in "$remote_patch" "$remote_account_patch" "$remote_flutter_lock_patch" "$remote_lan_patch" "$remote_scope_patch" "$remote_host_patch"; do
+for patch in "$remote_patch" "$remote_account_patch" "$remote_flutter_lock_patch" "$remote_lan_patch" "$remote_scope_patch" "$remote_host_patch" "$remote_pruning_patch"; do
   remote "if not exist \"$patch\" exit /b 1" || die \
     "the recorded client patch did not reach $patch on $remote_host"
   remote "git -c core.autocrlf=false -c core.eol=lf -C \"$remote_client\" apply --check \"$patch\"" || die \

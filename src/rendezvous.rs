@@ -10,7 +10,12 @@
 //!
 //! hbbs signs IdPk (peer ID + Ed25519 PEER key); that peer then signs its
 //! ephemeral box key in SignedId. These two signing keys are not interchangeable.
-//! Missing/bad evidence terminates, never a compatibility/TOFU fallback.
+//! Missing/bad evidence terminates, never a TOFU fallback. The one exception is
+//! the original shared-licence compatibility: with no trust root
+//! (`server_key: None`, built only for a custom profile whose Key is explicitly
+//! not a public key) the hbbs signature cannot be checked, the route is dialled
+//! through `ViewerIdentity::LegacyUnverified` and reports
+//! `peer_verified == false` / `encrypted == false`.
 //!
 //! Every hbbs punch and every relay request of one attempt carries the same
 //! fixed protocol role (`ConnType`) chosen once from `SessionMode`; the role
@@ -22,7 +27,7 @@ use hbb_common::{
     protobuf::Message as _,
     rendezvous_proto::{
         ConnType, IdPk, NatType, PunchHoleRequest, RelayResponse, RendezvousMessage, RequestRelay,
-        rendezvous_message,
+        punch_hole_response::Failure as PunchFailure, rendezvous_message,
     },
     sodiumoxide::{self, crypto::sign},
     tcp::FramedStream,
@@ -51,10 +56,17 @@ pub struct RendezvousConfig {
     /// Hostname/IP with optional port (default 21116); resolved asynchronously.
     pub rendezvous_server: String,
     /// Exact original client `key` wire value: the compiled `RS_PUB_KEY` string
-    /// for the public service, or the configured custom key/licence. This value
-    /// is never reconstructed by encoding `server_key` and is never logged.
+    /// for the public service, a configured public key, or a shared licence
+    /// text. The one value rides both the hbbs `PunchHoleRequest.licence_key`
+    /// and the hbbr `RequestRelay.licence_key`, as in the original client. It is
+    /// never reconstructed by encoding `server_key` and is never logged (this
+    /// struct has no Debug).
     pub licence_key: String,
-    pub server_key: sign::PublicKey,
+    /// hbbs trust root that verifies the signed peer IdPk; a failed check ends
+    /// the connection. `None` only when the Key is a shared licence text that is
+    /// not a public key: nothing can be verified then, and the route is the
+    /// original unverified/unencrypted compatibility path.
+    pub server_key: Option<sign::PublicKey>,
     /// Explicit relay address override; otherwise use the hbbs-advertised relay.
     pub relay_server: Option<String>,
     /// Total operation deadline, including DNS, punch, relay and peer handshake.
@@ -198,12 +210,7 @@ pub async fn connect_viewer_for(
 ) -> io::Result<(Established, RouteEvidence)> {
     if config.id.is_empty()
         || config.id.len() > 512
-        || config.licence_key.is_empty()
-        || config.licence_key.len() > 1024
-        || config
-            .licence_key
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace())
+        || !valid_wire_key(&config.licence_key)
         || config.connect_timeout.is_zero()
         || config.connect_timeout > Duration::from_secs(180)
     {
@@ -221,6 +228,14 @@ pub async fn connect_viewer_for(
     timeout_at(deadline, connect(config, mode, deadline))
         .await
         .map_err(|_| timed_out())?
+}
+
+/// Wire Key text: non-empty, bounded, no control characters. Shared licence
+/// text is not normalized (spaces are part of the configured Key).
+fn valid_wire_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 1024
+        && !key.chars().any(char::is_control)
 }
 
 fn valid_address(address: SocketAddr) -> bool {
@@ -394,8 +409,14 @@ async fn receive(wire: &mut FramedStream) -> io::Result<RendezvousMessage> {
     Err(invalid("Excess rendezvous key-exchange records"))
 }
 
-fn peer_key(signed: &[u8], config: &RendezvousConfig) -> io::Result<sign::PublicKey> {
-    let plain = sign::verify(signed, &config.server_key)
+/// The peer signing key vouched for by the hbbs signature, or `None` when the
+/// profile has no trust root (shared licence compatibility). With a trust root a
+/// missing or invalid signature is an error, never an unverified fallback.
+fn peer_key(signed: &[u8], config: &RendezvousConfig) -> io::Result<Option<sign::PublicKey>> {
+    let Some(server_key) = &config.server_key else {
+        return Ok(None);
+    };
+    let plain = sign::verify(signed, server_key)
         .map_err(|_| invalid("Peer certificate signature missing or invalid"))?;
     let identity =
         IdPk::parse_from_bytes(&plain).map_err(|_| invalid("Invalid peer certificate"))?;
@@ -403,6 +424,7 @@ fn peer_key(signed: &[u8], config: &RendezvousConfig) -> io::Result<sign::Public
         return Err(invalid("Peer certificate identity mismatch"));
     }
     sign::PublicKey::from_slice(&identity.pk)
+        .map(Some)
         .ok_or_else(|| invalid("Invalid peer signing key length"))
 }
 
@@ -444,10 +466,32 @@ fn relay_name(config: &RendezvousConfig, advertised: &str) -> io::Result<String>
 async fn finish(
     wire: FramedStream,
     config: &RendezvousConfig,
-    key: sign::PublicKey,
+    key: Option<sign::PublicKey>,
     route: RouteKind,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
+    let Some(key) = key else {
+        // Shared-licence compatibility (no trust root): the original viewer's
+        // empty-reply branch. The evidence is read from what the handshake
+        // really established, so it reports an unencrypted, unverified peer.
+        let established = handshake::viewer(
+            wire,
+            ViewerIdentity::LegacyUnverified,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .await?;
+        let encrypted = matches!(established.security(), Security::Encrypted { .. });
+        let peer_verified =
+            matches!(established.security(), Security::Encrypted { peer_id: Some(_) });
+        return Ok((
+            established,
+            RouteEvidence {
+                route,
+                encrypted,
+                peer_verified,
+            },
+        ));
+    };
     let established = handshake::viewer(
         wire,
         ViewerIdentity::PinnedHost {
@@ -499,7 +543,7 @@ fn relay_request(
         id: config.id.clone(),
         uuid: uuid.to_owned(),
         relay_server: name.to_owned(),
-        secure: true,
+        secure: config.server_key.is_some(),
         conn_type: conn_type(mode).into(),
         ..Default::default()
     });
@@ -507,6 +551,7 @@ fn relay_request(
 }
 
 /// hbbr join record: licence_key/id/uuid/conn_type, NOT the hbbs secure flag.
+/// The licence is the profile's one Key, exactly what hbbs received.
 /// There is no relay ACK to consume: the next record is the PEER SignedId.
 fn relay_join_request(
     config: &RendezvousConfig,
@@ -528,12 +573,22 @@ async fn join_relay(
     config: &RendezvousConfig,
     name: &str,
     uuid: String,
-    key: sign::PublicKey,
+    key: Option<sign::PublicKey>,
     mode: SessionMode,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
     if uuid.len() > 64 || Uuid::parse_str(&uuid).is_err() {
         return Err(invalid("Invalid relay pairing UUID"));
+    }
+    if config.server_key.is_none() {
+        // The one Key is a secret in this mode. The configured hbbs may receive
+        // it, but an unsigned hbbs relay hint does not authorize sending it to
+        // another endpoint. Preserve the existing local-relay-only policy.
+        let configured = config.relay_server.as_deref()
+            .map(|relay| endpoint(relay, 21117)).transpose()?;
+        if configured.as_deref() != Some(endpoint(name, 21117)?.as_str()) {
+            return Err(invalid("Shared Key requires the explicitly configured relay"));
+        }
     }
     let mut wire = server_dial(name, 21117, deadline).await?;
     let message = relay_join_request(config, uuid, mode);
@@ -555,7 +610,7 @@ fn relay_response(message: RendezvousMessage) -> io::Result<RelayResponse> {
 async fn request_relay(
     config: &RendezvousConfig,
     name: &str,
-    key: sign::PublicKey,
+    key: Option<sign::PublicKey>,
     mode: SessionMode,
     deadline: Instant,
 ) -> io::Result<(Established, RouteEvidence)> {
@@ -600,6 +655,21 @@ async fn connect(
     match response.union {
         Some(rendezvous_message::Union::PunchHoleResponse(response)) => {
             if !response.other_failure.is_empty() || response.socket_addr.is_empty() {
+                // Same failure branch as the original client. Only the hbbs
+                // licence verdicts are named; an empty failure (default
+                // ID_NOT_EXIST) and every relay close/timeout stay generic, so
+                // an hbbr problem is never reported as a wrong key.
+                if response.other_failure.is_empty() {
+                    match response.failure.enum_value() {
+                        Ok(PunchFailure::LICENSE_MISMATCH) => {
+                            return Err(invalid("Key mismatch"));
+                        }
+                        Ok(PunchFailure::LICENSE_OVERUSE) => {
+                            return Err(invalid("Key overuse"));
+                        }
+                        _ => {}
+                    }
+                }
                 return Err(invalid("Peer unavailable or rendezvous request refused"));
             }
             if response.is_udp {
@@ -651,7 +721,7 @@ mod tests {
             id: "123456789".into(),
             rendezvous_server: "127.0.0.1".into(),
             licence_key: "test-key".into(),
-            server_key: sign::PublicKey([0; 32]),
+            server_key: Some(sign::PublicKey([0; 32])),
             relay_server: None,
             connect_timeout: Duration::from_secs(5),
         }
@@ -682,6 +752,45 @@ mod tests {
             }
             _ => panic!("hbbr join builder produced another message"),
         }
+    }
+
+    fn join_licence(config: &RendezvousConfig) -> String {
+        match relay_join_request(config, "uuid".to_owned(), SessionMode::Desktop).union {
+            Some(rendezvous_message::Union::RequestRelay(request)) => request.licence_key,
+            _ => panic!("hbbr join builder produced another message"),
+        }
+    }
+
+    /// One Key: the same text reaches the hbbs punch and the hbbr join, and the
+    /// hbbs-side relay negotiation never carries a licence.
+    #[test]
+    fn the_single_key_reaches_both_hbbs_and_hbbr() {
+        let mut config = config();
+        config.licence_key = "shared-licence".into();
+        config.server_key = None;
+        let punch = match punch_hole_request(&config, SessionMode::Desktop).union {
+            Some(rendezvous_message::Union::PunchHoleRequest(request)) => request.licence_key,
+            _ => panic!("punch request builder produced another message"),
+        };
+        assert_eq!(punch, "shared-licence");
+        assert_eq!(join_licence(&config), "shared-licence");
+        let hbbs_relay = match relay_request(&config, "relay.example:21117", "uuid", SessionMode::Desktop)
+            .union
+        {
+            Some(rendezvous_message::Union::RequestRelay(request)) => request.licence_key,
+            _ => panic!("hbbs relay request builder produced another message"),
+        };
+        assert!(hbbs_relay.is_empty());
+    }
+
+    /// Without a trust root nothing is verified, whatever the hbbs record says;
+    /// with one, a bad signature is an error instead of an unverified fallback.
+    #[test]
+    fn no_trust_root_means_no_peer_key_and_a_trust_root_still_refuses_bad_signatures() {
+        let mut config = config();
+        assert!(peer_key(b"not signed", &config).is_err());
+        config.server_key = None;
+        assert_eq!(peer_key(b"not signed", &config).unwrap(), None);
     }
 
     /// The role belongs to the attempt, not to the route taken: every request

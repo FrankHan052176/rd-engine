@@ -1,6 +1,6 @@
 --- a/api.rs
 +++ b/api.rs
-@@ -1,196 +1,268 @@
+@@ -1,196 +1,285 @@
 -#[inline(always)]
 -#[cfg(not(target_os = "ios"))]
 -pub fn whoami_hostname() -> String {
@@ -53,6 +53,14 @@
 +mod custom_server;
 +
 +static DEVICE_NAME: Mutex<String> = Mutex::new(String::new());
++
++// Non-secret metadata in the existing account Config mirror. Never put licence
++// text in Config's public-key slot or pretend it is the pinned official root.
++pub(super) const ACCOUNT_KEY_KIND: &str = "rd-engine-account-key-kind";
++
++fn shared_key_scope() -> bool {
++    Config::get_option(ACCOUNT_KEY_KIND) == "shared"
++}
 +
 +/// The existing official `main_device_name` bridge supplies the mobile name.
 +/// This is not another public bridge method or a persisted account option.
@@ -218,6 +226,9 @@
 +}
 +
 +pub(super) fn public_key() -> ResultType<sign::PublicKey> {
++    if shared_key_scope() {
++        bail!("A shared licence Key is not an account server public key");
++    }
 +    let bytes = STANDARD.decode(key()).map_err(|_| anyhow!("Invalid account server public key"))?;
 +    sign::PublicKey::from_slice(&bytes)
 +        .ok_or_else(|| anyhow!("Invalid account server public key"))
@@ -382,12 +393,18 @@
 +    {
 +        bail!("Invalid account rendezvous endpoint");
 +    }
-+    let trust_key = public_key()?;
++    let trust_key = if shared_key_scope() {
++        if api.scheme() != "https" { bail!("Shared Key accounts require HTTPS"); }
++        None
++    } else { Some(public_key()?) };
++    // Some serializes exactly as the existing public-key bytes; null is the
++    // distinct TLS-only shared-Key scope, not an invented Ed25519 trust root.
++    let trust_bytes: Option<&[u8]> = trust_key.as_ref().map(|key| key.as_ref());
 +    let value = serde_json::to_vec(&(
 +        "rd-engine/official-account/scope/v1",
 +        canonical_endpoint(&api, 443)?,
 +        canonical_endpoint(&rendezvous, RENDEZVOUS_PORT as u16)?,
-+        trust_key.as_ref(),
++        trust_bytes,
 +        builtin(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y",
 +        config::use_ws(),
 +    )).map_err(|_| anyhow!("Cannot encode account scope"))?;

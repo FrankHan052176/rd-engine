@@ -159,6 +159,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let host = Host::start(HostOptions {
         listen: Some(cli.listen),
         allow_legacy_plain: true,
+        allow_routed_legacy_plain: false,
         id: cli.id.clone(),
         display_name: cli.id.clone(),
         signing_key,

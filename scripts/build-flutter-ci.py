@@ -37,6 +37,38 @@ def require(path):
     return path
 
 
+# magnum-opus 588c6e1f9ed50c3a01fa64f3bd3e7cdb0378a114 links Opus from the vcpkg
+# prefix its own build.rs names from CARGO_CFG_TARGET_OS/ARCH. Two matrix entries
+# land on a name this job does not build under, so only the real Opus library and
+# headers are mirrored there: no other library or CRT object is copied into it,
+# and VCPKG_TARGET_TRIPLET keeps the actual build ABI.
+OPUS_TRIPLETS = {"x86_64-pc-windows-msvc": "x64-windows-static",
+                 "armv7-linux-androideabi": "arm-android"}
+
+
+def opus_files(prefix):
+    for name in ("libopus.a", "opus.lib"):
+        library = prefix / "lib" / name
+        if library.is_file() and library.stat().st_size:
+            # magnum's opus_ffi.h includes <opus/opus_multistream.h>.
+            return library, require(prefix / "include/opus/opus_multistream.h")
+    raise ValueError(f"vcpkg installed no static Opus library under {prefix / 'lib'}")
+
+
+def opus_prefix(vcpkg, target, triplet):
+    """Return the libopus magnum-opus will link for this target."""
+    prefix = vcpkg / "installed" / triplet
+    library, header = opus_files(prefix)
+    computed = OPUS_TRIPLETS.get(target)
+    if computed is None:
+        return library
+    compat = vcpkg / "installed" / computed
+    (compat / "lib").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(library, compat / "lib" / library.name)
+    shutil.copytree(header.parent, compat / "include/opus", dirs_exist_ok=True)
+    return require(compat / "lib" / library.name)
+
+
 def dependencies(platform, target, triplet):
     vcpkg = ROOT / ".build-deps/vcpkg"
     run(["git", "clone", "--filter=blob:none", "--no-checkout", "https://github.com/microsoft/vcpkg.git", vcpkg])
@@ -54,7 +86,7 @@ def dependencies(platform, target, triplet):
     else:
         run(["bash", vcpkg / "bootstrap-vcpkg.sh", "-disableMetrics"], env=env)
         exe = vcpkg / "vcpkg"
-    ports = [f"libvpx:{triplet}", f"zlib:{triplet}"]
+    ports = [f"libvpx:{triplet}", f"zlib:{triplet}", f"opus:{triplet}"]
     if platform != "ios":
         ports.append(f"libsodium:{triplet}")
     # iOS: the vendored libsodium-sys has its own iOS configure (--host=arm-apple-darwin10).
@@ -66,6 +98,7 @@ def dependencies(platform, target, triplet):
     prefix = vcpkg / "installed" / triplet
     vpx = require(prefix / "lib" / ("vpx.lib" if platform == "windows" else "libvpx.a"))
     require(prefix / "include/vpx/vpx_decoder.h")
+    opus = opus_prefix(vcpkg, target, triplet)
     if platform != "ios":
         require(prefix / "lib" / ("libsodium.lib" if platform == "windows" else "libsodium.a"))
         env["SODIUM_LIB_DIR"] = str(prefix / "lib")
@@ -95,11 +128,17 @@ def dependencies(platform, target, triplet):
                     "ZLIB_ROOT": str(prefix), "PKG_CONFIG_ALLOW_CROSS": "1",
                     "PKG_CONFIG_LIBDIR": str(prefix / "lib/pkgconfig")})
         env.update({"OPENSSL_DIR": str(prefix), "OPENSSL_STATIC": "1"})
+        # magnum-opus generates its FFI with bindgen, which must parse the target
+        # ABI and sysroot rather than the runner's host headers.
+        env["BINDGEN_EXTRA_CLANG_ARGS_" + suffix] = (
+            f"--target={clang}22 --sysroot={ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot")
         definitions += [f'set(ANDROID_ABI "{abi}" CACHE STRING "")',
                         'set(ANDROID_PLATFORM "android-22" CACHE STRING "")']
     elif platform == "ios":
         env["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
         sdk = run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], capture=True).strip()
+        env["BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios"] = (
+            f"--target=arm64-apple-ios13.0 --sysroot={sdk}")
         definitions += ['set(CMAKE_SYSTEM_NAME iOS)',
                         f'set(CMAKE_OSX_SYSROOT "{sdk}" CACHE PATH "")',
                         'set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "")',
@@ -113,7 +152,7 @@ def dependencies(platform, target, triplet):
     toolchain = ROOT / ".build-deps/native-toolchain.cmake"
     toolchain.write_text("\n".join(definitions) + "\n", encoding="utf-8")
     env["CMAKE_TOOLCHAIN_FILE"] = str(toolchain)
-    return env, vpx
+    return env, vpx, opus
 
 
 def build(platform, target, triplet, client):
@@ -124,7 +163,7 @@ def build(platform, target, triplet, client):
         os.environ["PATH"] = os.pathsep.join(
             entry for entry in os.environ["PATH"].split(os.pathsep)
             if not os.path.normpath(entry).lower().endswith(git_coreutils))
-    env, vpx = dependencies(platform, target, triplet)
+    env, vpx, opus = dependencies(platform, target, triplet)
     run(["cargo", "build", "--locked", "--release", "--manifest-path", ROOT / "native/frb/Cargo.toml",
          "--target", target], env=env)
     # No CARGO_TARGET_DIR override: respect the project's normal cache policy.
@@ -247,6 +286,7 @@ def build(platform, target, triplet, client):
     inputs = json.loads((client.parent / "client-inputs.json").read_text())
     inputs.update({"target": target, "vcpkg_commit": VCPKG_COMMIT, "vcpkg_triplet": triplet,
                    "native_sha256": sha256(library), "libvpx_sha256": sha256(vpx),
+                   "opus_sha256": sha256(opus),
                    "distribution": "unsigned-xcarchive" if platform == "ios" else
                                    "ci-debug-key-apk" if platform == "android" else "unsigned-bundle"})
     (artifact / "client-inputs.json").write_text(json.dumps(inputs, indent=2) + "\n", encoding="utf-8")

@@ -9,6 +9,7 @@ compile_error!("native/frb is a non-HarmonyOS artifact; use native/ohos_napi for
 
 mod bridge_generated;
 mod c_entry_points;
+mod clipboard;
 pub mod client_compat;
 mod configuration;
 mod frames;

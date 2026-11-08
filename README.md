@@ -107,7 +107,7 @@ vcpkg `9e593bb18ea69cc5095e012465dcd675a822ed0d`, Android NDK 28.2.13676358.
    | `ios-arm64` | `macos-14` | `aarch64-apple-ios` | `arm64-ios` | unsigned `.xcarchive` `.tar.gz` |
 
    `scripts/prepare-flutter-ci.py` stages and patches the client in a disposable
-   directory; `scripts/build-flutter-ci.py` builds libvpx/libsodium/zlib through vcpkg
+   directory; `scripts/build-flutter-ci.py` builds libvpx/zlib/opus/libsodium through vcpkg
    (the pinned `native/frb/vcpkg-overlays`), builds `native/frb` with `--locked`,
    checks the required exports (including `rd_engine_windows_texture_wait_progress` on
    Windows and the JNI entry points on Android), installs the library under the

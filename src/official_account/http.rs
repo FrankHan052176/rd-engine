@@ -276,15 +276,22 @@ fn create_http_client_strict(tls_type: TlsType, proxy: Option<&Proxy>) -> Result
         .connect_timeout(REQUEST_TIMEOUT)
         .timeout(REQUEST_TIMEOUT);
     match tls_type {
+        // HarmonyOS has no OpenSSL; its reqwest build has no native-tls backend,
+        // so a cached NativeTls choice is a hard error there, never a downgrade.
+        #[cfg(not(target_env = "ohos"))]
         TlsType::NativeTls => builder = builder.use_native_tls(),
+        #[cfg(target_env = "ohos")]
+        TlsType::NativeTls => bail!("Native TLS is unavailable on this platform"),
         _ => {
-            #[cfg(any(target_os = "android", target_os = "ios"))]
+            // HarmonyOS: webpki roots plus the system roots through the strict
+            // (never insecure) hbb_common verifier, like the mobile targets.
+            #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
             {
                 let config = hbb_common::verifier::client_config(false)
                     .map_err(|_| anyhow!("Cannot construct strict HTTP TLS client"))?;
                 builder = builder.use_preconfigured_tls(config);
             }
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
             {
                 builder = builder.use_rustls_tls();
             }

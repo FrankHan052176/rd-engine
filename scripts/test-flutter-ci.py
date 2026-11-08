@@ -56,7 +56,7 @@ def suite(checkout):
                     metadata = json.loads((output.parent / "client-inputs.json").read_text())
                     self.assertEqual(metadata["platform"], platform)
                     self.assertEqual(len(metadata["bindings"]), 2)
-                    self.assertEqual(len(metadata["patches"]), 7 if platform == "android" else 6)
+                    self.assertEqual(len(metadata["patches"]), 8 if platform == "android" else 7)
                     self.assertFalse((output / "lib/mobile/pages/view_camera_page.dart").exists())
                     self.assertFalse((output / "Cargo.toml").exists(), "must not stage/build the old Rust core")
                     if platform != "windows":

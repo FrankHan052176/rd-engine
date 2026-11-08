@@ -9,7 +9,7 @@ const HOST_SEND_TIMEOUT_MS: u64 = 12_000;
 
 pub(super) async fn serve(
     state: Arc<State>, options: Arc<HostOptions>, display: DisplayBinding,
-    mut routes: Option<mpsc::Receiver<IncomingHostRoute>>,
+    mut routes: Option<mpsc::Receiver<IncomingHostRoute>>, run_capture: bool,
 ) -> Result<(), HostError> {
     let probe_options = options.clone();
     let probe_display = display.clone();
@@ -21,6 +21,21 @@ pub(super) async fn serve(
         Some(address) => Some(TcpListener::bind(address).await.map_err(|_| HostError::ListenFailed)?),
         None => None,
     };
+    // A run-level capture is created before the host is reported ready and
+    // before any peer is admitted, so it exists whether or not anyone connects.
+    // One codec is fixed for the run and is the only one advertised: a peer that
+    // cannot decode it is refused like any other peer without a common codec.
+    // A failed open ends the run here, with the listener dropped and nothing
+    // else created.
+    let (codecs, capture) = if run_capture {
+        if state.cancel.is_cancelled() { return Ok(()); }
+        let codec = if codecs.h264 { Codec::H264 } else { Codec::H265 };
+        let owner = RunCaptureOwner::start(&state, &options, &display, codec).await?;
+        (Encoders { h264: codec == Codec::H264, h265: codec == Codec::H265 }, Some(owner))
+    } else {
+        (codecs, None)
+    };
+    let hub = capture.as_ref().map(|owner| owner.hub.clone());
     let admission = Arc::new(Semaphore::new(MAX_PREAUTH));
     let mut peers: JoinSet<Result<(), HostError>> = JoinSet::new();
     let mut failure = None;
@@ -87,6 +102,7 @@ pub(super) async fn serve(
                 conn_id: token as i32, connection_token: token, approval_epoch: None,
                 policy_revision: lock(&state.credentials).revision,
                 peer_id: String::new(), name: String::new(), authorized: false,
+                encrypted: None, peer_verified: None,
                 disconnected: false, phase: "authenticating", keyboard: false, error: None,
                 capture: None,
             }),
@@ -95,7 +111,7 @@ pub(super) async fn serve(
         lock(&state.controls).insert(token as i32, control.clone());
         let record = Arc::new(PeerRecord { control: Some(control), ..Default::default() });
         let handle = peers.spawn(peer(state.clone(), options.clone(), codecs, incoming,
-            display.clone(), record.clone(), receiver, permit));
+            display.clone(), record.clone(), receiver, permit, hub.clone()));
         state.track_peer(handle.id(), record);
         state.changed();
     }
@@ -108,6 +124,17 @@ pub(super) async fn serve(
     }
     lock(&state.peers).clear();
     state.publish_peers();
+    // Every consumer has been joined; only now is the run's capture stopped and
+    // its publisher closed. A failure it already reported (consent ended, SDK
+    // error) becomes the run's error; an unconfirmed teardown latches the same
+    // quarantine a peer's would.
+    if let Some(capture) = capture {
+        match capture.close().await {
+            Ok(()) => {}
+            Err(HostError::ReclamationUnconfirmed) => unconfirmed = true,
+            Err(error) => { failure.get_or_insert(error); }
+        }
+    }
     if unconfirmed {
         state.unreclaimed.store(true, Ordering::Release);
         return Err(HostError::ReclamationUnconfirmed);
@@ -206,7 +233,10 @@ async fn authenticate_epoch(
     epoch: u64, credentials: Arc<HostCredentials>, control: &PeerControl,
 ) -> Result<AuthenticatedParts, HostError> {
     if incoming.unsupported { return Err(HostError::AuthenticationFailed); }
-    let require_encryption = incoming.secure || incoming.direct_targets.is_empty() || !options.allow_legacy_plain;
+    let routed = incoming.direct_targets.is_empty();
+    let require_encryption = incoming.secure || if routed {
+        !options.allow_routed_legacy_plain
+    } else { !options.allow_legacy_plain };
     let grant = route_permissions(local_permissions(options), incoming.permissions);
     let mut targets = incoming.direct_targets;
     targets.push(options.id.clone());
@@ -227,9 +257,10 @@ async fn authenticate_epoch(
         },
         attempts: Box::new(SharedAttempts { state: state.clone(), revision: credentials.revision }),
     };
-    // Official raw direct viewers wait for Hash, not SignedId. This sequence is
-    // an explicit local compatibility opt-in, never a routed/signed downgrade.
-    let identity = if !require_encryption { HostIdentity::LegacyPlain }
+    // Raw direct compatibility still waits for Hash. Routed hosts always send
+    // SignedId and consume the original empty-M/plain or encrypted-key reply;
+    // only this run's explicit shared-Key policy permits the plaintext result.
+    let identity = if !routed && !require_encryption { HostIdentity::LegacyPlain }
         else { HostIdentity::Signed { id: options.id.clone(), secret_key: options.signing_key.clone() } };
     let established = handshake::host(incoming.stream, identity, Duration::from_secs(90)).await
         .map_err(|_| HostError::AuthenticationFailed)?;
@@ -237,6 +268,12 @@ async fn authenticate_epoch(
     if require_encryption && !matches!(established.security(), Security::Encrypted { .. }) {
         return Err(HostError::AuthenticationFailed);
     }
+    {
+        let mut snapshot = lock(&control.snapshot);
+        snapshot.encrypted = Some(matches!(established.security(), Security::Encrypted { .. }));
+        snapshot.peer_verified = Some(false);
+    }
+    state.changed();
     let mut session = HostSession::from_established(established, config, Duration::from_secs(90), Duration::from_secs(30))
         .await.map_err(|_| HostError::AuthenticationFailed)?;
     let mut request: Option<Arc<PendingApproval>> = None;

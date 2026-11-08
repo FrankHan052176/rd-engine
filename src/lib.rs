@@ -1,11 +1,23 @@
 //! Replacement RustDesk runtime. Wire definitions and cryptography retain the
 //! upstream contract; legacy Connection/VideoService/VideoHandler are not linked.
+pub mod annex_b;
+pub mod audio;
 pub mod authentication;
+#[cfg(target_env = "ohos")]
+#[path = "platform/ohos_audio.rs"]
+pub mod platform_audio;
+#[cfg(not(target_env = "ohos"))]
+#[path = "platform/desktop_audio.rs"]
+pub mod platform_audio;
+#[cfg(all(test, not(target_env = "ohos")))]
+#[path = "platform/ohos_audio.rs"]
+mod ohos_audio;
 pub mod clipboard;
 pub mod cliprdr;
 pub mod conn_token;
 mod executor;
 pub mod handshake;
+pub mod forward;
 #[cfg(any(
     not(target_os = "windows"),
     feature = "windows-modern-producer",
@@ -16,7 +28,12 @@ pub mod identity;
 pub mod lan;
 pub mod media_capability;
 pub mod media_color;
-#[cfg(all(feature = "official-account", not(target_env = "ohos")))]
+pub mod nearby;
+pub mod presentation;
+#[cfg(target_env = "ohos")]
+#[path = "platform/ohos_input.rs"]
+pub mod ohos_input;
+#[cfg(feature = "official-account")]
 pub mod official_account;
 #[cfg(not(any(target_os = "windows", dsh_windows_typecheck)))]
 #[path = "platform/ohos_publisher.rs"]

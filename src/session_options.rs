@@ -47,7 +47,7 @@
 use crate::protocol::Protocol;
 use crate::viewer::PeerDisplayInfo;
 use base::message_proto::{
-    option_message::BoolOption, supported_decoding::PreferCodec, DisplayResolution, ImageQuality,
+    option_message::BoolOption, supported_decoding::PreferCodec, CaptureDisplays, DisplayResolution, ImageQuality,
     Message, Misc, OptionMessage, Resolution, SupportedDecoding, SwitchDisplay,
 };
 use std::collections::BTreeMap;
@@ -86,11 +86,15 @@ pub enum SessionOptionChange {
     CodecPreference(PreferCodec),
     /// Whether the peer may exchange clipboard content with this session.
     ClipboardEnabled(bool),
-    /// Whether the peer should send desktop audio at all. This is the option
-    /// only: this engine has no audio renderer, so enabling it does not make
-    /// audio play.
+    /// Whether this session asks the peer to send desktop audio and plays it.
+    ///
+    /// It is this viewer's own switch, not a grant: the audio owner plays only
+    /// the AND of this option, the peer's own audio grant and the live desktop
+    /// session, so asking for audio here cannot make a peer that withheld it
+    /// heard.
     AudioEnabled(bool),
-    /// Whether the peer should include its own cursor in the video it sends.
+    /// Subscribe to the peer's separate cursor image and position messages.
+    /// This does not ask the peer to embed cursor pixels in its video.
     ShowRemoteCursor(bool),
     /// Show another of the peer's displays, by its own index.
     SwitchDisplay(i32),
@@ -140,7 +144,7 @@ impl OptionContext<'_> {
 
 /// One accepted change: the messages to send, and the requested state after it.
 ///
-/// The messages are a bounded set of control records — one per change today —
+/// The messages are a bounded set of control records — up to two for a switch —
 /// and they carry no socket, runtime, task or media resource, so a caller hands
 /// them to whatever already owns the wire. `next` is the *requested* state; it is
 /// not a reading of what the peer did with the request.
@@ -223,11 +227,13 @@ impl std::error::Error for OptionError {}
 ///
 /// This is what a change produces and what a login advertises, so the same value
 /// can be frozen into a session's start options and later replaced by the answer
-/// the running session gives. Its default is this engine's own desktop default
-/// rather than the peer's: no quality request, clipboard enabled, audio off
-/// (there is not yet an audio renderer), no remote cursor, display 0, and no
-/// remembered custom resolution. Clipboard admission still requires the live
-/// authenticated desktop, the peer grant and a non-view-only local policy.
+/// the running session gives. Its default is this engine's own desktop default,
+/// which now matches the official viewer's own: no quality request, clipboard
+/// enabled, audio on (the operator's switch turns it off), no remote cursor,
+/// display 0, and no remembered custom resolution. Clipboard admission still
+/// requires the live authenticated desktop, the peer grant and a non-view-only
+/// local policy; audio playback likewise requires the peer's own audio grant
+/// beside this option, so a peer that withholds audio is never heard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOptions {
     /// The named preset asked for, if any.
@@ -255,7 +261,11 @@ impl Default for SessionOptions {
             custom_image_quality: None,
             codec_preference: PreferCodec::Auto,
             clipboard_enabled: true,
-            audio_enabled: false,
+            // The official viewer's own default: a desktop session receives the
+            // peer's audio unless the operator turns it off. Playback still
+            // needs the peer's own audio grant on a live authenticated session,
+            // and this switch never starts a microphone or loopback capture.
+            audio_enabled: true,
             show_remote_cursor: false,
             display: 0,
             requested_resolutions: BTreeMap::new(),
@@ -306,9 +316,14 @@ impl SessionOptions {
         self.clipboard_enabled
     }
 
-    /// Whether the peer was asked to send desktop audio.
+    /// Whether this session asks the peer to send desktop audio.
     ///
-    /// This is the option, not the renderer: no audio is played in this engine.
+    /// The switch this viewer holds, not the answer to "did something play":
+    /// the running session's own snapshot reports the audio owner's real state
+    /// (format, whether the device is active, packets and samples), and a peer
+    /// that withheld its audio grant plays nothing however this option is set.
+    /// It is on by default, which is the official viewer's own desktop default;
+    /// only an explicit off states `disable_audio` to the peer.
     pub fn audio_enabled(&self) -> bool {
         self.audio_enabled
     }
@@ -339,7 +354,11 @@ impl SessionOptions {
     ///
     /// The disable flags follow the pinned client's own login habit: a flag is
     /// stated when it is on, and left `NotSet` when it is off, so "off" means the
-    /// peer's default rather than an argument with it. `enable_file_transfer`
+    /// peer's default rather than an argument with it. Audio is therefore left
+    /// `NotSet` while this session asks for it — the pinned client sends
+    /// `disable_audio: Yes` only when its own config has audio off
+    /// (`src/client.rs:3386`) — and becomes `Yes` as soon as the operator turns
+    /// the switch off. `enable_file_transfer`
     /// enables the Desktop's real file clipboard owner; it does not select the
     /// separate FileTransfer login role or grant a permission the peer withheld.
     /// Camera viewing remains explicitly disabled.
@@ -522,22 +541,26 @@ impl SessionOptions {
                 // resolution it remembers for that display and `(0, 0)` when it
                 // remembers none. Nothing is claimed about the display's geometry
                 // here — that is the peer's to report.
-                //
-                // The client's non-texture-render follow-up (`CaptureDisplays`
-                // with `set: [display]`) is not sent: this engine presents one
-                // bound native Surface, which is the texture-render case that
-                // sends `switch_display` alone. Sending a capture instruction the
-                // engine does not run would be a second, unverified display owner.
                 misc.set_switch_display(SwitchDisplay {
                     display,
                     width,
                     height,
                     ..Default::default()
                 });
-                Ok(PreparedOption {
-                    messages: vec![misc_message(misc)],
-                    next,
-                })
+                let mut messages = vec![misc_message(misc)];
+                // A modern server keeps the old capture subscribed on switch.
+                // This viewer has one local display owner, not upstream's
+                // multi-texture UI: finish the switch with its capture set.
+                // Active forwarding is fenced by Viewer::set_session_option.
+                if hbb_common::get_version_number(context.peer_version) >= display_resolution_version() {
+                    let mut misc = Misc::new();
+                    misc.set_capture_displays(CaptureDisplays {
+                        set: vec![display],
+                        ..Default::default()
+                    });
+                    messages.push(misc_message(misc));
+                }
+                Ok(PreparedOption { messages, next })
             }
             SessionOptionChange::ChangeResolution {
                 display,
@@ -732,7 +755,11 @@ mod tests {
     /// The one `Misc` union a change produced, for the non-option messages.
     fn sent_misc(prepared: &PreparedOption) -> misc::Union {
         assert_eq!(prepared.messages.len(), 1, "one change, one message");
-        match prepared.messages[0].union.as_ref() {
+        sent_misc_at(prepared, 0)
+    }
+
+    fn sent_misc_at(prepared: &PreparedOption, index: usize) -> misc::Union {
+        match prepared.messages[index].union.as_ref() {
             Some(message::Union::Misc(misc)) => misc
                 .union
                 .clone()
@@ -745,11 +772,25 @@ mod tests {
     fn login_advertises_only_the_controls_this_default_holds() {
         let advertised = decoding(true, false, false, false);
         let option = SessionOptions::default().login_options(&advertised);
-        // The clipboard owner is available by default; audio has no renderer.
+        // Audio is asked for by default, which is the pinned client's own
+        // desktop default: it states `disable_audio: Yes` only when its config
+        // has audio off, so an enabled session leaves the flag unset and the
+        // peer's own default decides. The peer's audio grant still bounds
+        // playback, so asking here never overrides a peer that withheld it.
         assert_eq!(
             option.disable_audio.enum_value().unwrap(),
+            BoolOption::NotSet,
+            "the default desktop session asks for the peer's audio"
+        );
+        // Only this session's own switch can state the flag.
+        let muted = SessionOptions::default()
+            .request(SessionOptionChange::AudioEnabled(false))
+            .expect("audio can be turned off")
+            .login_options(&advertised);
+        assert_eq!(
+            muted.disable_audio.enum_value().unwrap(),
             BoolOption::Yes,
-            "audio is disabled unless this session asks for it"
+            "an explicit off is stated to the peer at login too"
         );
         assert_eq!(
             option.disable_clipboard.enum_value().unwrap(),
@@ -949,7 +990,15 @@ mod tests {
         let switched = SessionOptions::default()
             .prepare(SessionOptionChange::SwitchDisplay(1), &context)
             .expect("the peer reported display 1");
-        match sent_misc(&switched) {
+        assert_eq!(switched.messages.len(), 2);
+        match sent_misc_at(&switched, 1) {
+            misc::Union::CaptureDisplays(capture) => {
+                assert_eq!(capture.set, vec![1]);
+                assert!(capture.add.is_empty() && capture.sub.is_empty());
+            }
+            other => panic!("switch did not retire the old capture: {other:?}"),
+        }
+        match sent_misc_at(&switched, 0) {
             misc::Union::SwitchDisplay(display) => {
                 assert_eq!(display.display, 1);
                 assert_eq!(
@@ -983,7 +1032,8 @@ mod tests {
             .next
             .prepare(SessionOptionChange::SwitchDisplay(1), &context)
             .expect("display 1 stays addressable");
-        match sent_misc(&repeated) {
+        assert_eq!(repeated.messages.len(), 2);
+        match sent_misc_at(&repeated, 0) {
             misc::Union::SwitchDisplay(display) => {
                 assert_eq!(
                     (display.width, display.height),
@@ -993,6 +1043,17 @@ mod tests {
             }
             other => panic!("switch_display built another message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_switch_does_not_send_modern_capture_controls() {
+        let advertised = decoding(true, false, false, false);
+        let displays = displays(2);
+        let context = context("1.2.3", &advertised, &displays, 0);
+        let switched = SessionOptions::default()
+            .prepare(SessionOptionChange::SwitchDisplay(1), &context)
+            .expect("legacy peer reported display 1");
+        assert!(matches!(sent_misc(&switched), misc::Union::SwitchDisplay(_)));
     }
 
     #[test]

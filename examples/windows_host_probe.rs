@@ -221,6 +221,7 @@ mod windows {
         let host = Host::start(HostOptions {
             listen: Some(cli.listen),
             allow_legacy_plain: true,
+            allow_routed_legacy_plain: false,
             display_name: cli.id.clone(),
             id: cli.id,
             credentials,

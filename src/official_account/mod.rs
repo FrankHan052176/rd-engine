@@ -1,13 +1,19 @@
-//! Native backing for the pinned official Dart account implementation.
+//! Native backing for the pinned official Dart account implementation and for
+//! the HarmonyOS NAPI bridge.
 //!
-//! Password/verification login and cloud address-book business remain in Dart.
-//! This feature is selected only by the non-HarmonyOS FRB artifact. Its private
-//! account state never uses the engine's persistent identity or media services.
+//! Password/verification login and cloud address-book business remain in Dart
+//! for the FRB consumer. The OHOS NAPI bridge reaches the same single account
+//! owner through [`service`] (token-free JSON seam: server binding, snapshot,
+//! OIDC, logout, official cloud address-book list/load/edit). Its private account
+//! state never uses the engine's persistent identity or media services.
 
 pub mod api;
 pub mod http;
 pub mod oidc;
+pub mod service;
 mod cache;
+mod cloud;
+mod mutation;
 mod state;
 mod storage;
 

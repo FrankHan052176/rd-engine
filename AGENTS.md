@@ -34,12 +34,23 @@ synthetic success are not. Reuse pinned upstream behavior, including capture/cod
 capabilities instead of claiming compatibility from matching function names.
 
 The user's 2026-09-23 account decision keeps password/verification login, account lifecycle, and
-cloud address-book synchronization/CRUD in the pinned official Dart owner. Do not translate that
-business logic into this engine or the Resk ArkTS frontend. Native OIDC/HTTP, private credential
-storage and cache support may back the official Dart consumer only where genuinely implemented;
-unimplemented backing must remain explicit. Resk marks account login and cloud address-book
-features as unsupported, independently of server API configuration or cached account state. Local
-recent/favorite devices and existing remote connections are not disabled by this decision.
+cloud address-book synchronization/CRUD implemented by the pinned official Dart consumer, and that
+Dart implementation stays in place; it is no longer the only admissible owner. The FRB-only
+admission rule previously derived from it is withdrawn: the account core lives in
+`src/official_account`
+(`rd-engine::official_account`), the non-HarmonyOS FRB bridge selects `official-account` today, and
+the HarmonyOS OHOS NAPI bridge may select the same feature so Resk account login and cloud
+address-book access land on that one owner. Any older text forbidding Resk account or
+cloud-address-book access predates this admission and does not narrow it. Admission is a gate
+decision, not implementation or runtime evidence: a bridge that selects the feature still owes a
+real compile and the user-run verification, and no account or cloud-address-book capability may be
+claimed from the feature flag alone. Native OIDC/HTTP, private credential storage and cache support
+back that shared core only where genuinely implemented; unimplemented backing must remain explicit.
+Credential isolation is unchanged: API tokens, secrets and raw request bodies stay inside that
+owner, never in ArkTS, and no second account or address-book owner is created. The official Flutter
+consumer's Dart account and cloud address-book code is retained, not deleted or rewritten, and
+Resk's cloud address-book access is neither implemented nor verified. Local recent/favorite devices
+and existing remote connections are unaffected.
 
 The user's 2026-09-24 decision deliberately excludes remote camera viewing/streaming,
 text chat and voice calls from this engine, both bridges and their paired
@@ -47,10 +58,24 @@ consumers. They are not missing parity work. Keep their public APIs, UI actions,
 session modes and feature-specific event consumers removed together; reject old
 camera connection requests rather than treating them as ordinary desktop access.
 Upstream protocol definitions and ignored control packets may remain for wire
-compatibility, but must not activate a communication feature. Desktop video,
-desktop audio playback and recording are distinct and must not be cut under
-this rule. Do not alter protected capture/codec/presentation/input paths or the
-separate HarmonyOS Flutter product to implement this exclusion.
+compatibility, but must not activate a communication feature. Desktop video and
+desktop audio playback remain core capabilities. Do not alter protected
+capture/codec/presentation/input paths or the separate HarmonyOS Flutter product
+to implement this exclusion.
+
+The user's later accepted pruning decision also excludes recording/automatic
+recording and MP4/WebM saving, in-app installation/update/deployment, enterprise
+audit and bot verification, remote terminals, TCP port forwarding, RustDesk RDP
+tunnels, remote printing, virtual displays, side switching, session notes and
+screenshots, privacy mode, elevation and remote reboot. Remove their dedicated
+APIs, consumer actions, models and dependencies together; they are not a parity
+backlog. Native RDP/VNC, desktop audio, text/image/file clipboard, basic file
+transfer, accounts and cloud address books, LAN/recent/favorite devices and
+server configuration remain in scope. Resk uses Native Surface presentation,
+not the obsolete CPU RGBA pull consumer; the official Flutter CPU frame path is
+separate and must remain. Local file browsing and platform input acquisition
+belong to the ArkTS application, not invented HAR services. Keep close ACKs,
+input generations and native resource-reclamation guarantees intact.
 
 ## Legacy material
 
@@ -133,9 +158,13 @@ installs Python 3.12 before verification.
 
 ## Current account integration delivery boundary
 
-- The user keeps password/verification login and cloud address-book/group business in the
-  pinned official Dart consumer. `official-account` is selected by the non-HarmonyOS FRB
-  bridge only; Resk does not expose account login or cloud synchronization.
+- The pinned official Dart consumer keeps its own password/verification login and cloud
+  address-book/group implementation as the current consumer-side code. `official-account` is
+  selected by the non-HarmonyOS FRB bridge today and is admissible from the HarmonyOS OHOS NAPI
+  bridge, so Resk account login and cloud address-book operations may land on the same shared
+  core through real OHOS NAPI exports. No OHOS NAPI `official-account` selection, account export
+  or address-book export exists yet. This admission is not a claim that Resk account login or
+  cloud address-book access is implemented, compiled or verified.
 - The user's current acceptance workflow is paired generation, compilation/linking and
   packaging, followed by user-run functional testing. Do not run account, device or
   performance scenarios on their behalf or treat a source audit as runtime acceptance.
@@ -382,3 +411,9 @@ Not yet proven:
 - Build `native/ohos_napi` from this project, then refresh `R_RustDesk-ArkTS/rustdesk-ohrs.har` using the ArkTS refresh script. Never edit the HAR binary.
 - Validate current behavior with current build output and runtime evidence. For Pad interaction, wake the selected target, confirm its state and bounds, and stop the keep-awake task on exit.
 - A high-frame-rate claim requires measured receive and display telemetry during a real direct-LAN session; a selected target rate alone is insufficient.
+- The isolated Windows client entry is `scripts/sync-client-to-windows.sh` driving
+  `native/frb/build-windows.ps1`. `REMOTE_LIBVPX_PREFIX` must hold the static Opus library and
+  headers (`lib/opus.lib`, `include/opus/opus_multistream.h`) beside libvpx/Zlib, and the driver
+  mirrors only those into `<root>/deps/magnum-opus` as the `magnum-opus` VCPKG_ROOT.
+  `REMOTE_LIBCLANG_PATH` must name the directory with the real `libclang.dll` bindgen loads; a
+  `clang.exe` on PATH is not it.

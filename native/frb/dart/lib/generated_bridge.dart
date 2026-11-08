@@ -413,18 +413,6 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kMainSupportedInputSourceConstMeta;
 
-  String mainDefaultPrivacyModeImpl({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainDefaultPrivacyModeImplConstMeta;
-
-  String mainSupportedPrivacyModeImpls({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainSupportedPrivacyModeImplsConstMeta;
-
-  String mainGetPrinterNames({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainGetPrinterNamesConstMeta;
-
   Future<String> mainGetTrustedDevices({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainGetTrustedDevicesConstMeta;
@@ -448,10 +436,6 @@ abstract class Rustdesk {
   int mainMaxEncryptLen({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainMaxEncryptLenConstMeta;
-
-  String mainVideoSaveDirectory({required bool root, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainVideoSaveDirectoryConstMeta;
 
   /// Build capabilities, independent of registration/hardware readiness. Only the
   /// integrated Windows artifact has the current-user controlled-host owner.
@@ -482,10 +466,6 @@ abstract class Rustdesk {
   bool isDisableGroupPanel({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kIsDisableGroupPanelConstMeta;
-
-  bool isDisableInstallation({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kIsDisableInstallationConstMeta;
 
   Future<bool> isPresetPassword({dynamic hint});
 
@@ -548,22 +528,6 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kQueryOnlinesConstMeta;
 
-  Future<void> mainGetSoftwareUpdateUrl({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainGetSoftwareUpdateUrlConstMeta;
-
-  String mainGetNewVersion({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainGetNewVersionConstMeta;
-
-  bool mainUpdateMe({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainUpdateMeConstMeta;
-
-  bool mainGotoInstall({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainGotoInstallConstMeta;
-
   /// The build's real install state. The client calls this while it builds its
   /// home page, its settings fields and its safety tab, so it must answer: on
   /// Windows the shared platform helper reads the actual installation, and on a
@@ -571,10 +535,6 @@ abstract class Rustdesk {
   bool mainIsInstalled({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainIsInstalledConstMeta;
-
-  bool mainIsInstalledLowerVersion({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainIsInstalledLowerVersionConstMeta;
 
   bool mainIsInstalledDaemon({required bool prompt, dynamic hint});
 
@@ -591,35 +551,6 @@ abstract class Rustdesk {
   bool mainIsCanInputMonitoring({required bool prompt, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainIsCanInputMonitoringConstMeta;
-
-  bool mainIsShareRdp({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainIsShareRdpConstMeta;
-
-  Future<void> mainSetShareRdp({required bool enable, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainSetShareRdpConstMeta;
-
-  bool installShowRunWithoutInstall({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kInstallShowRunWithoutInstallConstMeta;
-
-  Future<void> installRunWithoutInstall({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kInstallRunWithoutInstallConstMeta;
-
-  Future<void> installInstallMe(
-      {required String options, required String path, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallMeConstMeta;
-
-  String installInstallPath({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallPathConstMeta;
-
-  String installInstallOptions({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallOptionsConstMeta;
 
   Future<void> mainStartService({dynamic hint});
 
@@ -666,14 +597,6 @@ abstract class Rustdesk {
   bool mainHasValid2FaSync({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainHasValid2FaSyncConstMeta;
-
-  Future<String> mainVerifyBot({required String token, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainVerifyBotConstMeta;
-
-  bool mainHasValidBotSync({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainHasValidBotSyncConstMeta;
 
   Future<void> mainAccountAuth(
       {required String op, required bool rememberMe, dynamic hint});
@@ -751,11 +674,6 @@ abstract class Rustdesk {
       {required String server, required bool testWithProxy, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainTestIfValidServerConstMeta;
-
-  Future<String> mainDeployDevice(
-      {required String token, required String id, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kMainDeployDeviceConstMeta;
 
   Future<void> mainSetSocks(
       {required String proxy,
@@ -901,18 +819,6 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kCmSwitchPermissionConstMeta;
 
-  bool cmCanElevate({dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kCmCanElevateConstMeta;
-
-  Future<void> cmElevatePortable({required int connId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kCmElevatePortableConstMeta;
-
-  Future<void> cmSwitchBack({required int connId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kCmSwitchBackConstMeta;
-
   /// The local cursor operations relative-mouse mode uses. This bridge never moves
   /// or clips the operator's own cursor, so the answer is the same "not applied"
   /// the client's own model already handles: it then stops trying to recenter and
@@ -1000,10 +906,11 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionStartWithDisplaysConstMeta;
 
-  /// Login. The engine authenticates inside `Viewer::start` with the password it
-  /// was given, so a password that arrives after a failed attempt restarts the
-  /// viewer with it - the same outcome the client's own core reaches by retrying
-  /// the login on the connection it kept.
+  /// Login. The engine owns the authentication attempt: it keeps it open when the
+  /// peer answers `Empty Password` or `Wrong Password`, so a password that arrives
+  /// while it is waiting for one is written on the wire the session already has -
+  /// the same login, resubmitted with the new secret. A running RustDesk viewer
+  /// never falls back to a redial when it refuses the local submission.
   Future<void> sessionLogin(
       {required UuidValue sessionId,
       required String osUsername,
@@ -1044,28 +951,37 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionSetCustomFpsConstMeta;
 
-  /// The engine's encoder decision is its own and it exposes no way to change the
-  /// peer's image quality. The client shows a successful set as the new selection
-  /// and reads it back, so this refuses instead of recording a value the next
-  /// connection would not use.
+  /// The client's quality selection, as the `OptionMessage` the peer's wire takes.
+  ///
+  /// A running session queues it for its own writer; one that has not dialled
+  /// keeps it for the login advertisement. What comes back to the client from
+  /// `session_get_image_quality` is what was asked for, because the peer echoes no
+  /// quality back and an "applied" level would be invented.
   Future<void> sessionSetImageQuality(
       {required UuidValue sessionId, required String value, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionSetImageQualityConstMeta;
 
-  /// No quality setting is in force here: nothing was applied, so there is no
-  /// value to read back. The client takes the absence as "use the default" rather
-  /// than as a selection the user made.
+  /// The quality this session asked for, in the pinned client's own config
+  /// spelling (`low`, `balanced`, `best`, `custom`).
+  ///
+  /// `None` means nothing was asked for, which the client reads as the peer's
+  /// default and which is a fact rather than an empty selection: an empty string
+  /// would look like a level that does not exist.
   Future<String?> sessionGetImageQuality(
       {required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionGetImageQualityConstMeta;
 
+  /// The custom percentage the pinned client's own slider produces, in the wire's
+  /// own encoding (`value << 8`, done by the engine's option store).
   Future<void> sessionSetCustomImageQuality(
       {required UuidValue sessionId, required int value, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionSetCustomImageQualityConstMeta;
 
+  /// The custom percentage this session asked for, in the client's own shape: the
+  /// remembered value, or `None` when no custom quality was requested.
   Future<Int32List?> sessionGetCustomImageQuality(
       {required UuidValue sessionId, dynamic hint});
 
@@ -1100,6 +1016,23 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionIsMultiUiSessionConstMeta;
 
+  /// The client's explicit read of the credential a running session can be
+  /// reconnected with.
+  ///
+  /// The answer comes from the viewer itself: it is the h1 the peer's own login
+  /// accepted, exported only by an authenticated, not-closing RustDesk session,
+  /// and never from anything this bridge stored. That matters twice over - the
+  /// text the client supplied at creation is not proof of what the peer accepted,
+  /// and UI state ("a password was typed") is not authorization. An
+  /// unauthenticated or stopped session therefore answers `None`, which is the
+  /// same answer the pinned client's own `get_conn_token` gives for an empty
+  /// password.
+  ///
+  /// This is deliberately a getter the client calls on purpose (the pinned
+  /// toolbar's `connectWithToken`), not a field of any event, snapshot, peer
+  /// option, history entry or log: the material is password-equivalent, and the
+  /// only thing narrower than it is the clear password a user typed, which stays
+  /// unexported here.
   String? sessionGetConnToken({required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionGetConnTokenConstMeta;
@@ -1147,6 +1080,14 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionGetPeerOptionConstMeta;
 
+  /// The client's toggle switches, in its own vocabulary.
+  ///
+  /// `view-only` is the local policy the engine really enforces. The other three
+  /// are the pinned wire's own options, and the answer is the state this session
+  /// asked for: `disable-audio` and `disable-clipboard` are the peer's opt-outs, so
+  /// a switch that is on asked it to stop, and `show-remote-cursor` asked it to
+  /// draw its own cursor into the video it sends. None of them is a reading of the
+  /// peer's application, which the peer never echoes.
   Future<bool?> sessionGetToggleOption(
       {required UuidValue sessionId, required String arg, dynamic hint});
 
@@ -1161,6 +1102,10 @@ abstract class Rustdesk {
   /// enforces, so flipping it here changes what the live viewer admits and writes
   /// the same decision back to the peer's stored configuration - the source the
   /// next session for this peer reads.
+  ///
+  /// The three wire options are flipped from the state this session asked for and
+  /// handed to the engine as typed changes, so each one becomes one control record
+  /// on the session's writer instead of a switch that only looks flipped.
   Future<void> sessionToggleOption(
       {required UuidValue sessionId, required String value, dynamic hint});
 
@@ -1422,38 +1367,22 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionIsKeyboardModeSupportedConstMeta;
 
-  Future<void> sessionSendNote(
-      {required UuidValue sessionId, required String note, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionSendNoteConstMeta;
-
-  Future<String> sessionHandleScreenshot(
-      {required UuidValue sessionId, required String action, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionHandleScreenshotConstMeta;
-
-  Future<void> sessionTakeScreenshot(
-      {required UuidValue sessionId, required int display, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionTakeScreenshotConstMeta;
-
-  Future<void> sessionRecordScreen(
-      {required UuidValue sessionId, required bool start, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionRecordScreenConstMeta;
-
-  bool sessionGetIsRecording({required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetIsRecordingConstMeta;
-
-  Future<void> sessionTogglePrivacyMode(
-      {required UuidValue sessionId,
-      required String implKey,
-      required bool on,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionTogglePrivacyModeConstMeta;
-
+  /// Answers the peer's second-factor step on this same, still-open session.
+  ///
+  /// This is `Viewer::send_second_factor`: the engine admits a code only while
+  /// this session's own RustDesk authentication is waiting for one, one code per
+  /// peer answer, and writes it on the session `Viewer::start` already owns. So
+  /// `Ok(())` is the receipt that the code reached the authentication loop - never
+  /// that the peer accepted it. The peer's decision is its next demand, which the
+  /// pump reports as `2FA Required` or `Wrong 2FA Code`, and authority is the
+  /// snapshot's `authenticated` fact, not this answer.
+  ///
+  /// `trust_this_device` is refused rather than ignored: the pinned client sends
+  /// its own `hwid` in `Auth2FA` and records `trust-this-device` only after the
+  /// peer enrolls that identity. This bridge keeps no enrolled identity, so a code
+  /// sent under that flag would ask the peer to trust a device this app cannot
+  /// name again - and answering `Ok` would promise an enrollment that never
+  /// happened.
   Future<void> sessionSend2Fa(
       {required UuidValue sessionId,
       required String code,
@@ -1470,6 +1399,16 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionCtrlAltDelConstMeta;
 
+  /// The client's display switch, which is a real `SwitchDisplay` on the peer's
+  /// wire: the engine repeats the resolution it remembers for that display and
+  /// `(0, 0)` when it remembers none, exactly as the pinned client does.
+  ///
+  /// This bridge presents one bound native Surface for one display, so `[0]` is
+  /// the only request it can carry. The client's other form - more than one
+  /// display - is a capture-all request that needs a second display owner this
+  /// engine does not run, and `is_desktop` only chooses between that form and a
+  /// desktop refresh this bridge does not add, so neither is silently reduced to a
+  /// single-display switch.
   Future<void> sessionSwitchDisplay(
       {required bool isDesktop,
       required UuidValue sessionId,
@@ -1478,6 +1417,14 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionSwitchDisplayConstMeta;
 
+  /// Asks the peer to change one display's resolution.
+  ///
+  /// The message shape is the engine's: a display-qualified
+  /// `change_display_resolution` for a peer whose version understands one, the
+  /// legacy unqualified `change_resolution` before that, and a refusal when a peer
+  /// too old to name a display is asked about one it is not showing. Nothing here
+  /// claims the peer resized anything - its own next frame and display report are
+  /// what would.
   Future<void> sessionChangeResolution(
       {required UuidValue sessionId,
       required int display,
@@ -1492,86 +1439,37 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kSessionRequestNewDisplayInitMsgsConstMeta;
 
-  Future<void> sessionToggleVirtualDisplay(
-      {required UuidValue sessionId,
-      required int index,
-      required bool on,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionToggleVirtualDisplayConstMeta;
-
-  Future<void> sessionRestartRemoteDevice(
-      {required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionRestartRemoteDeviceConstMeta;
-
-  Future<void> sessionSwitchSides({required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionSwitchSidesConstMeta;
-
   Future<void> sessionSendSelectedSessionId(
       {required UuidValue sessionId, required String sid, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionSendSelectedSessionIdConstMeta;
 
+  /// The codecs this session could switch to.
+  ///
+  /// The pinned client answers from its own decoder abilities *intersected with
+  /// the peer's advertised encoding abilities*; this bridge has neither that
+  /// intersection nor a peer encoding report to read, so there is no honest list
+  /// to return. An empty object would read as "no codec works", which is a
+  /// capability claim this bridge cannot make.
   Future<String> sessionAlternativeCodecs(
       {required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionAlternativeCodecsConstMeta;
 
+  /// Re-advertises this session's codec preference, which is what the pinned
+  /// client's own `change_prefer_codec` does: it sends `update_supported_decodings`
+  /// - the decoding it advertised at login, with the preference it already holds -
+  /// instead of choosing a codec of its own. The engine's `CodecPreference` change
+  /// is that same message, and it refuses a preference this session never
+  /// advertised, so the peer only ever hears about a codec this build decodes.
+  ///
+  /// A session that has not dialled has nothing to re-advertise; recording the
+  /// preference it already holds is a no-op that the login it is about to send
+  /// carries anyway.
   Future<void> sessionChangePreferCodec(
       {required UuidValue sessionId, dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionChangePreferCodecConstMeta;
-
-  String sessionGetAuditServerSync(
-      {required UuidValue sessionId, required String typ, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetAuditServerSyncConstMeta;
-
-  String sessionGetLastAuditNote({required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetLastAuditNoteConstMeta;
-
-  Future<void> sessionSetAuditGuid(
-      {required UuidValue sessionId, required String guid, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionSetAuditGuidConstMeta;
-
-  String sessionGetAuditGuid({required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetAuditGuidConstMeta;
-
-  Future<void> sessionOpenTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionOpenTerminalConstMeta;
-
-  Future<void> sessionSendTerminalInput(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required String data,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionSendTerminalInputConstMeta;
-
-  Future<void> sessionResizeTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionResizeTerminalConstMeta;
-
-  Future<void> sessionCloseTerminal(
-      {required UuidValue sessionId, required int terminalId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionCloseTerminalConstMeta;
 
   Future<void> sessionReadRemoteDir(
       {required UuidValue sessionId,
@@ -1708,46 +1606,6 @@ abstract class Rustdesk {
       dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kSessionRenameFileConstMeta;
-
-  Future<void> sessionElevateDirect(
-      {required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionElevateDirectConstMeta;
-
-  Future<void> sessionElevateWithLogon(
-      {required UuidValue sessionId,
-      required String username,
-      required String password,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionElevateWithLogonConstMeta;
-
-  Future<void> sessionAddPortForward(
-      {required UuidValue sessionId,
-      required int localPort,
-      required String remoteHost,
-      required int remotePort,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionAddPortForwardConstMeta;
-
-  Future<void> sessionRemovePortForward(
-      {required UuidValue sessionId, required int localPort, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionRemovePortForwardConstMeta;
-
-  Future<void> sessionNewRdp({required UuidValue sessionId, dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionNewRdpConstMeta;
-
-  Future<void> sessionPrinterResponse(
-      {required UuidValue sessionId,
-      required int id,
-      required String path,
-      required String printerName,
-      dynamic hint});
-
-  FlutterRustBridgeTaskConstMeta get kSessionPrinterResponseConstMeta;
 }
 
 @freezed
@@ -3278,54 +3136,6 @@ class RustdeskImpl implements Rustdesk {
         argNames: [],
       );
 
-  String mainDefaultPrivacyModeImpl({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_default_privacy_mode_impl(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainDefaultPrivacyModeImplConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainDefaultPrivacyModeImplConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_default_privacy_mode_impl",
-        argNames: [],
-      );
-
-  String mainSupportedPrivacyModeImpls({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_supported_privacy_mode_impls(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainSupportedPrivacyModeImplsConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainSupportedPrivacyModeImplsConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_supported_privacy_mode_impls",
-        argNames: [],
-      );
-
-  String mainGetPrinterNames({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_get_printer_names(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainGetPrinterNamesConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainGetPrinterNamesConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_get_printer_names",
-        argNames: [],
-      );
-
   Future<String> mainGetTrustedDevices({dynamic hint}) {
     return _platform.executeNormal(FlutterRustBridgeTask(
       callFfi: (port_) => _platform.inner.wire_main_get_trusted_devices(port_),
@@ -3407,23 +3217,6 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_max_encrypt_len",
         argNames: [],
-      );
-
-  String mainVideoSaveDirectory({required bool root, dynamic hint}) {
-    var arg0 = root;
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_video_save_directory(arg0),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainVideoSaveDirectoryConstMeta,
-      argValues: [root],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainVideoSaveDirectoryConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_video_save_directory",
-        argNames: ["root"],
       );
 
   bool isIncomingOnly({dynamic hint}) {
@@ -3535,22 +3328,6 @@ class RustdeskImpl implements Rustdesk {
   FlutterRustBridgeTaskConstMeta get kIsDisableGroupPanelConstMeta =>
       const FlutterRustBridgeTaskConstMeta(
         debugName: "is_disable_group_panel",
-        argNames: [],
-      );
-
-  bool isDisableInstallation({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_is_disable_installation(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kIsDisableInstallationConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kIsDisableInstallationConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "is_disable_installation",
         argNames: [],
       );
 
@@ -3800,71 +3577,6 @@ class RustdeskImpl implements Rustdesk {
         argNames: ["ids"],
       );
 
-  Future<void> mainGetSoftwareUpdateUrl({dynamic hint}) {
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_main_get_software_update_url(port_),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kMainGetSoftwareUpdateUrlConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainGetSoftwareUpdateUrlConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_get_software_update_url",
-        argNames: [],
-      );
-
-  String mainGetNewVersion({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_get_new_version(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainGetNewVersionConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainGetNewVersionConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_get_new_version",
-        argNames: [],
-      );
-
-  bool mainUpdateMe({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_update_me(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kMainUpdateMeConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainUpdateMeConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_update_me",
-        argNames: [],
-      );
-
-  bool mainGotoInstall({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_goto_install(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kMainGotoInstallConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainGotoInstallConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_goto_install",
-        argNames: [],
-      );
-
   bool mainIsInstalled({dynamic hint}) {
     return _platform.executeSync(FlutterRustBridgeSyncTask(
       callFfi: () => _platform.inner.wire_main_is_installed(),
@@ -3878,22 +3590,6 @@ class RustdeskImpl implements Rustdesk {
   FlutterRustBridgeTaskConstMeta get kMainIsInstalledConstMeta =>
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_is_installed",
-        argNames: [],
-      );
-
-  bool mainIsInstalledLowerVersion({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_is_installed_lower_version(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kMainIsInstalledLowerVersionConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainIsInstalledLowerVersionConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_is_installed_lower_version",
         argNames: [],
       );
 
@@ -3963,124 +3659,6 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_is_can_input_monitoring",
         argNames: ["prompt"],
-      );
-
-  bool mainIsShareRdp({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_is_share_rdp(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kMainIsShareRdpConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainIsShareRdpConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_is_share_rdp",
-        argNames: [],
-      );
-
-  Future<void> mainSetShareRdp({required bool enable, dynamic hint}) {
-    var arg0 = enable;
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner.wire_main_set_share_rdp(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kMainSetShareRdpConstMeta,
-      argValues: [enable],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainSetShareRdpConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_set_share_rdp",
-        argNames: ["enable"],
-      );
-
-  bool installShowRunWithoutInstall({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_install_show_run_without_install(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kInstallShowRunWithoutInstallConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kInstallShowRunWithoutInstallConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "install_show_run_without_install",
-        argNames: [],
-      );
-
-  Future<void> installRunWithoutInstall({dynamic hint}) {
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_install_run_without_install(port_),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kInstallRunWithoutInstallConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kInstallRunWithoutInstallConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "install_run_without_install",
-        argNames: [],
-      );
-
-  Future<void> installInstallMe(
-      {required String options, required String path, dynamic hint}) {
-    var arg0 = _platform.api2wire_String(options);
-    var arg1 = _platform.api2wire_String(path);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_install_install_me(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kInstallInstallMeConstMeta,
-      argValues: [options, path],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallMeConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "install_install_me",
-        argNames: ["options", "path"],
-      );
-
-  String installInstallPath({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_install_install_path(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kInstallInstallPathConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallPathConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "install_install_path",
-        argNames: [],
-      );
-
-  String installInstallOptions({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_install_install_options(),
-      parseSuccessData: _wire2api_String,
-      constMeta: kInstallInstallOptionsConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kInstallInstallOptionsConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "install_install_options",
-        argNames: [],
       );
 
   Future<void> mainStartService({dynamic hint}) {
@@ -4265,39 +3843,6 @@ class RustdeskImpl implements Rustdesk {
   FlutterRustBridgeTaskConstMeta get kMainHasValid2FaSyncConstMeta =>
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_has_valid_2fa_sync",
-        argNames: [],
-      );
-
-  Future<String> mainVerifyBot({required String token, dynamic hint}) {
-    var arg0 = _platform.api2wire_String(token);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner.wire_main_verify_bot(port_, arg0),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainVerifyBotConstMeta,
-      argValues: [token],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainVerifyBotConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_verify_bot",
-        argNames: ["token"],
-      );
-
-  bool mainHasValidBotSync({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_main_has_valid_bot_sync(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kMainHasValidBotSyncConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainHasValidBotSyncConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_has_valid_bot_sync",
         argNames: [],
       );
 
@@ -4542,26 +4087,6 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_test_if_valid_server",
         argNames: ["server", "testWithProxy"],
-      );
-
-  Future<String> mainDeployDevice(
-      {required String token, required String id, dynamic hint}) {
-    var arg0 = _platform.api2wire_String(token);
-    var arg1 = _platform.api2wire_String(id);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_main_deploy_device(port_, arg0, arg1),
-      parseSuccessData: _wire2api_String,
-      constMeta: kMainDeployDeviceConstMeta,
-      argValues: [token, id],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kMainDeployDeviceConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "main_deploy_device",
-        argNames: ["token", "id"],
       );
 
   Future<void> mainSetSocks(
@@ -5118,56 +4643,6 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "cm_switch_permission",
         argNames: ["connId", "name", "enabled"],
-      );
-
-  bool cmCanElevate({dynamic hint}) {
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_cm_can_elevate(),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kCmCanElevateConstMeta,
-      argValues: [],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kCmCanElevateConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "cm_can_elevate",
-        argNames: [],
-      );
-
-  Future<void> cmElevatePortable({required int connId, dynamic hint}) {
-    var arg0 = api2wire_i32(connId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner.wire_cm_elevate_portable(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kCmElevatePortableConstMeta,
-      argValues: [connId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kCmElevatePortableConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "cm_elevate_portable",
-        argNames: ["connId"],
-      );
-
-  Future<void> cmSwitchBack({required int connId, dynamic hint}) {
-    var arg0 = api2wire_i32(connId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner.wire_cm_switch_back(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kCmSwitchBackConstMeta,
-      argValues: [connId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kCmSwitchBackConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "cm_switch_back",
-        argNames: ["connId"],
       );
 
   bool mainSetCursorPosition({required int x, required int y, dynamic hint}) {
@@ -6664,127 +6139,6 @@ class RustdeskImpl implements Rustdesk {
         argNames: ["sessionId", "mode"],
       );
 
-  Future<void> sessionSendNote(
-      {required UuidValue sessionId, required String note, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(note);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_send_note(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionSendNoteConstMeta,
-      argValues: [sessionId, note],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionSendNoteConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_send_note",
-        argNames: ["sessionId", "note"],
-      );
-
-  Future<String> sessionHandleScreenshot(
-      {required UuidValue sessionId, required String action, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(action);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_handle_screenshot(port_, arg0, arg1),
-      parseSuccessData: _wire2api_String,
-      constMeta: kSessionHandleScreenshotConstMeta,
-      argValues: [sessionId, action],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionHandleScreenshotConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_handle_screenshot",
-        argNames: ["sessionId", "action"],
-      );
-
-  Future<void> sessionTakeScreenshot(
-      {required UuidValue sessionId, required int display, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_usize(display);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_take_screenshot(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionTakeScreenshotConstMeta,
-      argValues: [sessionId, display],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionTakeScreenshotConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_take_screenshot",
-        argNames: ["sessionId", "display"],
-      );
-
-  Future<void> sessionRecordScreen(
-      {required UuidValue sessionId, required bool start, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = start;
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_record_screen(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionRecordScreenConstMeta,
-      argValues: [sessionId, start],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionRecordScreenConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_record_screen",
-        argNames: ["sessionId", "start"],
-      );
-
-  bool sessionGetIsRecording({required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_session_get_is_recording(arg0),
-      parseSuccessData: _wire2api_bool,
-      constMeta: kSessionGetIsRecordingConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetIsRecordingConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_get_is_recording",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionTogglePrivacyMode(
-      {required UuidValue sessionId,
-      required String implKey,
-      required bool on,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(implKey);
-    var arg2 = on;
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_toggle_privacy_mode(port_, arg0, arg1, arg2),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionTogglePrivacyModeConstMeta,
-      argValues: [sessionId, implKey, on],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionTogglePrivacyModeConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_toggle_privacy_mode",
-        argNames: ["sessionId", "implKey", "on"],
-      );
-
   Future<void> sessionSend2Fa(
       {required UuidValue sessionId,
       required String code,
@@ -6915,68 +6269,6 @@ class RustdeskImpl implements Rustdesk {
             argNames: ["sessionId", "display"],
           );
 
-  Future<void> sessionToggleVirtualDisplay(
-      {required UuidValue sessionId,
-      required int index,
-      required bool on,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(index);
-    var arg2 = on;
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_toggle_virtual_display(port_, arg0, arg1, arg2),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionToggleVirtualDisplayConstMeta,
-      argValues: [sessionId, index, on],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionToggleVirtualDisplayConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_toggle_virtual_display",
-        argNames: ["sessionId", "index", "on"],
-      );
-
-  Future<void> sessionRestartRemoteDevice(
-      {required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_restart_remote_device(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionRestartRemoteDeviceConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionRestartRemoteDeviceConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_restart_remote_device",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionSwitchSides(
-      {required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_switch_sides(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionSwitchSidesConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionSwitchSidesConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_switch_sides",
-        argNames: ["sessionId"],
-      );
-
   Future<void> sessionSendSelectedSessionId(
       {required UuidValue sessionId, required String sid, dynamic hint}) {
     var arg0 = _platform.api2wire_Uuid(sessionId);
@@ -7033,176 +6325,6 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "session_change_prefer_codec",
         argNames: ["sessionId"],
-      );
-
-  String sessionGetAuditServerSync(
-      {required UuidValue sessionId, required String typ, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(typ);
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () =>
-          _platform.inner.wire_session_get_audit_server_sync(arg0, arg1),
-      parseSuccessData: _wire2api_String,
-      constMeta: kSessionGetAuditServerSyncConstMeta,
-      argValues: [sessionId, typ],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetAuditServerSyncConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_get_audit_server_sync",
-        argNames: ["sessionId", "typ"],
-      );
-
-  String sessionGetLastAuditNote({required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_session_get_last_audit_note(arg0),
-      parseSuccessData: _wire2api_String,
-      constMeta: kSessionGetLastAuditNoteConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetLastAuditNoteConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_get_last_audit_note",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionSetAuditGuid(
-      {required UuidValue sessionId, required String guid, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(guid);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_set_audit_guid(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionSetAuditGuidConstMeta,
-      argValues: [sessionId, guid],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionSetAuditGuidConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_set_audit_guid",
-        argNames: ["sessionId", "guid"],
-      );
-
-  String sessionGetAuditGuid({required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeSync(FlutterRustBridgeSyncTask(
-      callFfi: () => _platform.inner.wire_session_get_audit_guid(arg0),
-      parseSuccessData: _wire2api_String,
-      constMeta: kSessionGetAuditGuidConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionGetAuditGuidConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_get_audit_guid",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionOpenTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(terminalId);
-    var arg2 = api2wire_u32(rows);
-    var arg3 = api2wire_u32(cols);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_open_terminal(port_, arg0, arg1, arg2, arg3),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionOpenTerminalConstMeta,
-      argValues: [sessionId, terminalId, rows, cols],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionOpenTerminalConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_open_terminal",
-        argNames: ["sessionId", "terminalId", "rows", "cols"],
-      );
-
-  Future<void> sessionSendTerminalInput(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required String data,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(terminalId);
-    var arg2 = _platform.api2wire_String(data);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_send_terminal_input(port_, arg0, arg1, arg2),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionSendTerminalInputConstMeta,
-      argValues: [sessionId, terminalId, data],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionSendTerminalInputConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_send_terminal_input",
-        argNames: ["sessionId", "terminalId", "data"],
-      );
-
-  Future<void> sessionResizeTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(terminalId);
-    var arg2 = api2wire_u32(rows);
-    var arg3 = api2wire_u32(cols);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_resize_terminal(port_, arg0, arg1, arg2, arg3),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionResizeTerminalConstMeta,
-      argValues: [sessionId, terminalId, rows, cols],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionResizeTerminalConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_resize_terminal",
-        argNames: ["sessionId", "terminalId", "rows", "cols"],
-      );
-
-  Future<void> sessionCloseTerminal(
-      {required UuidValue sessionId, required int terminalId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(terminalId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_close_terminal(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionCloseTerminalConstMeta,
-      argValues: [sessionId, terminalId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionCloseTerminalConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_close_terminal",
-        argNames: ["sessionId", "terminalId"],
       );
 
   Future<void> sessionReadRemoteDir(
@@ -7636,138 +6758,6 @@ class RustdeskImpl implements Rustdesk {
         argNames: ["sessionId", "actId", "path", "newName", "isRemote"],
       );
 
-  Future<void> sessionElevateDirect(
-      {required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_elevate_direct(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionElevateDirectConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionElevateDirectConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_elevate_direct",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionElevateWithLogon(
-      {required UuidValue sessionId,
-      required String username,
-      required String password,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = _platform.api2wire_String(username);
-    var arg2 = _platform.api2wire_String(password);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_elevate_with_logon(port_, arg0, arg1, arg2),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionElevateWithLogonConstMeta,
-      argValues: [sessionId, username, password],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionElevateWithLogonConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_elevate_with_logon",
-        argNames: ["sessionId", "username", "password"],
-      );
-
-  Future<void> sessionAddPortForward(
-      {required UuidValue sessionId,
-      required int localPort,
-      required String remoteHost,
-      required int remotePort,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(localPort);
-    var arg2 = _platform.api2wire_String(remoteHost);
-    var arg3 = api2wire_i32(remotePort);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_add_port_forward(port_, arg0, arg1, arg2, arg3),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionAddPortForwardConstMeta,
-      argValues: [sessionId, localPort, remoteHost, remotePort],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionAddPortForwardConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_add_port_forward",
-        argNames: ["sessionId", "localPort", "remoteHost", "remotePort"],
-      );
-
-  Future<void> sessionRemovePortForward(
-      {required UuidValue sessionId, required int localPort, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(localPort);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) =>
-          _platform.inner.wire_session_remove_port_forward(port_, arg0, arg1),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionRemovePortForwardConstMeta,
-      argValues: [sessionId, localPort],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionRemovePortForwardConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_remove_port_forward",
-        argNames: ["sessionId", "localPort"],
-      );
-
-  Future<void> sessionNewRdp({required UuidValue sessionId, dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner.wire_session_new_rdp(port_, arg0),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionNewRdpConstMeta,
-      argValues: [sessionId],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionNewRdpConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_new_rdp",
-        argNames: ["sessionId"],
-      );
-
-  Future<void> sessionPrinterResponse(
-      {required UuidValue sessionId,
-      required int id,
-      required String path,
-      required String printerName,
-      dynamic hint}) {
-    var arg0 = _platform.api2wire_Uuid(sessionId);
-    var arg1 = api2wire_i32(id);
-    var arg2 = _platform.api2wire_String(path);
-    var arg3 = _platform.api2wire_String(printerName);
-    return _platform.executeNormal(FlutterRustBridgeTask(
-      callFfi: (port_) => _platform.inner
-          .wire_session_printer_response(port_, arg0, arg1, arg2, arg3),
-      parseSuccessData: _wire2api_unit,
-      constMeta: kSessionPrinterResponseConstMeta,
-      argValues: [sessionId, id, path, printerName],
-      hint: hint,
-    ));
-  }
-
-  FlutterRustBridgeTaskConstMeta get kSessionPrinterResponseConstMeta =>
-      const FlutterRustBridgeTaskConstMeta(
-        debugName: "session_printer_response",
-        argNames: ["sessionId", "id", "path", "printerName"],
-      );
-
   void dispose() {
     _platform.dispose();
   }
@@ -7871,11 +6861,6 @@ bool api2wire_bool(bool raw) {
 
 @protected
 int api2wire_i32(int raw) {
-  return raw;
-}
-
-@protected
-int api2wire_u32(int raw) {
   return raw;
 }
 
@@ -9382,38 +8367,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
       _wire_main_supported_input_sourcePtr
           .asFunction<WireSyncReturn Function()>();
 
-  WireSyncReturn wire_main_default_privacy_mode_impl() {
-    return _wire_main_default_privacy_mode_impl();
-  }
-
-  late final _wire_main_default_privacy_mode_implPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_default_privacy_mode_impl');
-  late final _wire_main_default_privacy_mode_impl =
-      _wire_main_default_privacy_mode_implPtr
-          .asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_supported_privacy_mode_impls() {
-    return _wire_main_supported_privacy_mode_impls();
-  }
-
-  late final _wire_main_supported_privacy_mode_implsPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_supported_privacy_mode_impls');
-  late final _wire_main_supported_privacy_mode_impls =
-      _wire_main_supported_privacy_mode_implsPtr
-          .asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_get_printer_names() {
-    return _wire_main_get_printer_names();
-  }
-
-  late final _wire_main_get_printer_namesPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_get_printer_names');
-  late final _wire_main_get_printer_names =
-      _wire_main_get_printer_namesPtr.asFunction<WireSyncReturn Function()>();
-
   void wire_main_get_trusted_devices(
     int port_,
   ) {
@@ -9480,21 +8433,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
           'wire_main_max_encrypt_len');
   late final _wire_main_max_encrypt_len =
       _wire_main_max_encrypt_lenPtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_video_save_directory(
-    bool root,
-  ) {
-    return _wire_main_video_save_directory(
-      root,
-    );
-  }
-
-  late final _wire_main_video_save_directoryPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function(ffi.Bool)>>(
-          'wire_main_video_save_directory');
-  late final _wire_main_video_save_directory =
-      _wire_main_video_save_directoryPtr
-          .asFunction<WireSyncReturn Function(bool)>();
 
   WireSyncReturn wire_is_incoming_only() {
     return _wire_is_incoming_only();
@@ -9565,16 +8503,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
           'wire_is_disable_group_panel');
   late final _wire_is_disable_group_panel =
       _wire_is_disable_group_panelPtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_is_disable_installation() {
-    return _wire_is_disable_installation();
-  }
-
-  late final _wire_is_disable_installationPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_is_disable_installation');
-  late final _wire_is_disable_installation =
-      _wire_is_disable_installationPtr.asFunction<WireSyncReturn Function()>();
 
   void wire_is_preset_password(
     int port_,
@@ -9768,50 +8696,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
   late final _wire_query_onlines = _wire_query_onlinesPtr
       .asFunction<void Function(int, ffi.Pointer<wire_StringList>)>();
 
-  void wire_main_get_software_update_url(
-    int port_,
-  ) {
-    return _wire_main_get_software_update_url(
-      port_,
-    );
-  }
-
-  late final _wire_main_get_software_update_urlPtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int64)>>(
-          'wire_main_get_software_update_url');
-  late final _wire_main_get_software_update_url =
-      _wire_main_get_software_update_urlPtr.asFunction<void Function(int)>();
-
-  WireSyncReturn wire_main_get_new_version() {
-    return _wire_main_get_new_version();
-  }
-
-  late final _wire_main_get_new_versionPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_get_new_version');
-  late final _wire_main_get_new_version =
-      _wire_main_get_new_versionPtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_update_me() {
-    return _wire_main_update_me();
-  }
-
-  late final _wire_main_update_mePtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_update_me');
-  late final _wire_main_update_me =
-      _wire_main_update_mePtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_goto_install() {
-    return _wire_main_goto_install();
-  }
-
-  late final _wire_main_goto_installPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_goto_install');
-  late final _wire_main_goto_install =
-      _wire_main_goto_installPtr.asFunction<WireSyncReturn Function()>();
-
   WireSyncReturn wire_main_is_installed() {
     return _wire_main_is_installed();
   }
@@ -9821,17 +8705,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
           'wire_main_is_installed');
   late final _wire_main_is_installed =
       _wire_main_is_installedPtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_main_is_installed_lower_version() {
-    return _wire_main_is_installed_lower_version();
-  }
-
-  late final _wire_main_is_installed_lower_versionPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_is_installed_lower_version');
-  late final _wire_main_is_installed_lower_version =
-      _wire_main_is_installed_lower_versionPtr
-          .asFunction<WireSyncReturn Function()>();
 
   WireSyncReturn wire_main_is_installed_daemon(
     bool prompt,
@@ -9890,97 +8763,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
   late final _wire_main_is_can_input_monitoring =
       _wire_main_is_can_input_monitoringPtr
           .asFunction<WireSyncReturn Function(bool)>();
-
-  WireSyncReturn wire_main_is_share_rdp() {
-    return _wire_main_is_share_rdp();
-  }
-
-  late final _wire_main_is_share_rdpPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_is_share_rdp');
-  late final _wire_main_is_share_rdp =
-      _wire_main_is_share_rdpPtr.asFunction<WireSyncReturn Function()>();
-
-  void wire_main_set_share_rdp(
-    int port_,
-    bool enable,
-  ) {
-    return _wire_main_set_share_rdp(
-      port_,
-      enable,
-    );
-  }
-
-  late final _wire_main_set_share_rdpPtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int64, ffi.Bool)>>(
-          'wire_main_set_share_rdp');
-  late final _wire_main_set_share_rdp =
-      _wire_main_set_share_rdpPtr.asFunction<void Function(int, bool)>();
-
-  WireSyncReturn wire_install_show_run_without_install() {
-    return _wire_install_show_run_without_install();
-  }
-
-  late final _wire_install_show_run_without_installPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_install_show_run_without_install');
-  late final _wire_install_show_run_without_install =
-      _wire_install_show_run_without_installPtr
-          .asFunction<WireSyncReturn Function()>();
-
-  void wire_install_run_without_install(
-    int port_,
-  ) {
-    return _wire_install_run_without_install(
-      port_,
-    );
-  }
-
-  late final _wire_install_run_without_installPtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int64)>>(
-          'wire_install_run_without_install');
-  late final _wire_install_run_without_install =
-      _wire_install_run_without_installPtr.asFunction<void Function(int)>();
-
-  void wire_install_install_me(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> options,
-    ffi.Pointer<wire_uint_8_list> path,
-  ) {
-    return _wire_install_install_me(
-      port_,
-      options,
-      path,
-    );
-  }
-
-  late final _wire_install_install_mePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_install_install_me');
-  late final _wire_install_install_me = _wire_install_install_mePtr.asFunction<
-      void Function(
-          int, ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
-
-  WireSyncReturn wire_install_install_path() {
-    return _wire_install_install_path();
-  }
-
-  late final _wire_install_install_pathPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_install_install_path');
-  late final _wire_install_install_path =
-      _wire_install_install_pathPtr.asFunction<WireSyncReturn Function()>();
-
-  WireSyncReturn wire_install_install_options() {
-    return _wire_install_install_options();
-  }
-
-  late final _wire_install_install_optionsPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_install_install_options');
-  late final _wire_install_install_options =
-      _wire_install_install_optionsPtr.asFunction<WireSyncReturn Function()>();
 
   void wire_main_start_service(
     int port_,
@@ -10136,33 +8918,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
           'wire_main_has_valid_2fa_sync');
   late final _wire_main_has_valid_2fa_sync =
       _wire_main_has_valid_2fa_syncPtr.asFunction<WireSyncReturn Function()>();
-
-  void wire_main_verify_bot(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> token,
-  ) {
-    return _wire_main_verify_bot(
-      port_,
-      token,
-    );
-  }
-
-  late final _wire_main_verify_botPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_main_verify_bot');
-  late final _wire_main_verify_bot = _wire_main_verify_botPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
-  WireSyncReturn wire_main_has_valid_bot_sync() {
-    return _wire_main_has_valid_bot_sync();
-  }
-
-  late final _wire_main_has_valid_bot_syncPtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_main_has_valid_bot_sync');
-  late final _wire_main_has_valid_bot_sync =
-      _wire_main_has_valid_bot_syncPtr.asFunction<WireSyncReturn Function()>();
 
   void wire_main_account_auth(
     int port_,
@@ -10412,26 +9167,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
   late final _wire_main_test_if_valid_server =
       _wire_main_test_if_valid_serverPtr.asFunction<
           void Function(int, ffi.Pointer<wire_uint_8_list>, bool)>();
-
-  void wire_main_deploy_device(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> token,
-    ffi.Pointer<wire_uint_8_list> id,
-  ) {
-    return _wire_main_deploy_device(
-      port_,
-      token,
-      id,
-    );
-  }
-
-  late final _wire_main_deploy_devicePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_main_deploy_device');
-  late final _wire_main_deploy_device = _wire_main_deploy_devicePtr.asFunction<
-      void Function(
-          int, ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
 
   void wire_main_set_socks(
     int port_,
@@ -10944,48 +9679,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
   late final _wire_cm_switch_permission =
       _wire_cm_switch_permissionPtr.asFunction<
           void Function(int, int, ffi.Pointer<wire_uint_8_list>, bool)>();
-
-  WireSyncReturn wire_cm_can_elevate() {
-    return _wire_cm_can_elevate();
-  }
-
-  late final _wire_cm_can_elevatePtr =
-      _lookup<ffi.NativeFunction<WireSyncReturn Function()>>(
-          'wire_cm_can_elevate');
-  late final _wire_cm_can_elevate =
-      _wire_cm_can_elevatePtr.asFunction<WireSyncReturn Function()>();
-
-  void wire_cm_elevate_portable(
-    int port_,
-    int _conn_id,
-  ) {
-    return _wire_cm_elevate_portable(
-      port_,
-      _conn_id,
-    );
-  }
-
-  late final _wire_cm_elevate_portablePtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int64, ffi.Int32)>>(
-          'wire_cm_elevate_portable');
-  late final _wire_cm_elevate_portable =
-      _wire_cm_elevate_portablePtr.asFunction<void Function(int, int)>();
-
-  void wire_cm_switch_back(
-    int port_,
-    int _conn_id,
-  ) {
-    return _wire_cm_switch_back(
-      port_,
-      _conn_id,
-    );
-  }
-
-  late final _wire_cm_switch_backPtr =
-      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int64, ffi.Int32)>>(
-          'wire_cm_switch_back');
-  late final _wire_cm_switch_back =
-      _wire_cm_switch_backPtr.asFunction<void Function(int, int)>();
 
   WireSyncReturn wire_main_set_cursor_position(
     int x,
@@ -12425,127 +11118,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
           WireSyncReturn Function(
               ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
 
-  void wire_session_send_note(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    ffi.Pointer<wire_uint_8_list> note,
-  ) {
-    return _wire_session_send_note(
-      port_,
-      session_id,
-      note,
-    );
-  }
-
-  late final _wire_session_send_notePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_send_note');
-  late final _wire_session_send_note = _wire_session_send_notePtr.asFunction<
-      void Function(
-          int, ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_handle_screenshot(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    ffi.Pointer<wire_uint_8_list> action,
-  ) {
-    return _wire_session_handle_screenshot(
-      port_,
-      session_id,
-      action,
-    );
-  }
-
-  late final _wire_session_handle_screenshotPtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-                  ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_handle_screenshot');
-  late final _wire_session_handle_screenshot =
-      _wire_session_handle_screenshotPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_take_screenshot(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int display,
-  ) {
-    return _wire_session_take_screenshot(
-      port_,
-      session_id,
-      display,
-    );
-  }
-
-  late final _wire_session_take_screenshotPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.UintPtr)>>('wire_session_take_screenshot');
-  late final _wire_session_take_screenshot = _wire_session_take_screenshotPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>, int)>();
-
-  void wire_session_record_screen(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    bool start,
-  ) {
-    return _wire_session_record_screen(
-      port_,
-      session_id,
-      start,
-    );
-  }
-
-  late final _wire_session_record_screenPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Bool)>>('wire_session_record_screen');
-  late final _wire_session_record_screen = _wire_session_record_screenPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>, bool)>();
-
-  WireSyncReturn wire_session_get_is_recording(
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_get_is_recording(
-      session_id,
-    );
-  }
-
-  late final _wire_session_get_is_recordingPtr = _lookup<
-      ffi.NativeFunction<
-          WireSyncReturn Function(
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_get_is_recording');
-  late final _wire_session_get_is_recording = _wire_session_get_is_recordingPtr
-      .asFunction<WireSyncReturn Function(ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_toggle_privacy_mode(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    ffi.Pointer<wire_uint_8_list> impl_key,
-    bool on1,
-  ) {
-    return _wire_session_toggle_privacy_mode(
-      port_,
-      session_id,
-      impl_key,
-      on1,
-    );
-  }
-
-  late final _wire_session_toggle_privacy_modePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(
-              ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Bool)>>('wire_session_toggle_privacy_mode');
-  late final _wire_session_toggle_privacy_mode =
-      _wire_session_toggle_privacy_modePtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>, bool)>();
-
   void wire_session_send2fa(
     int port_,
     ffi.Pointer<wire_uint_8_list> session_id,
@@ -12672,63 +11244,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
       _wire_session_request_new_display_init_msgsPtr
           .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>, int)>();
 
-  void wire_session_toggle_virtual_display(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int index,
-    bool on1,
-  ) {
-    return _wire_session_toggle_virtual_display(
-      port_,
-      session_id,
-      index,
-      on1,
-    );
-  }
-
-  late final _wire_session_toggle_virtual_displayPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>, ffi.Int32,
-              ffi.Bool)>>('wire_session_toggle_virtual_display');
-  late final _wire_session_toggle_virtual_display =
-      _wire_session_toggle_virtual_displayPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int, bool)>();
-
-  void wire_session_restart_remote_device(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_restart_remote_device(
-      port_,
-      session_id,
-    );
-  }
-
-  late final _wire_session_restart_remote_devicePtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_restart_remote_device');
-  late final _wire_session_restart_remote_device =
-      _wire_session_restart_remote_devicePtr
-          .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_switch_sides(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_switch_sides(
-      port_,
-      session_id,
-    );
-  }
-
-  late final _wire_session_switch_sidesPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_switch_sides');
-  late final _wire_session_switch_sides = _wire_session_switch_sidesPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
   void wire_session_send_selected_session_id(
     int port_,
     ffi.Pointer<wire_uint_8_list> session_id,
@@ -12786,169 +11301,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
   late final _wire_session_change_prefer_codec =
       _wire_session_change_prefer_codecPtr
           .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
-  WireSyncReturn wire_session_get_audit_server_sync(
-    ffi.Pointer<wire_uint_8_list> session_id,
-    ffi.Pointer<wire_uint_8_list> typ,
-  ) {
-    return _wire_session_get_audit_server_sync(
-      session_id,
-      typ,
-    );
-  }
-
-  late final _wire_session_get_audit_server_syncPtr = _lookup<
-          ffi.NativeFunction<
-              WireSyncReturn Function(ffi.Pointer<wire_uint_8_list>,
-                  ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_get_audit_server_sync');
-  late final _wire_session_get_audit_server_sync =
-      _wire_session_get_audit_server_syncPtr.asFunction<
-          WireSyncReturn Function(
-              ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
-
-  WireSyncReturn wire_session_get_last_audit_note(
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_get_last_audit_note(
-      session_id,
-    );
-  }
-
-  late final _wire_session_get_last_audit_notePtr = _lookup<
-          ffi.NativeFunction<
-              WireSyncReturn Function(ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_get_last_audit_note');
-  late final _wire_session_get_last_audit_note =
-      _wire_session_get_last_audit_notePtr
-          .asFunction<WireSyncReturn Function(ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_set_audit_guid(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    ffi.Pointer<wire_uint_8_list> guid,
-  ) {
-    return _wire_session_set_audit_guid(
-      port_,
-      session_id,
-      guid,
-    );
-  }
-
-  late final _wire_session_set_audit_guidPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_set_audit_guid');
-  late final _wire_session_set_audit_guid =
-      _wire_session_set_audit_guidPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>();
-
-  WireSyncReturn wire_session_get_audit_guid(
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_get_audit_guid(
-      session_id,
-    );
-  }
-
-  late final _wire_session_get_audit_guidPtr = _lookup<
-      ffi.NativeFunction<
-          WireSyncReturn Function(
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_get_audit_guid');
-  late final _wire_session_get_audit_guid = _wire_session_get_audit_guidPtr
-      .asFunction<WireSyncReturn Function(ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_open_terminal(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int terminal_id,
-    int rows,
-    int cols,
-  ) {
-    return _wire_session_open_terminal(
-      port_,
-      session_id,
-      terminal_id,
-      rows,
-      cols,
-    );
-  }
-
-  late final _wire_session_open_terminalPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>, ffi.Int32,
-              ffi.Uint32, ffi.Uint32)>>('wire_session_open_terminal');
-  late final _wire_session_open_terminal =
-      _wire_session_open_terminalPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int, int, int)>();
-
-  void wire_session_send_terminal_input(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int terminal_id,
-    ffi.Pointer<wire_uint_8_list> data,
-  ) {
-    return _wire_session_send_terminal_input(
-      port_,
-      session_id,
-      terminal_id,
-      data,
-    );
-  }
-
-  late final _wire_session_send_terminal_inputPtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-                  ffi.Int32, ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_send_terminal_input');
-  late final _wire_session_send_terminal_input =
-      _wire_session_send_terminal_inputPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int,
-              ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_resize_terminal(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int terminal_id,
-    int rows,
-    int cols,
-  ) {
-    return _wire_session_resize_terminal(
-      port_,
-      session_id,
-      terminal_id,
-      rows,
-      cols,
-    );
-  }
-
-  late final _wire_session_resize_terminalPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>, ffi.Int32,
-              ffi.Uint32, ffi.Uint32)>>('wire_session_resize_terminal');
-  late final _wire_session_resize_terminal =
-      _wire_session_resize_terminalPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int, int, int)>();
-
-  void wire_session_close_terminal(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int terminal_id,
-  ) {
-    return _wire_session_close_terminal(
-      port_,
-      session_id,
-      terminal_id,
-    );
-  }
-
-  late final _wire_session_close_terminalPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Int32)>>('wire_session_close_terminal');
-  late final _wire_session_close_terminal = _wire_session_close_terminalPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>, int)>();
 
   void wire_session_read_remote_dir(
     int port_,
@@ -13396,145 +11748,6 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
               ffi.Pointer<wire_uint_8_list>,
               ffi.Pointer<wire_uint_8_list>,
               bool)>();
-
-  void wire_session_elevate_direct(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_elevate_direct(
-      port_,
-      session_id,
-    );
-  }
-
-  late final _wire_session_elevate_directPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_elevate_direct');
-  late final _wire_session_elevate_direct = _wire_session_elevate_directPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_elevate_with_logon(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> _session_id,
-    ffi.Pointer<wire_uint_8_list> _username,
-    ffi.Pointer<wire_uint_8_list> _password,
-  ) {
-    return _wire_session_elevate_with_logon(
-      port_,
-      _session_id,
-      _username,
-      _password,
-    );
-  }
-
-  late final _wire_session_elevate_with_logonPtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Void Function(
-                  ffi.Int64,
-                  ffi.Pointer<wire_uint_8_list>,
-                  ffi.Pointer<wire_uint_8_list>,
-                  ffi.Pointer<wire_uint_8_list>)>>(
-      'wire_session_elevate_with_logon');
-  late final _wire_session_elevate_with_logon =
-      _wire_session_elevate_with_logonPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_add_port_forward(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int local_port,
-    ffi.Pointer<wire_uint_8_list> remote_host,
-    int remote_port,
-  ) {
-    return _wire_session_add_port_forward(
-      port_,
-      session_id,
-      local_port,
-      remote_host,
-      remote_port,
-    );
-  }
-
-  late final _wire_session_add_port_forwardPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(
-              ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Int32,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Int32)>>('wire_session_add_port_forward');
-  late final _wire_session_add_port_forward =
-      _wire_session_add_port_forwardPtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int,
-              ffi.Pointer<wire_uint_8_list>, int)>();
-
-  void wire_session_remove_port_forward(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int local_port,
-  ) {
-    return _wire_session_remove_port_forward(
-      port_,
-      session_id,
-      local_port,
-    );
-  }
-
-  late final _wire_session_remove_port_forwardPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>,
-              ffi.Int32)>>('wire_session_remove_port_forward');
-  late final _wire_session_remove_port_forward =
-      _wire_session_remove_port_forwardPtr
-          .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>, int)>();
-
-  void wire_session_new_rdp(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-  ) {
-    return _wire_session_new_rdp(
-      port_,
-      session_id,
-    );
-  }
-
-  late final _wire_session_new_rdpPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_new_rdp');
-  late final _wire_session_new_rdp = _wire_session_new_rdpPtr
-      .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
-
-  void wire_session_printer_response(
-    int port_,
-    ffi.Pointer<wire_uint_8_list> session_id,
-    int id,
-    ffi.Pointer<wire_uint_8_list> path,
-    ffi.Pointer<wire_uint_8_list> printer_name,
-  ) {
-    return _wire_session_printer_response(
-      port_,
-      session_id,
-      id,
-      path,
-      printer_name,
-    );
-  }
-
-  late final _wire_session_printer_responsePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Void Function(
-              ffi.Int64,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Int32,
-              ffi.Pointer<wire_uint_8_list>,
-              ffi.Pointer<wire_uint_8_list>)>>('wire_session_printer_response');
-  late final _wire_session_printer_response =
-      _wire_session_printer_responsePtr.asFunction<
-          void Function(int, ffi.Pointer<wire_uint_8_list>, int,
-              ffi.Pointer<wire_uint_8_list>, ffi.Pointer<wire_uint_8_list>)>();
 
   ffi.Pointer<wire_StringList> new_StringList_0(
     int len,

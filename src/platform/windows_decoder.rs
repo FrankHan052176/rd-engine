@@ -95,7 +95,11 @@ impl From<WindowsDecoderStats> for crate::viewer::decoder::DecoderProjection {
     fn from(stats:WindowsDecoderStats)->Self {
         Self {pushed_units:stats.pushed_units,render_submissions:stats.published_images,
             // Publication counts are real; this backend has no elapsed-time samples.
-            render_timing:None,queued_units:stats.queued_units,
+            render_timing:None,
+            // Nor does it time the OpenHarmony input and API stages, so it states
+            // that absence rather than four zero aggregates.
+            stage_timings: None,
+            queued_units:stats.queued_units,
             // Only the worker's actual retirement verdict can confirm ownership.
             closed:stats.closed&&stats.cleanup==Some(CleanupVerdict::Confirmed),
             quarantined:stats.quarantined||stats.cleanup==Some(CleanupVerdict::Unconfirmed),

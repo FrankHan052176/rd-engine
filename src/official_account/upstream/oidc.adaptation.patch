@@ -1,6 +1,6 @@
 --- a/oidc.rs
 +++ b/oidc.rs
-@@ -1,426 +1,538 @@
+@@ -1,426 +1,591 @@
 -use super::HbbHttpResponse;
 -use crate::hbbs_http::create_http_client_with_url;
 -use hbb_common::{config::LocalConfig, log, ResultType};
@@ -890,7 +890,7 @@
 +    let attempt = {
 +        let session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 +        if session.attempt_receipt.as_deref() != Some(attempt_receipt) {
-+            bail!("Unknown or retired account authentication attempt");
++            return Err(state::AccountError::StaleReceipt.into());
 +        }
 +        session.attempt.clone().ok_or_else(|| anyhow!("No account authentication attempt"))?
 +    };
@@ -902,10 +902,63 @@
 +/// Return official URL/wait/auth-body/error shapes. Terminal bodies are delivered
 +/// once, and a final B check rejects results canceled while being serialized.
 +pub fn result(attempt_receipt: &str) -> ResultType<String> {
++    let mut response = consume(attempt_receipt, |session|
++        session.encode_result().map(Zeroizing::new))?;
++    Ok(std::mem::take(&mut *response))
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub enum PublicState {
++    Pending,
++    UrlReady,
++    /// The credential was committed to the account owner; `committed_receipt` is set.
++    Complete,
++    Failed,
++    /// A terminal body which is not an access token (email/second factor): the
++    /// account was not signed in and no business flow exists in this core.
++    NeedsBusiness,
++}
++
++/// The sign-in state without the `auth_body` (access token and secret), which is
++/// not serialized for native consumers at all: the committed credential stays in
++/// the account owner and callers re-read `state::public_snapshot`.
++pub struct PublicResult {
++    pub state: PublicState,
++    pub message: String,
++    pub url: Option<String>,
++    pub committed_receipt: Option<String>,
++}
++
++impl OidcSession {
++    fn public(&self) -> PublicResult {
++        let state = if !self.failed_msg.is_empty() {
++            PublicState::Failed
++        } else if self.auth_body.is_some() {
++            if self.account_scope.is_some() { PublicState::Complete } else { PublicState::NeedsBusiness }
++        } else if self.url.is_some() {
++            PublicState::UrlReady
++        } else {
++            PublicState::Pending
++        };
++        PublicResult {
++            state,
++            message: (if self.failed_msg.is_empty() { self.state_msg } else { self.failed_msg }).to_owned(),
++            url: self.url.as_ref().map(|url| url.as_str().to_owned()),
++            committed_receipt: self.account_scope.clone(),
++        }
++    }
++}
++
++/// Same one-shot terminal delivery and fencing as `result`, for native bridges.
++pub fn result_public(attempt_receipt: &str) -> ResultType<PublicResult> {
++    consume(attempt_receipt, |session| Ok(session.public()))
++}
++
++fn consume<T>(attempt_receipt: &str, project: impl FnOnce(&OidcSession) -> ResultType<T>) -> ResultType<T> {
 +    let attempt = {
 +        let session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 +        if session.attempt_receipt.as_deref() != Some(attempt_receipt) {
-+            bail!("Unknown or retired account authentication attempt");
++            return Err(state::AccountError::StaleReceipt.into());
 +        }
 +        session.attempt.clone().ok_or_else(|| anyhow!("No account authentication attempt"))?
 +    };
@@ -913,7 +966,7 @@
 +        let _ = discard(&attempt);
 +        bail!("Account authentication was canceled or replaced");
 +    }
-+    let mut response = {
++    let response = {
 +        let mut session = OIDC_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 +        if !session.is_current(&attempt) || session.attempt_receipt.as_deref() != Some(attempt_receipt) {
 +            bail!("Account authentication was replaced");
@@ -928,7 +981,7 @@
 +        if session.terminal_consumed {
 +            bail!("Account authentication result was already consumed");
 +        }
-+        let encoded = Zeroizing::new(session.encode_result()?);
++        let projected = project(&*session)?;
 +        if !session.running {
 +            // Keep only non-secret cancellation ownership so closing the
 +            // successful dialog can retire its witness without logging out.
@@ -937,8 +990,8 @@
 +            session.account_scope = None;
 +            session.terminal_consumed = true;
 +        }
-+        encoded
++        projected
 +    };
 +    ensure_current(&attempt)?;
-+    Ok(std::mem::take(&mut *response))
++    Ok(response)
 +}

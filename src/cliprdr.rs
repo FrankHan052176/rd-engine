@@ -2466,6 +2466,9 @@ fn finish_entry(file: &mut ReceivingFile) -> Result<(), CliprdrError> {
         .map_err(|error| CliprdrError::disk(DiskOp::Flush, &error))?;
     drop(handle);
     apply_mode(&file.temporary, file.perm)?;
+    // A descriptor may name a nested file without separate directory records.
+    // Its validated destination still needs its parent before the final rename.
+    make_parent(&file.destination)?;
     fs::rename(&file.temporary, &file.destination)
         .map_err(|error| CliprdrError::disk(DiskOp::Rename, &error))
 }
@@ -3400,7 +3403,7 @@ mod tests {
 
     /// Drives one peer offer of a single file through to the event that published
     /// its paths.
-    async fn fetch_one_file(harness: &mut Harness, name: &str, contents: &[u8]) -> CliprdrEvent {
+    async fn fetch_one_file(harness: &mut Harness, name: &str, contents: &[u8]) {
         harness
             .handle
             .offer_inbound(peer_format_list())
@@ -3446,12 +3449,12 @@ mod tests {
             ))
             .await
             .expect("sent");
-        let event = next_event(&harness.handle).await;
-        assert!(
-            matches!(event, CliprdrEvent::Files { .. }),
-            "not a files event: {event:?}"
-        );
-        event
+        // Wait without taking the fact: the caller is testing its retention.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !harness.handle.has_events() {
+            assert!(Instant::now() < deadline, "the owner published no event");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
     }
 
     /// The event mailbox keeps a fact until a consumer takes it, and a read does
@@ -3468,8 +3471,17 @@ mod tests {
             .handle
             .submit(CliprdrCommand::SetRoot(root))
             .expect("the root is queued");
-        let event = fetch_one_file(&mut harness, "note.txt", b"kept").await;
-        let paths = match &event {
+        fetch_one_file(&mut harness, "note.txt", b"kept").await;
+
+        // Reading is not taking: a notifier may look as often as it likes.
+        assert!(harness.handle.has_events());
+        assert_eq!(harness.handle.pending_events(), 1);
+        assert!(harness.handle.has_events());
+        assert_eq!(harness.handle.pending_events(), 1);
+        // The applying consumer takes it exactly once.
+        let taken = harness.handle.take_events();
+        assert_eq!(taken.len(), 1);
+        let paths = match &taken[0] {
             CliprdrEvent::Files {
                 paths, revision, ..
             } => {
@@ -3486,15 +3498,6 @@ mod tests {
             b"kept".to_vec()
         );
 
-        // Reading is not taking: a notifier may look as often as it likes.
-        assert!(harness.handle.has_events());
-        assert_eq!(harness.handle.pending_events(), 1);
-        assert!(harness.handle.has_events());
-        assert_eq!(harness.handle.pending_events(), 1);
-        // The applying consumer takes it exactly once.
-        let taken = harness.handle.take_events();
-        assert_eq!(taken.len(), 1);
-        assert!(matches!(taken[0], CliprdrEvent::Files { .. }));
         assert!(!harness.handle.has_events());
         assert!(harness.handle.take_events().is_empty());
 
@@ -3681,7 +3684,11 @@ mod tests {
             })
             .await;
         assert!(owner.receive.is_none(), "a late answer started a receive");
-        assert!(owner.descriptor_slot.is_none(), "the tombstone drained");
+        assert!(
+            matches!(owner.descriptor_slot, Some(DescriptorSlot::InFlight { .. })),
+            "the drained tombstone was replaced by the waiting offer's request"
+        );
+        assert!(owner.pending_offer.is_none());
 
         // Draining frees the slot for the offer that waited: a new request.
         let second = outbound.try_recv().expect("the waiting offer's own request");

@@ -1165,8 +1165,8 @@ pub fn main_get_displays() -> SyncReturn<String> {
 }
 
 pub fn main_get_sound_inputs() -> Vec<String> {
-    // The engine's login request disables audio, so it has no input devices to
-    // enumerate.
+    // Receive-side playback belongs to the Viewer. This bridge exposes no
+    // microphone or capture devices.
     Vec::new()
 }
 
@@ -1227,19 +1227,6 @@ pub fn main_supported_input_source() -> SyncReturn<String> {
     SyncReturn(json!([[FLUTTER_INPUT_SOURCE, FLUTTER_INPUT_SOURCE_TIP]]).to_string())
 }
 
-pub fn main_default_privacy_mode_impl() -> SyncReturn<String> {
-    SyncReturn(String::new())
-}
-
-pub fn main_supported_privacy_mode_impls() -> SyncReturn<String> {
-    SyncReturn("[]".to_owned())
-}
-
-pub fn main_get_printer_names() -> SyncReturn<String> {
-    // No printer service in this bridge.
-    SyncReturn("[]".to_owned())
-}
-
 pub fn main_get_trusted_devices() -> String {
     "[]".to_owned()
 }
@@ -1262,10 +1249,6 @@ pub fn main_get_login_device_info() -> Result<SyncReturn<String>> {
 /// so the fields stay usable without this artifact inventing a limit.
 pub fn main_max_encrypt_len() -> SyncReturn<usize> {
     SyncReturn(ENCRYPT_MAX_LEN)
-}
-
-pub fn main_video_save_directory(root: bool) -> Result<SyncReturn<String>> {
-    unsupported_result("main_video_save_directory")
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,12 +1283,6 @@ pub fn is_disable_account() -> SyncReturn<bool> {
 
 pub fn is_disable_group_panel() -> SyncReturn<bool> {
     SyncReturn(false)
-}
-
-pub fn is_disable_installation() -> SyncReturn<bool> {
-    // There is no installer in this artifact: the client's install card would
-    // offer an action this build cannot perform.
-    SyncReturn(true)
 }
 
 pub fn is_preset_password() -> Result<bool> {
@@ -1404,28 +1381,8 @@ pub fn query_onlines(ids: Vec<String>) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Boot: updates, installers, accounts
+// Boot: install state, service control and accounts
 // ---------------------------------------------------------------------------
-
-pub fn main_get_software_update_url() -> Result<()> {
-    unsupported_result("main_get_software_update_url")
-}
-
-pub fn main_get_new_version() -> SyncReturn<String> {
-    // No update check has run and none can run here, so there is no version to
-    // name; the client calls this synchronously and treats "" as "unknown".
-    SyncReturn(unsupported_absence("main_get_new_version"))
-}
-
-pub fn main_update_me() -> SyncReturn<bool> {
-    // Nothing starts, so the answer is false.
-    SyncReturn(unsupported_absence("main_update_me"))
-}
-
-pub fn main_goto_install() -> SyncReturn<bool> {
-    // False tells the official caller that no installer was started.
-    SyncReturn(unsupported_absence("main_goto_install"))
-}
 
 /// The build's real install state. The client calls this while it builds its
 /// home page, its settings fields and its safety tab, so it must answer: on
@@ -1433,11 +1390,6 @@ pub fn main_goto_install() -> SyncReturn<bool> {
 /// platform with no installer to have run it is the true "not installed".
 pub fn main_is_installed() -> SyncReturn<bool> {
     SyncReturn(platform::is_installed())
-}
-
-pub fn main_is_installed_lower_version() -> SyncReturn<bool> {
-    // No installed version is recorded, so none of it is lower than this one.
-    SyncReturn(false)
 }
 
 pub fn main_is_installed_daemon(prompt: bool) -> SyncReturn<bool> {
@@ -1455,8 +1407,13 @@ pub fn main_is_process_trusted(prompt: bool) -> SyncReturn<bool> {
 
 pub fn main_is_can_screen_recording(prompt: bool) -> SyncReturn<bool> {
     let _ = prompt;
-    // There is no screen-capture path in a viewer-only artifact, so the
-    // capability is genuinely absent.
+    // This is the pinned client's *local* screen-capture permission - on macOS
+    // the ScreenCapture consent of the process that captures this machine's
+    // desktop (`src/platform/macos.rs:128`), asked by the incoming/host pages
+    // (`desktop_home_page.dart:479`). It is not a remote-session recording
+    // switch: this artifact publishes no recording API at all. It captures no
+    // local desktop, so the capability and the prompt behind it are genuinely
+    // absent.
     SyncReturn(false)
 }
 
@@ -1464,36 +1421,6 @@ pub fn main_is_can_input_monitoring(prompt: bool) -> SyncReturn<bool> {
     let _ = prompt;
     // Same absence: no native input monitoring is implemented here.
     SyncReturn(false)
-}
-
-pub fn main_is_share_rdp() -> SyncReturn<bool> {
-    // Sharing this machine over RDP is a host capability this artifact has not
-    // got.
-    SyncReturn(false)
-}
-
-pub fn main_set_share_rdp(enable: bool) -> Result<()> {
-    unsupported_result("main_set_share_rdp")
-}
-
-pub fn install_show_run_without_install() -> Result<SyncReturn<bool>> {
-    unsupported_result("install_show_run_without_install")
-}
-
-pub fn install_run_without_install() -> Result<()> {
-    unsupported_result("install_run_without_install")
-}
-
-pub fn install_install_me(options: String, path: String) -> Result<()> {
-    unsupported_result("install_install_me")
-}
-
-pub fn install_install_path() -> Result<SyncReturn<String>> {
-    unsupported_result("install_install_path")
-}
-
-pub fn install_install_options() -> Result<SyncReturn<String>> {
-    unsupported_result("install_install_options")
 }
 
 pub fn main_start_service() -> Result<()> {
@@ -1564,15 +1491,6 @@ pub fn main_verify2fa(code: String) -> Result<bool> {
 pub fn main_has_valid_2fa_sync() -> SyncReturn<bool> {
     // No host 2FA secret is created or kept here, so no valid 2FA exists. The
     // safety page reads this while it builds.
-    SyncReturn(false)
-}
-
-pub fn main_verify_bot(token: String) -> Result<String> {
-    unsupported_result("main_verify_bot")
-}
-
-pub fn main_has_valid_bot_sync() -> SyncReturn<bool> {
-    // Same real absence: this artifact has no bot credential.
     SyncReturn(false)
 }
 
@@ -1666,10 +1584,6 @@ pub fn main_test_if_valid_server(server: String, test_with_proxy: bool) -> Resul
         &server,
         test_with_proxy,
     ))
-}
-
-pub fn main_deploy_device(token: String, id: String) -> Result<String> {
-    unsupported_result("main_deploy_device")
 }
 
 pub fn main_set_socks(_proxy: String, _username: String, _password: String) -> Result<()> {
@@ -1881,18 +1795,6 @@ pub fn cm_switch_permission(conn_id: i32, name: String, enabled: bool) -> Result
     }
     #[cfg(not(target_os = "windows"))]
     unsupported_result("cm_switch_permission")
-}
-
-pub fn cm_can_elevate() -> SyncReturn<bool> {
-    SyncReturn(false)
-}
-
-pub fn cm_elevate_portable(_conn_id: i32) -> Result<()> {
-    unsupported_result("cm_elevate_portable")
-}
-
-pub fn cm_switch_back(_conn_id: i32) -> Result<()> {
-    unsupported_result("cm_switch_back")
 }
 
 // ---------------------------------------------------------------------------
@@ -2130,6 +2032,15 @@ struct Session {
     /// a viewer runs, its own requested state is the answer and this is no
     /// longer consulted, so the two are never two opinions about one value.
     session_options: Mutex<SessionOptions>,
+    /// This attempt's platform clipboard owner: one bounded thread, started with
+    /// the viewer and stopped and joined with it.
+    ///
+    /// The pinned official client has no bridge call for the ordinary clipboard
+    /// at all - its own native half owns that exchange, and `src/clipboard.rs`
+    /// here records those callsites - so the platform side of it belongs to this
+    /// crate rather than to a Dart function nothing calls. `None` is a session
+    /// with no live viewer, or one whose owner thread could not be started.
+    clipboard: Mutex<Option<crate::clipboard::Owner>>,
 }
 
 impl Session {
@@ -2157,6 +2068,7 @@ impl Session {
             unverified_accepted: AtomicBool::new(false),
             keyboard: Mutex::new(KeyboardState::default()),
             session_options: Mutex::new(SessionOptions::default()),
+            clipboard: Mutex::new(None),
         }
     }
 
@@ -2397,6 +2309,16 @@ impl Session {
         self.frames.restart();
         if let Some(stop) = lock(&self.stop).take() {
             stop.store(true, Ordering::SeqCst);
+        }
+        // The platform clipboard owner is retired with this viewer, and it is
+        // joined *before* the viewer is closed: once this returns, nothing this
+        // session started can still read or write a pasteboard, so a closed
+        // session cannot apply content afterwards. The wait is bounded - one poll
+        // interval plus whatever one platform clipboard call takes to return -
+        // and the handle is consumed here rather than dropped unwatched.
+        let clipboard = lock(&self.clipboard).take();
+        if let Some(clipboard) = clipboard {
+            clipboard.stop_and_join();
         }
         if let Some(viewer) = lock(&self.viewer).take() {
             viewer.request_close();
@@ -2665,7 +2587,7 @@ fn rendezvous_config(peer: &str) -> Result<RendezvousConfig> {
         id: peer.to_owned(),
         rendezvous_server,
         licence_key,
-        server_key,
+        server_key: Some(server_key),
         relay_server: (!relay.is_empty()).then_some(relay),
         connect_timeout: RENDEZVOUS_TIMEOUT,
     })
@@ -2762,8 +2684,25 @@ fn start_viewer(session: &Arc<Session>) -> Result<()> {
     .map_err(|error| anyhow::anyhow!("viewer start failed: {error}"))?;
 
     *lock(&session.viewer) = Some(viewer.clone());
-    spawn_pump(session, viewer, credential_was_empty);
+    spawn_pump(session, viewer.clone(), credential_was_empty);
+    // The ordinary clipboard has no bridge call in the pinned client, so this
+    // adapter owns its platform half for exactly the lifetime of this viewer: one
+    // bounded thread, started here and stopped and joined by `stop_viewer`, which
+    // is what both `session_close` and every restart go through.
+    *lock(&session.clipboard) = Some(crate::clipboard::start(viewer, clipboard_events(session)));
     Ok(())
+}
+
+/// The event sink the platform clipboard owner publishes through: this session's
+/// own stream, held weakly so a closed session is not kept alive by its own
+/// clipboard thread.
+fn clipboard_events(session: &Arc<Session>) -> crate::clipboard::EventSink {
+    let session = Arc::downgrade(session);
+    Arc::new(move |event: serde_json::Value| {
+        if let Some(session) = session.upgrade() {
+            session.emit_json(event);
+        }
+    })
 }
 
 /// The task that turns the viewer's own state into the client's events. The
@@ -2854,6 +2793,7 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credent
     // is what makes one demand one form and a refusal a new one.
     let mut announced_password = 0u64;
     let mut last_error = String::new();
+    let mut last_audio_error = String::new();
     while !stop.load(Ordering::SeqCst) {
         let Some(session) = weak.upgrade() else {
             return;
@@ -2959,6 +2899,13 @@ fn pump(weak: Weak<Session>, viewer: Arc<Viewer>, stop: Arc<AtomicBool>, credent
             if *error != last_error {
                 last_error = error.clone();
                 set_last_error(format!("{}: {error}", session.session_id));
+            }
+        }
+        // A playback-device failure is diagnostic, not a failed control session.
+        if let Some(error) = snapshot.audio.as_ref().and_then(|audio| audio.last_error.as_ref()) {
+            if *error != last_audio_error {
+                last_audio_error = error.clone();
+                set_last_error(format!("{}: audio playback: {error}", session.session_id));
             }
         }
         if snapshot.closed {
@@ -4273,38 +4220,9 @@ pub fn session_is_keyboard_mode_supported(session_id: SessionID, mode: String) -
     SyncReturn(session_record(session_id).is_some() && mode == "legacy")
 }
 
-pub fn session_send_note(session_id: SessionID, note: String) -> Result<()> {
-    unsupported_result("session_send_note")
-}
-
 // ---------------------------------------------------------------------------
-// Sessions: screenshot, recording, privacy, displays and the other roles
+// Sessions: second factor, lock screen, displays and codecs
 // ---------------------------------------------------------------------------
-
-pub fn session_handle_screenshot(session_id: SessionID, action: String) -> Result<String> {
-    unsupported_result("session_handle_screenshot")
-}
-
-pub fn session_take_screenshot(session_id: SessionID, display: usize) -> Result<()> {
-    unsupported_result("session_take_screenshot")
-}
-
-pub fn session_record_screen(session_id: SessionID, start: bool) -> Result<()> {
-    unsupported_result("session_record_screen")
-}
-
-pub fn session_get_is_recording(session_id: SessionID) -> SyncReturn<bool> {
-    let _ = session_id;
-    SyncReturn(false)
-}
-
-pub fn session_toggle_privacy_mode(
-    session_id: SessionID,
-    impl_key: String,
-    on: bool,
-) -> Result<()> {
-    unsupported_result("session_toggle_privacy_mode")
-}
 
 /// Answers the peer's second-factor step on this same, still-open session.
 ///
@@ -4418,18 +4336,6 @@ pub fn session_request_new_display_init_msgs(session_id: SessionID, display: usi
     unsupported_result("session_request_new_display_init_msgs")
 }
 
-pub fn session_toggle_virtual_display(session_id: SessionID, index: i32, on: bool) -> Result<()> {
-    unsupported_result("session_toggle_virtual_display")
-}
-
-pub fn session_restart_remote_device(session_id: SessionID) -> Result<()> {
-    unsupported_result("session_restart_remote_device")
-}
-
-pub fn session_switch_sides(session_id: SessionID) -> Result<()> {
-    unsupported_result("session_switch_sides")
-}
-
 pub fn session_send_selected_session_id(session_id: SessionID, sid: String) -> Result<()> {
     unsupported_result("session_send_selected_session_id")
 }
@@ -4462,58 +4368,9 @@ pub fn session_change_prefer_codec(session_id: SessionID) -> Result<()> {
     apply_session_option(session_id, SessionOptionChange::CodecPreference(prefer))
 }
 
-pub fn session_get_audit_server_sync(
-    session_id: SessionID,
-    typ: String,
-) -> Result<SyncReturn<String>> {
-    unsupported_result("session_get_audit_server_sync")
-}
-
-pub fn session_get_last_audit_note(session_id: SessionID) -> Result<SyncReturn<String>> {
-    unsupported_result("session_get_last_audit_note")
-}
-
-pub fn session_set_audit_guid(session_id: SessionID, guid: String) -> Result<()> {
-    unsupported_result("session_set_audit_guid")
-}
-
-pub fn session_get_audit_guid(session_id: SessionID) -> Result<SyncReturn<String>> {
-    unsupported_result("session_get_audit_guid")
-}
-
 // ---------------------------------------------------------------------------
-// Sessions: terminals, file transfer and port forwarding
+// Sessions: file transfer
 // ---------------------------------------------------------------------------
-
-pub fn session_open_terminal(
-    session_id: SessionID,
-    terminal_id: i32,
-    rows: u32,
-    cols: u32,
-) -> Result<()> {
-    unsupported_result("session_open_terminal")
-}
-
-pub fn session_send_terminal_input(
-    session_id: SessionID,
-    terminal_id: i32,
-    data: String,
-) -> Result<()> {
-    unsupported_result("session_send_terminal_input")
-}
-
-pub fn session_resize_terminal(
-    session_id: SessionID,
-    terminal_id: i32,
-    rows: u32,
-    cols: u32,
-) -> Result<()> {
-    unsupported_result("session_resize_terminal")
-}
-
-pub fn session_close_terminal(session_id: SessionID, terminal_id: i32) -> Result<()> {
-    unsupported_result("session_close_terminal")
-}
 
 pub fn session_read_remote_dir(
     session_id: SessionID,
@@ -4641,44 +4498,6 @@ pub fn session_rename_file(
     is_remote: bool,
 ) -> Result<()> {
     unsupported_result("session_rename_file")
-}
-
-pub fn session_elevate_direct(session_id: SessionID) -> Result<()> {
-    unsupported_result("session_elevate_direct")
-}
-
-pub fn session_elevate_with_logon(
-    _session_id: SessionID,
-    _username: String,
-    _password: String,
-) -> Result<()> {
-    anyhow::bail!("unsupported: elevation credentials are not handled by this artifact")
-}
-
-pub fn session_add_port_forward(
-    session_id: SessionID,
-    local_port: i32,
-    remote_host: String,
-    remote_port: i32,
-) -> Result<()> {
-    unsupported_result("session_add_port_forward")
-}
-
-pub fn session_remove_port_forward(session_id: SessionID, local_port: i32) -> Result<()> {
-    unsupported_result("session_remove_port_forward")
-}
-
-pub fn session_new_rdp(session_id: SessionID) -> Result<()> {
-    unsupported_result("session_new_rdp")
-}
-
-pub fn session_printer_response(
-    session_id: SessionID,
-    id: i32,
-    path: String,
-    printer_name: String,
-) -> Result<()> {
-    unsupported_result("session_printer_response")
 }
 
 #[cfg(test)]

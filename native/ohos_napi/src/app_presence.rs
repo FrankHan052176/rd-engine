@@ -140,7 +140,7 @@ fn approve(profile_json: &str) -> Result<String, String> {
     let value: Value = serde_json::from_str(profile_json)
         .map_err(|_| "server profile must be a JSON object".to_string())?;
     if value.get("schemaVersion").and_then(Value::as_u64) != Some(2)
-        || value.get("approval").and_then(Value::as_str) != Some("explicit-save")
+        || !super::server_profile::accepted_approval(&value)
         || !value
             .get("revision")
             .and_then(Value::as_u64)

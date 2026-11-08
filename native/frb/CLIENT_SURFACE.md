@@ -5,7 +5,7 @@ application. It adapts the official RustDesk Flutter client's ABI to the shared
 `rd-engine` library. HarmonyOS builds use `native/ohos_napi` instead; the separate
 `R_RustDesk-Flutter` HarmonyOS port keeps its own kernel and release chain.
 
-## Deliberately excluded communication features
+## Deliberately excluded features
 
 Camera viewing/streaming, text chat and voice calls are outside this product by
 the user's 2026-09-24 decision, not missing parity features to implement later.
@@ -13,18 +13,32 @@ The paired bridge omits their eight chat/call APIs and the camera argument from
 session creation/adoption. Regenerate both binding halves for this reduced ABI;
 an unmodified official client's generated bindings are not interchangeable.
 
-`patches/official-client-product-scope.patch` is the final required consumer
-adaptation, after the render, account, SDK-lock and LAN patches. It removes the
+`patches/official-client-product-scope.patch` follows the render, account,
+SDK-lock and LAN patches. It removes the
 three feature-specific consumer paths instead of leaving callable unsupported
 buttons. Old camera commands/URLs/window requests must be rejected, never
 reinterpreted as ordinary desktop access or another window type. Other window
 types keep their existing serialized identities.
 
-This boundary does not cut desktop video, desktop audio playback, screen
-recording or local QR scanning, and does not imply those unavailable features
-have been implemented. Upstream protocol/source snapshots may still name the
-excluded messages; their presence is not a product service or permission to
-restore one. The separate HarmonyOS Flutter product is unchanged.
+The later accepted pruning decision also removes recording/automatic recording
+and MP4/WebM saving, in-app installation/update/deployment, enterprise audit and
+bot verification, remote terminals, TCP forwarding, RustDesk RDP tunnels, remote
+printing, virtual displays, side switching, session notes/screenshots, privacy
+mode, elevation and remote reboot. Their dedicated FRB APIs are removed, not
+retained as unsupported operations. The runner's
+`rustdesk_is_disable_installation` C export remains a build-capability probe,
+not an installation action.
+
+`patches/official-client-scope-pruning.patch` removes these consumer paths after
+the product-scope and host-control patches; both CI and the private Windows
+build replay the same ordered patch stack.
+
+Desktop video/audio, native RDP/VNC, clipboard, basic file transfer, accounts and
+cloud address books (pinned official Dart implementation retained) and local
+device/server configuration are retained.
+Local QR scanning is not part of this cut. Upstream protocol/source
+snapshots may still name excluded messages; their presence is not permission to
+restore a service. The separate HarmonyOS Flutter product is unchanged.
 
 ## Authoritative consumer and generation
 
@@ -60,7 +74,9 @@ are unchanged and the HarmonyOS output keeps its platform media stack. A target
 where no libvpx resolves still builds and refuses VPx by name, with the reason in
 `RD_LIBVPX_PROVENANCE`; on Windows the install is the pinned static `vpx.lib`
 built by `native/frb/vcpkg-overlays/libvpx` (libvpx 1.15.2), named by
-`LIBVPX_PREFIX`.
+`LIBVPX_PREFIX`. That same static-md prefix must also supply the static Opus
+library and headers the non-optional `magnum-opus` dependency links
+(`lib/opus.lib`, `include/opus/opus_multistream.h`).
 
 The generator must be **flutter_rust_bridge_codegen 1.80.1**. Rust and Dart both
 pin the 1.80.1 runtime. `FRB_CODEGEN` can select that executable and `LLVM_PATH`
@@ -136,8 +152,9 @@ only to private build copies in their declared order; neither local handwritten
 Dart nor an installed client is changed.
 The build names its Windows Flutter, Rust, VS2022 and CMake inputs explicitly;
 `REMOTE_LIBVPX_PREFIX` and `REMOTE_CMAKE_TOOLCHAIN_FILE` select the target's
-isolated static-md libvpx/Zlib installation. Ambient Flutter or a prior SSH
-command's environment is not a valid toolchain selection.
+isolated static-md libvpx/Zlib/Opus installation, and `REMOTE_LIBCLANG_PATH` the
+directory holding the real `libclang.dll` bindgen loads. Ambient Flutter or a
+prior SSH command's environment is not a valid toolchain selection.
 
 Stock Flutter 3.24.5 chooses the wrong generator when its discovery selects the
 installed VS18 BuildTools. The explicit VS2022 CMake configuration preserves the
@@ -154,9 +171,18 @@ runner, not a new standalone engine launcher.
 
 ## Official Dart account backing
 
-Only this FRB artifact selects `official-account`. Password/verification login,
-account UI and cloud address-book/group business stay in the pinned official
-Dart sources. Resk does not gain those business features from this integration.
+`official-account` is one shared core, `rd-engine::official_account`. This FRB
+artifact must select it, and the HarmonyOS OHOS NAPI artifact may select the same
+feature so Resk account login and cloud address-book operations reach that owner
+rather than a second account implementation. The pinned official Dart sources
+keep their current password/verification login, account UI and cloud
+address-book/group implementation; that code is retained, not deleted or
+rewritten, and it no longer excludes the OHOS side from the same core. Admission
+relaxes no credential rule: API tokens, secrets and raw request bodies stay
+inside that owner and never reach ArkTS. Selecting the feature is a gate
+decision, never implementation, compile or runtime evidence: the OHOS NAPI
+bridge selects no such feature yet and exports no account or address-book
+operation.
 `src/official_account/UPSTREAM.json` records the native resolver, transport and
 OIDC source provenance and the exact security/platform adaptations.
 
@@ -263,6 +289,17 @@ cargo command alone. A missing or mismatched install fails the run before
 anything is copied; it never turns into a capability claim, and no local prefix
 is ever substituted for it.
 
+That prefix must also carry `lib/opus.lib` and `include/opus/opus_multistream.h`,
+because `magnum-opus` is non-optional and its `build.rs` reads only `VCPKG_ROOT`,
+linking from `<VCPKG_ROOT>/installed/x64-windows-static` on this target. The
+driver mirrors just those two Opus inputs into `<root>/deps/magnum-opus` - its own
+VCPKG_ROOT tree - and hash-compares them back to the static-md files, so a stale
+copy cannot satisfy the link; the supplied prefix itself is only read.
+`REMOTE_LIBCLANG_PATH` must name the directory containing the real
+`libclang.dll` that bindgen loads; a `clang.exe` on PATH is not that DLL. A
+missing value fails input validation and a missing DLL fails preflight with the
+path named, and no candidate LLVM install is thereby verified.
+
 ## Behavioral and ownership boundaries
 
 The adapter must hand session lifecycle, protocol, frame production and input
@@ -301,8 +338,8 @@ serialized peer records and never included in list hashes. Passwords and OS/RDP
 credentials are not exposed or persisted through general option accessors;
 remembered-password login is explicitly refused. Account tokens use only the
 protected account boundary above, not LocalConfig's plaintext option store.
-Recording and other unavailable features remain explicit refusals, including
-synchronous errors where the official API has a synchronous getter.
+Deliberately excluded features have no public FRB operation; retained but
+unimplemented operations continue to report explicit refusals.
 
 The engine's `include/rd_engine_windows_texture.h` token/loan ABI is **not** the
 same interface as the official client's renderer-pointer registration API.

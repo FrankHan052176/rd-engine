@@ -23,8 +23,9 @@ PATCHES = (
     "official-client-cpu-rgba.patch", "official-client-account-safety.patch",
     "official-client-flutter-lock.patch", "official-client-lan-actions.patch",
     "official-client-product-scope.patch", "official-client-host-control.patch",
+    "official-client-scope-pruning.patch",
 )
-CLIENT_LOCK_SHA256 = "bc58506b80464e5b3f6c73669c79ef270949b3cbc85401c290aa92e4573df7f7"
+CLIENT_LOCK_SHA256 = "116d8daaa4dc387dd42bb60f644e44e3d9a7b970594cbf44c22efd7012ea32a9"
 
 
 def digest(path):
@@ -106,6 +107,17 @@ def prepare(checkout, output, platform):
             replace(project, '"$(PROJECT_DIR)/../../native/liblibrustdesk.a",',
                     '"-force_load",\n\t\t\t\t\t"$(PROJECT_DIR)/../../native/liblibrustdesk.a",', count=3)
             add_build_setting(project, "DEAD_CODE_STRIPPING = NO;", blocks=6, missing=3)
+            # The plugins this product removed take their pods with them, and a
+            # link flag naming a framework no pod provides fails the app link.
+            # The pinned client's ios/Podfile.lock shows the chain: `file_picker`
+            # brings DKImagePickerController/PhotoGallery, which brings
+            # DKPhotoGallery, which brings SDWebImage and SwiftyGif. Every plugin
+            # that remains pulls only its own framework and Flutter.
+            for pruned in ("file_picker", "DKImagePickerController", "DKPhotoGallery",
+                           "SDWebImage", "SwiftyGif"):
+                replace(project,
+                        '\t\t\t\t\t"-framework",\n\t\t\t\t\t"\\"' + pruned + '\\"",\n',
+                        "", count=3)
             replace(project, '\t\t\t\t\t"-framework",\n\t\t\t\t\t"\\\"video_player_avfoundation\\\"",\n', "", count=3)
             replace(project, '"-ObjC",', '"-ObjC",\n\t\t\t\t\t"-framework", "Security",\n\t\t\t\t\t"-framework", "SystemConfiguration",\n\t\t\t\t\t"-framework", "CoreFoundation",', count=3)
         # The official generated C header is not a source blob. The Swift runners

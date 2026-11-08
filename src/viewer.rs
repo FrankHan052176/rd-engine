@@ -6,8 +6,16 @@
 //! A native consumer is joined even when cancellation wins its creation, and a
 //! reclamation that cannot be confirmed fails `Viewer::close` rather than only
 //! appearing as a session error.
+//!
+//! Audio is one optional worker on that same reader: the peer's format and
+//! frames are handed to a shared, bounded audio owner and never decoded, copied
+//! or awaited here. Its device failures stay its own, and its own reclamation
+//! fact is reported separately from the video pipeline's.
 
 mod auth;
+mod cursor;
+pub use cursor::{CursorImage, CursorSnapshot};
+use cursor::{Origin, Owner, Pointer};
 use auth::authenticate;
 #[cfg(test)]
 use auth::authenticate_loop;
@@ -25,10 +33,13 @@ use crate::{
     session_options::{OptionContext, OptionError, SessionOptionChange, SessionOptions},
     rendezvous::RendezvousConfig,
     session::{AuthenticatedParts, PeerCloseReason, SessionMode},
-    transport::{WireReader, WireWriter},
+    transport::{ReaderPhase, ReaderProgress, WireReader, WireWriter},
 };
 pub use decoder::SurfaceLease;
-use decoder::{DecoderError, DecoderObserver, DecoderProjection, RenderTiming, VideoCodec};
+use decoder::{
+    DecoderError, DecoderObserver, DecoderProjection, DecoderStageTimings, RenderTiming, StageTiming,
+    VideoCodec,
+};
 use crate::video::{self, Decoders, Geometry};
 use base::message_proto::{
     self as proto, KeyEvent, Message, MouseEvent, OptionMessage, message, misc,
@@ -46,7 +57,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -184,11 +195,10 @@ pub struct InputPolicyOutcome {
     pub policy: ViewerInputPolicy,
     /// The generation this viewer's input gate is at now.
     ///
-    /// It advances with every policy change and every peer-grant change, so a
-    /// client that keeps input state of its own can tell that the engine
-    /// invalidated what came before this answer — including a withdrawal and
-    /// the grant that followed it, which leave the policy and the admission
-    /// answer unchanged.
+    /// It advances with every policy change, peer-grant change and explicit
+    /// input retirement, so a client that keeps input state of its own can tell
+    /// that the engine invalidated what came before this answer even when the
+    /// policy and the admission answer remain unchanged.
     pub input_generation: u64,
     /// This change stopped admitting input that the previous policy admitted.
     pub revoked: bool,
@@ -269,6 +279,49 @@ impl Drop for ViewerOptions {
     }
 }
 
+/// This session's own pipeline stages, one aggregate each.
+///
+/// They are one record because they describe one frame's journey through this
+/// session: a record admitted, an access unit taken by the decoder, both sides of
+/// the handoff to the SDK's input buffer, and the two SDK calls that carry the
+/// unit in and its picture out. Each field is `None` when that stage was never
+/// instrumented in this session, which is how an unmeasured stage stays distinct
+/// from a measured one that has no samples yet.
+///
+/// The invariants a reader keeps in mind:
+///  * `record_admission` and `decoder_admission` are operations. They include
+///    this engine's own queue and wakeup work, so they are never CPU time.
+///  * `input_wait` is the time an access unit waited for an input buffer, and it
+///    is zero when a buffer was already waiting: no SDK latency is invented.
+///  * `input_dispatch` starts where `input_wait` ends and stops when the worker
+///    starts the push, so the two split one handoff instead of overlapping.
+///  * `push_api` and `render_api` are the SDK calls alone, with no copy, no
+///    attribute write and no residency: the residency is `render_timing`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PipelineTimings {
+    pub record_admission: Option<StageTiming>,
+    pub decoder_admission: Option<StageTiming>,
+    pub input_wait: Option<StageTiming>,
+    pub input_dispatch: Option<StageTiming>,
+    pub push_api: Option<StageTiming>,
+    pub render_api: Option<StageTiming>,
+}
+
+impl PipelineTimings {
+    /// Adds one decoder's own stages to this session's record.
+    ///
+    /// A decoder reports totals for its own lifetime, so a live one is added to
+    /// the copy a caller reads and never written back, while a finished one is
+    /// added exactly once, when its final projection arrives. Both use this, so
+    /// neither path can add a decoder's samples a second time.
+    fn merge_decoder(&mut self, stages: DecoderStageTimings) {
+        StageTiming::merge(&mut self.input_wait, Some(stages.input_wait));
+        StageTiming::merge(&mut self.input_dispatch, Some(stages.input_dispatch));
+        StageTiming::merge(&mut self.push_api, Some(stages.push_api));
+        StageTiming::merge(&mut self.render_api, Some(stages.render_api));
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ViewerSnapshot {
     pub phase: String,
@@ -291,16 +344,43 @@ pub struct ViewerSnapshot {
     pub width: i32,
     pub height: i32,
     pub codec: String,
-    /// `direct_tcp`, `tcp_hole_punch` or `relay`; never inferred from an address.
+    /// `direct_tcp`, `tcp_hole_punch`, `relay` or `nearby`; never inferred from
+    /// an address. `nearby` names the platform's own byte transport, which has
+    /// no address at all.
     pub route: String,
+    /// Last positive RTT in milliseconds reported by a peer TestDelay.
+    /// `None` means the peer has not supplied a positive measurement.
+    pub network_rtt_ms: Option<u32>,
     pub received_units: u64,
     pub pushed_units: u64,
     pub render_submissions: u64,
     /// Measured push-to-submission latency, aggregated only over actual samples.
     /// `None` means this session has no actual timing observation.
     pub render_timing: Option<RenderTiming>,
+    /// This session's per-stage diagnostics, kept apart from the residency above
+    /// because they answer different questions about the same frame.
+    pub pipeline_timings: PipelineTimings,
+    /// The stage the one reader is standing in at this snapshot, with how long
+    /// it has been there.
+    ///
+    /// Updated before dispatch takes session locks or awaits a bounded queue.
+    /// This full snapshot still takes the session lock: it is not a lock-free
+    /// probe of that lock. `None` means this session's reader has not published
+    /// a stage (including other protocols), not a measured zero wait.
+    pub reader_progress: Option<crate::transport::ReaderProgressSnapshot>,
     /// Units admitted but not yet pushed into the decoder at this snapshot.
     pub queued_units: u64,
+    /// This session's audio playback, or `None` when the session never had an
+    /// audio owner (anything but an authenticated RustDesk desktop session).
+    ///
+    /// Every field is the audio core's own reading, kept apart on purpose:
+    /// `active` is the platform sink's answer and never an assumption,
+    /// `played_samples` is what a device callback really consumed, and
+    /// `queued_samples` is what still waits in the sink. `received_packets` is
+    /// what this session admitted, so it stays zero while the local option or
+    /// the peer's own grant refuses playback — a live peer sending audio is not
+    /// evidence that anything was heard.
+    pub audio: Option<crate::audio::AudioSnapshot>,
     pub keyboard_allowed: bool,
     /// The generation of the local policy and the peer's grant this snapshot
     /// was read under.
@@ -386,6 +466,9 @@ pub struct ViewerSnapshot {
     pub version: String,
     pub displays: Vec<PeerDisplayInfo>,
     pub current_display: i32,
+    /// Latest real RustDesk cursor messages; bitmap bytes are shared, not copied
+    /// with each frame/snapshot. Empty before authorization and after close.
+    pub cursor: CursorSnapshot,
 }
 
 /// One of the peer's displays in the terms the peer's own protocol uses. The
@@ -532,7 +615,10 @@ impl std::error::Error for ViewerError {}
 /// vocabulary of a login that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginFailure {
-    /// `Empty Password`: the peer wants a password this client did not send.
+    /// `Empty Password`: the peer wants a password this client did not send. A
+    /// login that went out with none is also offered this step while the peer's
+    /// operator decides, as the official client does, so a typed password can
+    /// settle the same attempt.
     EmptyPassword,
     /// `Wrong Password`: the peer refused the password this client sent.
     WrongPassword,
@@ -562,11 +648,26 @@ struct Inner {
     conn_token: Option<ConnToken>,
     geometry: Option<Geometry>,
     decoder: Option<DecoderObserver>,
+    cursor: cursor::CursorState,
     // Observation only; State::finish decides whether cleanup permits publishing it.
     observed_peer_close_reason: Option<PeerCloseReason>,
 }
 struct State {
     inner: Mutex<Inner>,
+    forward: Mutex<Option<Arc<crate::forward::Tap>>>,
+    forward_seed: Mutex<crate::forward::Seed>,
+    // A's real pointer for a shared display's viewer; fed by the cursor
+    // dispatch whether or not a share is armed, so a late viewer is replayed it.
+    forward_cursor: Arc<crate::forward::CursorFeed>,
+    /// B's one desktop pointer: where it is, and which share viewer may drive it.
+    pointer: Mutex<Pointer>,
+    // Previously requested extra indices remain recognizable while unsubscribe
+    // is in flight. Membership is bounded by the peer's display list.
+    forward_routes: Mutex<std::collections::HashSet<i32>>,
+    display_pending: AtomicBool,
+    forward_revision: AtomicU64,
+    peer_displays: Mutex<Vec<proto::DisplayInfo>>,
+    presentation: Option<Arc<crate::presentation::LocalPresentation>>,
     cancel: CancellationToken,
     done: Notify,
     result: Mutex<Option<Result<(), ViewerError>>>,
@@ -594,6 +695,10 @@ struct State {
     // Installed by authenticate once the writer task owns the control channel,
     // so out-of-band control (keyframe requests) can be sent after login.
     control: Mutex<Option<mpsc::Sender<Vec<Message>>>>,
+    /// Where the one reader publishes the stage it is standing in.
+    ///
+    /// Independent of `inner`, so dispatch can publish before taking that lock.
+    reader_progress: Arc<ReaderProgress>,
     session_options: Mutex<SessionOptions>,
     advertised_decoding: Mutex<Option<proto::SupportedDecoding>>,
     /// The peer's second-factor step: installed by authentication only while
@@ -613,6 +718,14 @@ struct State {
     /// grants it again.
     peer_clipboard: AtomicBool,
     peer_file: AtomicBool,
+    /// The peer's own audio grant, mirrored like the clipboard's: it is the
+    /// peer's channel, never raised from this side, so a grant the peer
+    /// withdrew stays withdrawn until the peer grants it again.
+    peer_audio: AtomicBool,
+    /// This session's shared audio handle: the one path the peer's format and
+    /// frames take. It exists only for an authenticated RustDesk desktop
+    /// session, and is never replaced by a second owner.
+    audio: Mutex<Option<Arc<crate::audio::AudioHandle>>>,
     cliprdr: Mutex<Option<Arc<crate::cliprdr::CliprdrHandle>>>,
     /// The way an encoded clipboard payload reaches this session's one writer.
     /// A second channel into the same writer, not a second writer: the same
@@ -784,8 +897,9 @@ struct GateView {
 /// admission and the writer's ledger.
 struct InputGate {
     state: Mutex<GateState>,
-    /// Wakes the one writer when the policy or the peer's grant changes. A
-    /// permit survives a writer that is busy, and the pass it triggers reads
+    /// Wakes the one writer when the policy or the peer's grant changes, or
+    /// input is explicitly retired. A permit survives a writer that is busy,
+    /// and the pass it triggers reads
     /// the gate instead of replaying the change, so a notification is never
     /// replayed as an event.
     changed: Notify,
@@ -798,8 +912,8 @@ struct GateState {
     /// has. It is kept here, rather than beside the snapshot, so that a change
     /// to it is published under the lock that stamps input.
     keyboard: bool,
-    /// Bumped on every policy change and every grant change, so input queued or
-    /// emitted under the previous one can never be emitted after it — including
+    /// Bumped on every policy change, grant change and explicit retirement, so
+    /// prior-generation input cannot be emitted afterwards — including
     /// the input queued, or held, before a revocation when admission is granted
     /// again.
     generation: u64,
@@ -910,6 +1024,27 @@ impl InputGate {
             releases_retired: state.retired,
             releases_unreleased: state.unreleased,
         }
+    }
+
+    /// Retires queued input and every hold the writer already owns, without
+    /// changing the policy or the peer's grant. The existing release pass sees
+    /// the old generation as stale; it alone settles the retired holds.
+    fn retire(&self) -> InputPolicyOutcome {
+        let outcome = {
+            let mut state = lock(&self.state);
+            state.generation += 1;
+            state.retired = state.owed;
+            InputPolicyOutcome {
+                policy: state.policy,
+                input_generation: state.generation,
+                revoked: false,
+                releases_owed: state.owed,
+                releases_retired: state.retired,
+                releases_unreleased: state.unreleased,
+            }
+        };
+        self.changed.notify_one();
+        outcome
     }
 
     /// Whether one queued event may still be emitted, taking this writer's
@@ -1046,6 +1181,7 @@ impl Drop for AuthAnswers {
 struct QueuedInput {
     event: ViewerInput,
     generation: u64,
+    origin: Origin,
 }
 
 impl State {
@@ -1147,10 +1283,95 @@ impl State {
         }
         self.clipboard_in.offer(generation, message);
     }
+
+    /// Whether this viewer may play the peer's audio right now: the AND of every
+    /// fact that has to hold, collected in one place like the clipboard's.
+    ///
+    /// A desktop session on the wire that carries audio, its authenticated
+    /// state, the peer's own audio grant, the local option that asks for audio,
+    /// and the cancellation that ends it. The operator's read-only switch is
+    /// deliberately not a term: it stops what this viewer *sends*, and listening
+    /// sends nothing.
+    ///
+    /// Nothing here raises the peer's grant. Turning the local option off and on
+    /// again can only restore an allowance the peer still holds; a grant the
+    /// peer withdrew is not recoverable from this side.
+    fn audio_facts(&self) -> bool {
+        self.mode == SessionMode::Desktop
+            && self.authenticated.load(Ordering::Acquire)
+            && !self.cancel.is_cancelled()
+            && self.peer_audio.load(Ordering::Acquire)
+            && lock(&self.session_options).audio_enabled()
+    }
+
+    /// Publishes the combined audio answer to this session's audio owner.
+    ///
+    /// Read facts while holding the handle lock: two refreshes cannot apply an
+    /// old grant after a newer withdrawal. Option callers release their lock
+    /// before entering here. An unchanged allowance leaves the generation alone.
+    fn refresh_audio(&self) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            handle.set_allowed(self.audio_facts());
+        }
+    }
+
+    /// Hands one peer format declaration to this session's audio owner.
+    ///
+    /// A refusal is the core's own answer (`Closed`, `InvalidFormat`) and is
+    /// already recorded in its snapshot; no other wire message is affected.
+    fn offer_audio_format(&self, format: proto::AudioFormat) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            let _ = handle.offer_format(format);
+        }
+    }
+
+    /// Hands one encoded peer packet to this session's audio owner, without
+    /// copying it and without waiting.
+    ///
+    /// The offer is bounded inside the core: the packet's buffer moves into an
+    /// eight-deep queue, a full queue answers with `Backpressure` and the packet
+    /// is dropped and counted there. The reader therefore never waits for the
+    /// audio device, and a refused packet cannot delay video, clipboard or input.
+    fn offer_audio_frame(&self, frame: proto::AudioFrame) {
+        if let Some(handle) = lock(&self.audio).as_ref() {
+            let _ = handle.offer_frame(frame);
+        }
+    }
+
+    /// This session's audio reading, or nothing when it never had an owner.
+    fn audio_snapshot(&self) -> Option<crate::audio::AudioSnapshot> {
+        lock(&self.audio).as_ref().map(|handle| handle.snapshot())
+    }
+
+    /// Whether this session's audio owner has a native resource it could not
+    /// confirm released, read from the audio core's own flag.
+    ///
+    /// It is asked separately from the video pipeline's flag: one release never
+    /// clears the other's failure, and a session with no audio owner has nothing
+    /// unconfirmed here.
+    fn audio_unconfirmed(&self) -> bool {
+        self.audio_snapshot()
+            .is_some_and(|audio| audio.resources_unconfirmed)
+    }
+
+    /// Whether any native resource this session created may still exist: the
+    /// video pipeline's own answer or the audio owner's.
+    fn resources_unconfirmed_any(&self) -> bool {
+        self.resources_unconfirmed.load(Ordering::Acquire) || self.audio_unconfirmed()
+    }
+
     fn snapshot(&self) -> ViewerSnapshot {
         let inner = lock(&self.inner);
         let mut out = inner.snapshot.clone();
+        // The checkpoint is independent, but constructing this full snapshot
+        // still requires `inner`; do not claim it can bypass a held state lock.
+        out.reader_progress = self.reader_progress.snapshot();
         out.authenticated = self.authenticated.load(Ordering::Acquire);
+        out.cursor = if self.cursor_active() && !out.closed {
+            inner.cursor.snapshot()
+        } else {
+            CursorSnapshot::default()
+        };
         // What the engine would actually admit, not a reading of the peer's
         // grant alone: a read-only viewer and an unaccepted unproven peer both
         // report no keyboard here. The generation that admitted it is published
@@ -1178,6 +1399,13 @@ impl State {
                     .render_submissions
                     .saturating_add(stats.render_submissions);
                 RenderTiming::accumulate(&mut out.render_timing, stats.render_timing);
+                // The live decoder's own stages are added to the closed ones in
+                // the copy a caller reads and never written back: the next poll
+                // reads the decoder's totals again, so nothing here counts a
+                // sample twice.
+                if let Some(stages) = stats.stage_timings {
+                    out.pipeline_timings.merge_decoder(stages);
+                }
                 out.queued_units = stats.queued_units;
                 if let Some(error) = stats.failure {
                     out.error = Some(ViewerError::Decoder(error).to_string());
@@ -1192,6 +1420,9 @@ impl State {
                 }
             }
         }
+        // The audio owner's own reading, beside the video pipeline's: neither is
+        // derived from the other, and `None` says this session never had one.
+        out.audio = self.audio_snapshot();
         out
     }
     fn request_close(&self) {
@@ -1206,9 +1437,15 @@ impl State {
         if let Some(handle) = lock(&self.cliprdr).as_ref() {
             handle.revoke();
         }
+        // Audio is withdrawn with the session in the same way: the cancellation
+        // already ends the owner, and publishing the answer advances its
+        // generation, so nothing admitted under the allowance in force before
+        // this point can reach the sink after it.
+        self.refresh_audio();
         let mut inner = lock(&self.inner);
         inner.conn_token = None;
         if !inner.snapshot.closed {
+            inner.cursor = cursor::CursorState::default();
             inner.snapshot.phase = "closing".into();
         }
         if let Some(observer) = &inner.decoder {
@@ -1216,6 +1453,7 @@ impl State {
         }
     }
     fn finish(&self, result: Result<(), ViewerError>) {
+        if let Some(tap) = lock(&self.forward).take() { tap.stop("source_closed"); }
         self.authenticated.store(false, Ordering::Release);
         // A viewer that ends without `request_close` — an authentication
         // failure, a transport failure, a cancelled start — closes the fence
@@ -1225,7 +1463,14 @@ impl State {
         if let Some(handle) = lock(&self.cliprdr).as_ref() {
             handle.revoke();
         }
-        let reclamation = if self.resources_unconfirmed.load(Ordering::Acquire) {
+        // The audio allowance is withdrawn here too, for a session that ends
+        // without `request_close`.
+        self.refresh_audio();
+        // The audio owner's own reclamation fact is joined with the video
+        // pipeline's, and neither can clear the other: an audio device that could
+        // not confirm its release fails the close exactly like a Surface that
+        // could not.
+        let reclamation = if self.resources_unconfirmed_any() {
             Err(match &result {
                 Err(error @ ViewerError::Decoder(DecoderError::DestroyFailed { .. })) => {
                     error.clone()
@@ -1238,6 +1483,7 @@ impl State {
         let mut inner = lock(&self.inner);
         inner.conn_token = None;
         inner.snapshot.closed = true;
+        inner.cursor = cursor::CursorState::default();
         inner.snapshot.keyboard_allowed = false;
         // The category is published beside the string, not inside it: `error`
         // keeps the text it has always reported, and a client that has to choose
@@ -1288,8 +1534,46 @@ impl video::VideoOwner for State {
     fn video_phase(&self, phase: &'static str) {
         self.phase(phase);
     }
+    fn video_encoded(&self, codec: VideoCodec, geometry: Geometry, frames: &[proto::EncodedVideoFrame]) {
+        lock(&self.forward_seed).observe(codec, geometry, frames);
+        let tap = lock(&self.forward).clone();
+        if let Some(tap) = tap {
+            if tap.selected_geometry().display == geometry.display { tap.offer(codec, geometry, frames); }
+        }
+    }
     fn video_received(&self, units: u64) {
         lock(&self.inner).snapshot.received_units += units;
+    }
+    fn video_timings_enabled(&self) {
+        let mut inner = lock(&self.inner);
+        let timings = &mut inner.snapshot.pipeline_timings;
+        // Both admission stages exist from here on. A measured stage with no
+        // samples yet stays present, so a client reads "nothing admitted yet"
+        // instead of "not instrumented".
+        timings
+            .record_admission
+            .get_or_insert_with(StageTiming::default);
+        timings
+            .decoder_admission
+            .get_or_insert_with(StageTiming::default);
+    }
+    fn video_record_admission(&self, elapsed: Duration) {
+        let mut inner = lock(&self.inner);
+        inner
+            .snapshot
+            .pipeline_timings
+            .record_admission
+            .get_or_insert_with(StageTiming::default)
+            .record(elapsed);
+    }
+    fn video_decoder_admission(&self, elapsed: Duration) {
+        let mut inner = lock(&self.inner);
+        inner
+            .snapshot
+            .pipeline_timings
+            .decoder_admission
+            .get_or_insert_with(StageTiming::default)
+            .record(elapsed);
     }
     fn video_decoder_opened(&self, codec: VideoCodec, geometry: Geometry, observer: DecoderObserver) {
         self.geometry(geometry);
@@ -1310,6 +1594,12 @@ impl video::VideoOwner for State {
                 .render_submissions
                 .saturating_add(stats.render_submissions);
             RenderTiming::accumulate(&mut inner.snapshot.render_timing, stats.render_timing);
+            // The finished decoder's stages are added exactly once, here, and the
+            // observer is dropped below: a later snapshot has no live decoder to
+            // read them from, so its samples cannot be counted again.
+            if let Some(stages) = stats.stage_timings {
+                inner.snapshot.pipeline_timings.merge_decoder(stages);
+            }
         }
         inner.decoder = None;
     }
@@ -1326,6 +1616,15 @@ pub struct Viewer {
 enum Connector {
     Direct(ViewerIdentity),
     Rendezvous(RendezvousConfig),
+    /// A wire the caller already paired, and the identity it has to prove.
+    ///
+    /// Nothing is dialled and no address is consulted: a nearby share's bytes
+    /// arrive over the platform's own connection manager, so this session runs
+    /// its normal handshake on the stream it was handed.
+    Nearby {
+        wire: hbb_common::tcp::FramedStream,
+        identity: ViewerIdentity,
+    },
 }
 
 fn runtime() -> Result<&'static Runtime, ViewerError> {
@@ -1395,8 +1694,51 @@ impl Viewer {
         )
     }
 
-    /// Original hbbs/hbbr ID route with mandatory server-signed peer identity.
-    /// The dialer completes SignedId/box/secretbox before password authentication.
+    /// Starts a session over an already-paired nearby byte bridge.
+    ///
+    /// There is no address on this route: the wire is the caller's, so nothing
+    /// here resolves, dials or listens, and `options.target` names the original
+    /// wire without one (`RustDesk { address: None }`) rather than an endpoint
+    /// this call would never use. Trust is the same explicit out-of-band pin as
+    /// [`Viewer::start_verified`], the handshake is the session's own
+    /// connect-over step, and everything after it is the session this engine
+    /// always builds. Only the transport differs.
+    pub fn start_nearby_verified(
+        options: ViewerOptions,
+        lease: Arc<dyn SurfaceLease>,
+        wire: hbb_common::tcp::FramedStream,
+        expected_id: String,
+        peer_signing_key: hbb_common::sodiumoxide::crypto::sign::PublicKey,
+    ) -> Result<Arc<Self>, ViewerError> {
+        if expected_id.is_empty() || expected_id.len() > 512 {
+            return Err(ViewerError::InvalidOptions);
+        }
+        if !matches!(&options.target, ViewerTarget::RustDesk { address: None }) {
+            return Err(ViewerError::InvalidOptions);
+        }
+        // A nearby share serves one forwarded, read-only display stream, so a
+        // session that is not a desktop one would be asking for what its host
+        // never offers.
+        if options.mode != SessionMode::Desktop {
+            return Err(ViewerError::InvalidOptions);
+        }
+        Self::start_with_connector(
+            options,
+            lease,
+            Connector::Nearby {
+                wire,
+                identity: ViewerIdentity::PinnedHost {
+                    expected_id,
+                    peer_signing_key,
+                },
+            },
+        )
+    }
+
+    /// Original hbbs/hbbr ID route. A public trust root requires verified,
+    /// encrypted peer identity; an explicit shared-licence profile has no trust
+    /// root and uses the original unverified/unencrypted compatibility branch.
+    /// The dialer's actual security facts are published before password entry.
     pub fn start_rendezvous(
         options: ViewerOptions,
         lease: Arc<dyn SurfaceLease>,
@@ -1438,6 +1780,15 @@ impl Viewer {
         let runtime = runtime()?;
         let (mouse, mouse_rx) = mpsc::channel(COMMANDS);
         let state = Arc::new(State {
+            forward: Mutex::new(None),
+            forward_seed: Mutex::new(crate::forward::Seed::default()),
+            forward_cursor: Arc::new(crate::forward::CursorFeed::default()),
+            pointer: Mutex::new(Pointer::default()),
+            forward_routes: Mutex::new(std::collections::HashSet::new()),
+            display_pending: AtomicBool::new(false),
+            forward_revision: AtomicU64::new(0),
+            peer_displays: Mutex::new(Vec::new()),
+            presentation: lease.local_presentation(),
             control: Mutex::new(None),
             second_factor: Mutex::new(SecondFactorGate::default()),
             password: Mutex::new(PasswordGate::default()),
@@ -1454,6 +1805,7 @@ impl Viewer {
                 geometry: None,
                 decoder: None,
                 observed_peer_close_reason: None,
+                cursor: cursor::CursorState::default(),
             }),
             cancel: CancellationToken::new(),
             done: Notify::new(),
@@ -1464,6 +1816,10 @@ impl Viewer {
             authenticated: AtomicBool::new(false),
             rdp_input_flags: AtomicU16::new(0),
             peer_proven: AtomicBool::new(false),
+            // The reader's own stage state exists from the start and stays empty
+            // until that session's reader publishes one: a session that never
+            // runs one reports no reading rather than a stage it never had.
+            reader_progress: ReaderProgress::new(),
             // The local policy is in force before the session starts, not after
             // the first caller asks: this is what makes a read-only viewer
             // read-only from its first event.
@@ -1475,6 +1831,11 @@ impl Viewer {
             clipboard: ClipboardState::new(),
             peer_clipboard: AtomicBool::new(false),
             peer_file: AtomicBool::new(false),
+            // Audio follows the clipboard's shape: the peer's grant mirrored
+            // beside the local option, and one owner that only an authenticated
+            // desktop session starts.
+            peer_audio: AtomicBool::new(false),
+            audio: Mutex::new(None),
             cliprdr: Mutex::new(None),
             clipboard_out: Mutex::new(None),
             clipboard_in: ClipboardDecoder::default(),
@@ -1505,6 +1866,87 @@ impl Viewer {
     }
     pub fn snapshot(&self) -> ViewerSnapshot {
         self.state.snapshot()
+    }
+
+    /// Subscribes the selected display without changing local presentation.
+    pub(crate) fn arm_forward(self: &Arc<Self>, source_display: i32, accept_unverified: bool,
+        sender: mpsc::Sender<crate::forward::Packet>)
+        -> std::io::Result<(Arc<crate::forward::Tap>, proto::DisplayInfo)> {
+        let revision = self.state.forward_revision.load(Ordering::Acquire);
+        // Snapshot may read audio; never acquire it under the option lock.
+        let snapshot = self.snapshot();
+        let index = usize::try_from(source_display).ok()
+            .filter(|index| *index < snapshot.displays.len())
+            .ok_or_else(|| std::io::Error::other("Selected display is not one the peer reports"))?;
+        let _options = lock(&self.state.session_options);
+        let mut forward = lock(&self.state.forward);
+        if forward.as_ref().is_some_and(|tap| !tap.closed()) {
+            return Err(std::io::Error::other("Source share is running or reclaiming"));
+        }
+        if self.state.protocol != Protocol::RustDesk || self.state.mode != SessionMode::Desktop
+            || snapshot.closed || !self.state.authenticated.load(Ordering::Acquire)
+            || (!snapshot.peer_verified && !accept_unverified)
+            || self.state.display_pending.load(Ordering::Acquire) || revision & 1 != 0
+            || revision != self.state.forward_revision.load(Ordering::Acquire)
+            || self.state.cancel.is_cancelled() {
+            return Err(std::io::Error::other("Selected display is not admitted"));
+        }
+        let added = source_display != snapshot.current_display;
+        // Same version boundary as upstream common::is_support_multi_ui_session.
+        if added && hbb_common::get_version_number(&snapshot.version)
+            < hbb_common::get_version_number("1.2.4") {
+            return Err(std::io::Error::other("Peer does not support independent display subscriptions"));
+        }
+        let display = lock(&self.state.peer_displays).get(index).cloned()
+            .ok_or_else(|| std::io::Error::other("Selected display is absent"))?;
+        if display.width <= 0 || display.height <= 0 {
+            return Err(std::io::Error::other("Invalid selected display geometry"));
+        }
+        let geometry = Geometry { display: source_display, x: display.x, y: display.y,
+            width: display.width, height: display.height };
+        let tap = crate::forward::tap(self, geometry, added, sender, self.state.cancel.clone(),
+            &lock(&self.state.forward_seed), self.state.forward_cursor.clone(), display.cursor_embedded);
+        // Register before the one writer can start receiving the added stream.
+        *forward = Some(tap.clone());
+        if added {
+            lock(&self.state.forward_routes).insert(source_display);
+            let sender = lock(&self.state.control).clone();
+            let mut misc = proto::Misc::new();
+            misc.set_capture_displays(proto::CaptureDisplays { add: vec![source_display], ..Default::default() });
+            let mut message = Message::new(); message.set_misc(misc);
+            if !sender.is_some_and(|sender| sender.try_send(vec![message]).is_ok()) {
+                tap.stop("source_closed");
+                *forward = None;
+                return Err(std::io::Error::other("Source subscription could not enter the writer"));
+            }
+        }
+        Ok((tap, display))
+    }
+
+    /// The forward worker restores the source viewer's original capture before
+    /// reporting local reclamation. A `sub` request is not removal of one
+    /// display: on the peer it excludes every display not listed, so it would
+    /// stop B's own current display when B shared another one.
+    pub(crate) async fn release_forward(&self, tap: &Arc<crate::forward::Tap>) {
+        if !tap.separately_subscribed() { return; }
+        let current = lock(&self.state.forward).as_ref().is_some_and(|old| Arc::ptr_eq(old, tap));
+        if !current { return; }
+        let Some(sender) = lock(&self.state.control).clone() else { return; };
+        let current_display = lock(&self.state.inner).snapshot.current_display;
+        let mut misc = proto::Misc::new();
+        misc.set_capture_displays(proto::CaptureDisplays {
+            set: vec![current_display], ..Default::default()
+        });
+        let mut message = Message::new(); message.set_misc(misc);
+        tokio::select! {
+            biased;
+            _ = self.state.cancel.cancelled() => {},
+            result = sender.send(vec![message]) => {
+                // A closed control receiver means the source writer is gone;
+                // its transport teardown also removes all its subscriptions.
+                if result.is_err() { tap.stop("source_closed"); }
+            }
+        }
     }
 
     /// Non-secret availability; registering a share gesture need not export h1.
@@ -1553,6 +1995,40 @@ impl Viewer {
         lock(&self.state.session_options).clone()
     }
 
+    /// Queues the RustDesk frame-rate increment on this session's one writer.
+    ///
+    /// Only `custom_fps` is stated: replaying login options would overwrite
+    /// unrelated choices. `Ok(())` means queued, not written or peer-applied;
+    /// the peer may impose its own cap and sends no applied-rate receipt.
+    pub fn set_custom_fps(&self, fps: u32) -> Result<(), ViewerError> {
+        if !(1..=240).contains(&fps) {
+            return Err(ViewerError::InvalidOptions);
+        }
+        if self.state.protocol != Protocol::RustDesk || self.state.mode != SessionMode::Desktop {
+            return Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol));
+        }
+        if self.state.cancel.is_cancelled() || lock(&self.state.inner).snapshot.closed {
+            return Err(ViewerError::Closed);
+        }
+        if !self.state.authenticated.load(Ordering::Acquire) {
+            return Err(ViewerError::SessionOption(OptionError::SessionNotStarted));
+        }
+        let sender = lock(&self.state.control)
+            .clone()
+            .ok_or(ViewerError::Closed)?;
+        let mut misc = proto::Misc::new();
+        misc.set_option(OptionMessage {
+            custom_fps: fps as i32,
+            ..Default::default()
+        });
+        let mut message = Message::new();
+        message.set_misc(misc);
+        sender.try_send(vec![message]).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+        })
+    }
+
     /// Commit requested state only after the entire change enters the one
     /// writer queue. No option here claims the peer applied its request.
     pub fn set_session_option(&self, change: SessionOptionChange) -> Result<(), ViewerError> {
@@ -1565,10 +2041,23 @@ impl Viewer {
         if !self.state.authenticated.load(Ordering::Acquire) {
             return Err(ViewerError::SessionOption(OptionError::SessionNotStarted));
         }
-        let mut requested = lock(&self.state.session_options);
+        // Snapshot reads the audio handle. Do not hold the option lock across
+        // it: allowance refresh takes the handle lock before reading options.
         let snapshot = self.snapshot();
+        let mut requested = lock(&self.state.session_options);
+        let forward = lock(&self.state.forward);
+        if forward.as_ref().is_some_and(|tap| !tap.closed()) && matches!(&change,
+            SessionOptionChange::SwitchDisplay(_) | SessionOptionChange::ChangeResolution { .. }) {
+            return Err(ViewerError::Backpressure);
+        }
         let advertised = lock(&self.state.advertised_decoding)
             .clone().ok_or(ViewerError::SessionOption(OptionError::SessionNotStarted))?;
+        // A same-display switch has no peer ACK (upstream handle_switch_display).
+        let display_change = match &change {
+            SessionOptionChange::SwitchDisplay(display) => *display != snapshot.current_display,
+            SessionOptionChange::ChangeResolution { .. } => true,
+            _ => false,
+        };
         let prepared = requested.prepare(change, &OptionContext {
             protocol: self.state.protocol,
             peer_version: &snapshot.version,
@@ -1581,13 +2070,20 @@ impl Viewer {
             mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
             mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
         })?;
+        if display_change { self.state.display_pending.store(true, Ordering::Release); }
         *requested = prepared.next;
+        drop(forward);
         drop(requested);
         // `disable-clipboard` is one of the facts the clipboard fence is the AND
         // of, so a change to it is published where the fence lives rather than
         // only on the wire: the option and the mailbox can never disagree about
         // whether this session exchanges clipboard content.
         self.state.refresh_clipboard();
+        // `disable-audio` is one of the facts the audio answer is the AND of, so
+        // it reaches the audio owner here as well: the option this session holds
+        // and what it is willing to play cannot disagree, and a withdrawal stops
+        // playback without waiting for the next packet.
+        self.state.refresh_audio();
         Ok(())
     }
 
@@ -1712,19 +2208,124 @@ impl Viewer {
     /// it is still dropped by the writer if either changes before the writer
     /// reaches it — including a withdrawal and the grant that follows it.
     fn admission(&self, expected_generation: u64) -> Result<u64, ViewerError> {
+        let generation = self.admitted_generation()?;
+        if generation != expected_generation {
+            return Err(ViewerError::StaleInputGeneration);
+        }
+        Ok(generation)
+    }
+
+    /// The generation in force, when the gate admits input at all.
+    fn admitted_generation(&self) -> Result<u64, ViewerError> {
         let gate = self.state.input.read();
         if !Facts::of(&self.state).admits(gate) {
             return Err(ViewerError::InputNotAllowed);
         }
-        if gate.generation != expected_generation {
-            return Err(ViewerError::StaleInputGeneration);
-        }
         Ok(gate.generation)
+    }
+
+    /// Whether this viewer has an armed display share, which makes its own
+    /// pointer input go through [`Viewer::send_shared_pointer`] instead of
+    /// `send_mouse`: the share viewer drives the same pointer.
+    pub fn has_active_share(&self) -> bool {
+        lock(&self.state.forward).as_ref().is_some_and(|tap| tap.active())
+    }
+
+    /// One pointer intent from B while a display is shared. B and the share
+    /// viewer act on one desktop-global pointer owned by the writer, so no
+    /// absolute position is accepted here.
+    ///
+    /// `kind` 5 is a relative move (`x`/`y` are the delta) that may cross every
+    /// display the peer reports; 1 and 2 press and release `button` where the
+    /// pointer is (`x`/`y` are ignored); 3 and 4 are wheel and trackpad deltas.
+    /// The generation contract is `send_mouse`'s.
+    pub fn send_shared_pointer(
+        &self,
+        kind: u32,
+        button: u32,
+        x: i32,
+        y: i32,
+        expected_generation: u64,
+    ) -> Result<u64, ViewerError> {
+        if !self.has_active_share() {
+            return Err(ViewerError::InputNotAllowed);
+        }
+        let generation = self.admission(expected_generation)?;
+        self.queue_pointer_intent(Origin::Shared(Owner::Local), generation, kind, button, x, y)
+    }
+
+    /// The same intent from the admitted share viewer, through the source's own
+    /// gate and writer. It carries no generation of its own: it is admitted under
+    /// the one in force and dropped by the writer if that moves.
+    pub(crate) fn send_remote_pointer(
+        &self,
+        id: u64,
+        kind: u32,
+        button: u32,
+        x: i32,
+        y: i32,
+    ) -> Result<u64, ViewerError> {
+        if !self.state.owner_live(Owner::Remote(id)) {
+            return Err(ViewerError::Closed);
+        }
+        let generation = self.admitted_generation()?;
+        self.queue_pointer_intent(Origin::Shared(Owner::Remote(id)), generation, kind, button, x, y)
+    }
+
+    fn queue_pointer_intent(
+        &self,
+        origin: Origin,
+        generation: u64,
+        kind: u32,
+        button: u32,
+        x: i32,
+        y: i32,
+    ) -> Result<u64, ViewerError> {
+        let valid = match kind {
+            1 | 2 => matches!(button, 1 | 2 | 4 | 8 | 16),
+            3..=5 => button == 0,
+            _ => false,
+        };
+        if !valid {
+            return Err(ViewerError::InvalidMouse);
+        }
+        self.mouse
+            .try_send(QueuedInput {
+                event: ViewerInput::Mouse { kind, button, x, y },
+                generation,
+                origin,
+            })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
+                mpsc::error::TrySendError::Closed(_) => ViewerError::Closed,
+            })?;
+        Ok(generation)
+    }
+
+    /// Admits one share viewer as the owner that may drive the pointer.
+    pub(crate) fn begin_remote_pointer(&self) -> u64 {
+        self.state.begin_remote()
+    }
+
+    /// Ends that claim, whatever ended the share viewer. The writer releases
+    /// exactly the buttons it held for it and leaves B's own.
+    pub(crate) fn end_remote_pointer(&self, id: u64) {
+        self.state.end_remote(id);
     }
 
     /// The local input policy this viewer is enforcing.
     pub fn input_policy(&self) -> ViewerInputPolicy {
         self.state.input.policy()
+    }
+
+    /// Retires this generation's queued and held input without changing policy.
+    ///
+    /// The existing ordered writer releases exactly the holds it emitted. The
+    /// answer names the new generation and any release still pending, not a
+    /// remote release acknowledgement. Clipboard permission and pending content
+    /// are independent and untouched.
+    pub fn release_input(&self) -> InputPolicyOutcome {
+        self.state.input.retire()
     }
 
     /// Publishes a new local input policy for this viewer.
@@ -1787,13 +2388,25 @@ impl Viewer {
             let geometry = lock(&self.state.inner)
                 .geometry
                 .ok_or(ViewerError::InputNotAllowed)?;
-            if x < 0 || y < 0 || x >= geometry.width || y >= geometry.height {
-                return Err(ViewerError::InvalidMouse);
-            }
-            (
+            // Local coordinates stay relative to the displayed screen, but the
+            // pointer may also leave it for the display this viewer is sharing
+            // (the desktop the peer already exposes), never for an unshared one.
+            let shared = lock(&self.state.forward)
+                .as_ref()
+                .filter(|tap| tap.active())
+                .map(|tap| tap.selected_geometry());
+            let global = (
                 x.checked_add(geometry.x).ok_or(ViewerError::InvalidMouse)?,
                 y.checked_add(geometry.y).ok_or(ViewerError::InvalidMouse)?,
-            )
+            );
+            let inside = |area: &Geometry| {
+                (area.x..area.x.saturating_add(area.width)).contains(&global.0)
+                    && (area.y..area.y.saturating_add(area.height)).contains(&global.1)
+            };
+            if !inside(&geometry) && !shared.as_ref().is_some_and(inside) {
+                return Err(ViewerError::InvalidMouse);
+            }
+            global
         } else {
             (x, y)
         };
@@ -1805,6 +2418,7 @@ impl Viewer {
             .try_send(QueuedInput {
                 event: ViewerInput::Mouse { kind, button, x, y },
                 generation,
+                origin: Origin::Plain,
             })
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
@@ -1843,6 +2457,7 @@ impl Viewer {
             .try_send(QueuedInput {
                 event: ViewerInput::Key { keysym, down },
                 generation,
+                origin: Origin::Plain,
             })
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
@@ -1882,6 +2497,7 @@ impl Viewer {
             .try_send(QueuedInput {
                 event: ViewerInput::RustDeskKey { event },
                 generation,
+                origin: Origin::Plain,
             })
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => ViewerError::Backpressure,
@@ -1903,6 +2519,14 @@ impl Viewer {
         sender
             .try_send(vec![message])
             .map_err(|_| ViewerError::TransportFailed)
+    }
+
+    /// A forward subscription asks for its own IDR, never the local display's.
+    pub(crate) fn request_display_keyframe(&self, display: i32) -> Result<(), ViewerError> {
+        let sender = lock(&self.state.control).clone().ok_or(ViewerError::TransportFailed)?;
+        let mut misc = proto::Misc::new(); misc.set_refresh_video_display(display);
+        let mut message = Message::new(); message.set_misc(misc);
+        sender.try_send(vec![message]).map_err(|_| ViewerError::TransportFailed)
     }
 
     /// Answers the peer's second-factor step on this same, still-open session.
@@ -2150,6 +2774,7 @@ async fn run_rustdesk(
         if let Some(info) = &parts.context.peer_info {
             inner.snapshot.platform = info.platform.clone();
             inner.snapshot.version = info.version.clone();
+            *lock(&state.peer_displays) = info.displays.clone();
             inner.snapshot.current_display = info.current_display;
             inner.snapshot.displays = info
                 .displays
@@ -2208,6 +2833,14 @@ async fn run_rustdesk(
         Ordering::Release,
     );
     state.peer_file.store(parts.context.permissions.file, Ordering::Release);
+    // The handshake's own audio grant, mirrored in the same shape. The audio
+    // owner started below plays only the AND of this grant with the local
+    // option, so a peer that merely has audio enabled is not heard until this
+    // session asks for it, and this side never raises the peer's grant itself.
+    state.peer_audio.store(
+        mode == SessionMode::Desktop && parts.context.permissions.audio,
+        Ordering::Release,
+    );
     let file_clipboard = (mode == SessionMode::Desktop)
         .then(|| crate::cliprdr::start(state.cancel.clone()));
     if let Some(start) = &file_clipboard {
@@ -2227,6 +2860,18 @@ async fn run_rustdesk(
     let transfer_handle = Arc::new(transfer.handle);
     transfer_handle.set_enabled(parts.context.permissions.file);
     *lock(&state.transfer) = Some(transfer_handle);
+    // This session's audio playback: one shared handle for the wire and one
+    // owner for the device. It is started only here — after authentication and
+    // after the last fallible step of the handshake — and only on the wire that
+    // carries audio, so a session that never plays audio never creates one.
+    let audio = (mode == SessionMode::Desktop)
+        .then(|| crate::audio::start(state.cancel.clone()));
+    if let Some(start) = &audio {
+        *lock(&state.audio) = Some(Arc::clone(&start.handle));
+    }
+    // Published from the facts that arrived above: a session whose option or
+    // whose peer refuses audio starts an owner that waits, not one that plays.
+    state.refresh_audio();
     let (control_tx, control_rx) = mpsc::channel(COMMANDS);
     *lock(&state.control) = Some(control_tx.clone());
     // The clipboard reaches the wire through this same writer, on its own
@@ -2259,6 +2904,33 @@ async fn run_rustdesk(
     // over, so a close cannot be acknowledged over a decode still in flight, and
     // the reader only ever hands the message over.
     tasks.spawn(clipboard_decode(state.clone()));
+    if let Some(start) = audio {
+        // The sink this owner drives is not `Send`: it is created, run and
+        // destroyed on one blocking worker of this same runtime — never
+        // `tokio::spawn`, never a second runtime, never a detached thread.
+        //
+        // Its answer is a worker's, not the session's. An audio device that
+        // cannot be opened, or a native stream whose release cannot be
+        // confirmed, must not end a live remote-control wire, so the result is
+        // held here and joined only once this session itself has ended. What it
+        // reports then is the one fact the final close has to see — an
+        // unconfirmed reclamation — read from the audio core's own flag instead
+        // of assumed, so a failure cannot be swallowed into a clean close.
+        let runtime = tokio::runtime::Handle::current();
+        let cancel = state.cancel.clone();
+        let reclamation = Arc::clone(&start.handle);
+        let owner = start.owner;
+        tasks.spawn_blocking(move || {
+            let outcome = runtime.block_on(owner.run());
+            if !cancel.is_cancelled() {
+                runtime.block_on(cancel.cancelled());
+            }
+            match outcome {
+                Ok(()) if !reclamation.snapshot().resources_unconfirmed => Ok(()),
+                _ => Err(ViewerError::ReclamationUnconfirmed),
+            }
+        });
+    }
     if let Some(owner) = file_clipboard_owner {
         // This owner performs bounded synchronous filesystem work. Keep that
         // work off the IO workers, but join it in this same session set using
@@ -2315,11 +2987,35 @@ async fn run_rustdesk(
             }
         }
     }
-    if only_close_fallout && !state.resources_unconfirmed.load(Ordering::Acquire)
+    if only_close_fallout && !state.resources_unconfirmed_any()
         && lock(&state.inner).observed_peer_close_reason == Some(PeerCloseReason::ManualRequest) {
         return Err(ViewerError::RemoteClosed);
     }
     result
+}
+
+/// The stage this reader enters for one message.
+///
+/// It is decided from the message's own union before any branch runs, so no
+/// stage is recorded after the work it describes. Only the owners this reader
+/// really waits on get a label of their own; everything else shares
+/// `other_dispatch` instead of inventing a stage per message kind. Nothing here
+/// reads the message's contents, an address or a payload.
+fn dispatch_phase(union: Option<&message::Union>) -> ReaderPhase {
+    match union {
+        Some(message::Union::VideoFrame(_)) => ReaderPhase::VideoDispatch,
+        Some(message::Union::CursorData(_))
+        | Some(message::Union::CursorId(_))
+        | Some(message::Union::CursorPosition(_)) => ReaderPhase::CursorDispatch,
+        Some(message::Union::FileAction(_)) | Some(message::Union::FileResponse(_)) => {
+            ReaderPhase::TransferDispatch
+        }
+        Some(message::Union::Cliprdr(_)) => ReaderPhase::CliprdrDispatch,
+        // The one control path this reader takes itself: the peer's probe is
+        // queued for the session's writer here.
+        Some(message::Union::TestDelay(_)) => ReaderPhase::ControlDispatch,
+        _ => ReaderPhase::OtherDispatch,
+    }
 }
 
 async fn receive(
@@ -2329,20 +3025,67 @@ async fn receive(
     control: mpsc::Sender<Vec<Message>>,
     transfer: mpsc::Sender<crate::transfer::Inbound>,
 ) -> Result<(), ViewerError> {
+    // This loop publishes the stage it stands in, beside the session state and
+    // never inside it. The reader drops the publication when this future ends,
+    // so cancellation and every error exit leave a terminal reading rather than
+    // the last live stage.
+    let progress = Arc::clone(&state.reader_progress);
+    reader.track_progress(Arc::clone(&progress));
     loop {
         let message = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
             result = reader.recv() => result.map_err(|_| ViewerError::TransportFailed)?.ok_or(ViewerError::RemoteClosed)?,
         };
+        // Before the branch, not after it: these dispatches are the work that can
+        // block, so the published stage has to be the one being entered.
+        progress.enter(dispatch_phase(message.union.as_ref()));
         match message.union {
+            Some(message::Union::PeerInfo(_)) => {
+                // This viewer does not consume live replacement display lists.
+                // Keep sharing disabled until a new authenticated viewer owns it.
+                state.forward_revision.fetch_or(1, Ordering::AcqRel);
+                if let Some(tap) = lock(&state.forward).as_ref() { tap.stop("display_list_changed"); }
+            }
             Some(message::Union::VideoFrame(frame)) => {
                 if let Some(admission) = admission.as_mut() {
+                    if frame.display != admission.source_display() {
+                        // SwitchDisplay does not flush the peer's video queue.
+                        // Drain a reported but non-local display's in-flight
+                        // frames; they never change local geometry or decoding.
+                        if usize::try_from(frame.display).ok()
+                            .and_then(|index| lock(&state.peer_displays).get(index).map(|_| ())).is_none() {
+                            return Err(ViewerError::InvalidPeerGeometry);
+                        }
+                        let display = frame.display;
+                        let (codec, frames, _) = admission.encoded_record(frame)?;
+                        let tap = lock(&state.forward).clone();
+                        if let Some(tap) = tap {
+                            let geometry = tap.selected_geometry();
+                            if tap.active() && geometry.display == display && !frames.is_empty() {
+                                tap.offer(codec, geometry, &frames);
+                            }
+                        }
+                        // Only the explicitly selected Tap above can receive
+                        // another screen; otherwise this record is discarded.
+                        continue;
+                    }
                     if admission.admit(frame).await? == video::Admitted::Cancelled {
                         return Ok(());
                     }
                 }
             }
+            // The peer's audio goes to this session's own audio owner and
+            // nowhere else: no decode, no copy, no per-packet task and no wait
+            // here. A refused packet — muted, no format yet, or a full queue —
+            // is the owner's to count, and it cannot affect video, clipboard or
+            // input.
+            Some(message::Union::AudioFrame(frame)) => {
+                state.offer_audio_frame(frame);
+            }
+            Some(message::Union::CursorData(data)) => state.cursor_data(data),
+            Some(message::Union::CursorId(id)) => state.cursor_id(id),
+            Some(message::Union::CursorPosition(position)) => state.cursor_position(position),
             Some(message::Union::FileAction(action)) => {
                 tokio::select! {
                     biased;
@@ -2363,6 +3106,9 @@ async fn receive(
             }
             Some(message::Union::TestDelay(probe)) => {
                 if !probe.from_client {
+                    if probe.last_delay > 0 {
+                        lock(&state.inner).snapshot.network_rtt_ms = Some(probe.last_delay);
+                    }
                     let mut response = Message::new();
                     response.set_test_delay(probe);
                     control
@@ -2426,21 +3172,100 @@ async fn receive(
                         );
                         state.refresh_clipboard();
                     }
+                    if permission.permission.enum_value().ok() == Some(Permission::Audio) {
+                        // The peer's own audio grant, mirrored and then combined
+                        // with the local facts. A withdrawal stops playback where
+                        // it is: the owner closes its sink, and nothing decoded
+                        // under the previous allowance can be pushed afterwards.
+                        // This side never re-grants on its own either, so turning
+                        // the local option off and on again cannot recover what
+                        // the peer took away.
+                        state.peer_audio.store(
+                            state.mode == SessionMode::Desktop && permission.enabled,
+                            Ordering::Release,
+                        );
+                        state.refresh_audio();
+                    }
+                }
+                Some(misc::Union::AudioFormat(format)) => {
+                    // The format the peer declares for the audio it is about to
+                    // send, handed to the same owner the frames go to. It is
+                    // stored rather than queued inside that core, so a full
+                    // packet queue cannot lose it, and an impossible format is
+                    // refused and recorded there instead of being decoded.
+                    state.offer_audio_format(format);
                 }
                 Some(misc::Union::CloseReason(reason)) => {
                     lock(&state.inner).observed_peer_close_reason = PeerCloseReason::of(&reason);
                     return Err(ViewerError::RemoteClosed);
                 }
                 Some(misc::Union::SwitchDisplay(display)) => {
+                    let requested_switch = state.display_pending.load(Ordering::Acquire)
+                        && lock(&state.session_options).display() == display.display;
+                    let extra = admission.as_ref().is_some_and(|admission|
+                        display.display != admission.source_display())
+                        && lock(&state.forward_routes).contains(&display.display)
+                        && !requested_switch;
+                    if extra {
+                        if display.width <= 0 || display.height <= 0 { return Err(ViewerError::InvalidPeerGeometry); }
+                        let _options = lock(&state.session_options);
+                        state.forward_revision.fetch_add(2, Ordering::AcqRel);
+                        let geometry = Geometry { display: display.display, x: display.x, y: display.y,
+                            width: display.width, height: display.height };
+                        {
+                            let mut displays = lock(&state.peer_displays);
+                            let peer = displays.get_mut(display.display as usize)
+                                .ok_or(ViewerError::InvalidPeerGeometry)?;
+                            peer.width = display.width; peer.height = display.height;
+                            peer.x = display.x; peer.y = display.y;
+                        }
+                        {
+                            let mut inner = lock(&state.inner);
+                            let peer = inner.snapshot.displays.get_mut(display.display as usize)
+                                .ok_or(ViewerError::InvalidPeerGeometry)?;
+                            peer.width = display.width; peer.height = display.height;
+                            peer.x = display.x; peer.y = display.y;
+                            // Deliberately do not change snapshot.current_display.
+                        }
+                        if let Some(tap) = lock(&state.forward).as_ref() {
+                            if tap.selected_geometry().display == display.display { tap.geometry(geometry); }
+                        }
+                        state.forward_revision.fetch_add(2, Ordering::Release);
+                        continue;
+                    }
+                    let was_pending = state.display_pending.swap(true, Ordering::AcqRel);
+                    state.forward_revision.fetch_add(2, Ordering::AcqRel);
+                    *lock(&state.forward_seed) = crate::forward::Seed::default();
+                    if let Some(tap) = lock(&state.forward).as_ref() { tap.stop("geometry_changed"); }
+                    if let Some(peer) = lock(&state.peer_displays).get_mut(display.display as usize) {
+                        peer.width = display.width; peer.height = display.height;
+                        peer.x = display.x; peer.y = display.y;
+                    }
                     if let Some(admission) = admission.as_mut() {
                         admission.switch_display(&display)?;
+                        // Only a real peer confirmation changes peer geometry.
+                        // Local renderer sizing never enters this branch.
+                        let mut inner = lock(&state.inner);
+                        let peer = inner.snapshot.displays.get_mut(display.display as usize)
+                            .ok_or(ViewerError::InvalidPeerGeometry)?;
+                        peer.width = display.width;
+                        peer.height = display.height;
+                        peer.x = display.x;
+                        peer.y = display.y;
+                        inner.snapshot.current_display = display.display;
                     }
+                    let requested = lock(&state.session_options);
+                    let resolution_matches = requested.requested_resolution(display.display)
+                        .is_none_or(|size| size == (display.width, display.height));
+                    if !was_pending || (requested.display() == display.display && resolution_matches) {
+                        state.display_pending.store(false, Ordering::Release);
+                    }
+                    state.forward_revision.fetch_add(2, Ordering::Release);
                 }
                 _ => {}
             },
-            // Audio is not rendered here, and cursor/informational messages
-            // neither authorize input nor fake video state. The clipboard is not
-            // in this arm: it has its own arms above and its own owner.
+            // Informational messages neither authorize input nor fake video
+            // state. Cursor, clipboard and audio have their own owners above.
             _ => {}
         }
     }
@@ -2512,12 +3337,8 @@ struct RustDeskHeld {
     /// own, which is the shape the client's own key up carries.
     keys: Vec<(u64, KeyEvent)>,
     /// One slot per wire button bit, holding the generation that admitted its
-    /// down. `None` is a button this writer is not holding.
-    buttons: [Option<u64>; BUTTON_BITS.len()],
-    /// Where this writer's last pointer event put the peer's pointer: a release
-    /// repeats the position the peer already has instead of moving it back to
-    /// wherever the button went down.
-    pointer: (i32, i32),
+    /// down and who holds it. `None` is a button this writer is not holding.
+    buttons: [Option<(u64, Owner)>; BUTTON_BITS.len()],
 }
 
 /// The original wire's button bits, in the order a release lets them go.
@@ -2556,6 +3377,25 @@ impl RustDeskHeld {
         }
     }
 
+    /// Whether `owner` may emit this event given who holds the button it names.
+    ///
+    /// One side never presses or releases a button the other holds. A share
+    /// viewer also never releases a button nobody holds; B's own stray release
+    /// is still passed on, as it always was.
+    fn permits(&self, event: &ViewerInput, owner: Owner) -> bool {
+        let ViewerInput::Mouse { kind, button, .. } = event else {
+            return true;
+        };
+        let Some(slot) = Self::slot(*button) else {
+            return true;
+        };
+        match (*kind, self.buttons[slot]) {
+            (MOUSE_DOWN | MOUSE_UP, Some((_, holder))) => holder == owner,
+            (MOUSE_UP, None) => owner == Owner::Local,
+            _ => true,
+        }
+    }
+
     /// Records one event the wire took, and reports the hold it let go, by the
     /// generation that admitted it.
     ///
@@ -2563,7 +3403,7 @@ impl RustDeskHeld {
     /// the hold it named, whoever asked for it, and hands back the stamp that
     /// hold carried. Everything here is recorded after the write it describes,
     /// so a hold exists only for an emission the peer can have seen.
-    fn record(&mut self, event: &ViewerInput, generation: u64) -> Option<u64> {
+    fn record(&mut self, event: &ViewerInput, generation: u64, owner: Owner) -> Option<u64> {
         match event {
             ViewerInput::Mouse { kind, button, .. } => {
                 let Some(slot) = Self::slot(*button) else {
@@ -2571,10 +3411,10 @@ impl RustDeskHeld {
                 };
                 match *kind {
                     MOUSE_DOWN => {
-                        self.buttons[slot] = Some(generation);
+                        self.buttons[slot] = Some((generation, owner));
                         None
                     }
-                    MOUSE_UP => self.buttons[slot].take(),
+                    MOUSE_UP => self.buttons[slot].take().map(|(stamped, _)| stamped),
                     _ => None,
                 }
             }
@@ -2792,24 +3632,47 @@ async fn take_input(
     // followed it instead of being released. Running the pass here is what
     // makes that order independent of when the wake-up is delivered.
     release_unadmitted(state, writer, held).await?;
-    let Some(message) = input_message(&queued.event) else {
+    let QueuedInput { event, generation, origin } = queued;
+    let owner = origin.owner();
+    // A share viewer that has gone owns nothing, so what it queued is dropped.
+    if !state.owner_live(owner) {
+        return Ok(());
+    }
+    // An intent is resolved here, at the one writer that owns the pointer, so
+    // every owner's actions accumulate on the same position in queue order.
+    let event = match (origin, event) {
+        (Origin::Shared(_), ViewerInput::Mouse { kind, button, x, y }) => {
+            match state.pointer_intent(kind, button, x, y) {
+                Some(event) => event,
+                None => return Ok(()),
+            }
+        }
+        (_, event) => event,
+    };
+    let Some(message) = input_message(&event) else {
         // An RFB key has no representation on this wire.
         return Ok(());
     };
+    if !held.permits(&event, owner) {
+        return Ok(());
+    }
     let facts = Facts::of(state);
-    let adds = held.adds(&queued.event);
-    if !state.input.own(queued.generation, adds, &facts) {
+    let adds = held.adds(&event);
+    if !state.input.own(generation, adds, &facts) {
         return Ok(());
     }
     if !wire_send(state, writer, &message).await? {
         return Ok(());
     }
-    if let ViewerInput::Mouse { kind, x, y, .. } = &queued.event {
+    if let ViewerInput::Mouse { kind, x, y, .. } = &event {
         if matches!(*kind, MOUSE_MOVE | MOUSE_DOWN | MOUSE_UP) {
-            held.pointer = (*x, *y);
+            // RustDesk excludes the controlling connection from position echoes.
+            // Publish only after its admitted move reached this writer;
+            // otherwise C would never see B's own cursor movements on the share.
+            state.pointer_emitted(*x, *y, matches!(origin, Origin::Shared(_)));
         }
     }
-    let released = held.record(&queued.event, queued.generation);
+    let released = held.record(&event, generation, owner);
     if let Some(stamped) = released {
         state.input.released(stamped);
     }
@@ -2884,23 +3747,34 @@ async fn release_unadmitted(
 ) -> Result<(), ViewerError> {
     let gate = state.input.read();
     let admitted = Facts::of(state).admits(gate);
+    let (at, remote) = {
+        let pointer = lock(&state.pointer);
+        (pointer.position.unwrap_or_default(), pointer.remote)
+    };
     // A hold is released when the policy or the grant in force no longer admits
     // it. Both changes advance the generation, so a hold from before one is
     // released even if admission was granted again in the meantime; a hold the
-    // peer's own permission stopped is released by the gate's answer alone.
-    let stale = |stamped: u64| !admitted || stamped != gate.generation;
+    // peer's own permission stopped is released by the gate's answer alone. A
+    // share viewer's hold also ends with that viewer, whatever the gate says.
+    let stale = |stamped: u64, owner: Owner| {
+        !admitted
+            || stamped != gate.generation
+            || matches!(owner, Owner::Remote(id) if remote != Some(id))
+    };
     for slot in 0..BUTTON_BITS.len() {
-        let Some(stamped) = held.buttons[slot] else {
+        let Some((stamped, owner)) = held.buttons[slot] else {
             continue;
         };
-        if !stale(stamped) {
+        if !stale(stamped, owner) {
             continue;
         }
+        // The release repeats the position the peer already has instead of
+        // moving it back to wherever the button went down.
         let mut message = Message::new();
         message.set_mouse_event(MouseEvent {
             mask: (MOUSE_UP | (BUTTON_BITS[slot] << 3)) as i32,
-            x: held.pointer.0,
-            y: held.pointer.1,
+            x: at.0,
+            y: at.1,
             ..Default::default()
         });
         if !wire_send(state, writer, &message).await? {
@@ -2911,7 +3785,7 @@ async fn release_unadmitted(
     }
     let mut index = 0;
     while index < held.keys.len() {
-        if !stale(held.keys[index].0) {
+        if !stale(held.keys[index].0, Owner::Local) {
             index += 1;
             continue;
         }
@@ -2993,14 +3867,13 @@ impl Sink {
         }
     }
 
-    fn present(&mut self) -> Result<(), crate::surface::SurfaceError> {
+    fn present(&mut self) -> Result<bool, crate::surface::SurfaceError> {
         match self {
             #[cfg(target_env = "ohos")]
             Self::Surface(surface) => surface.present(),
             #[cfg(not(target_env = "ohos"))]
             Self::Memory(surface) => {
-                surface.take_damage();
-                Ok(())
+                Ok(surface.take_damage().is_some())
             }
         }
     }
@@ -3498,17 +4371,36 @@ async fn close_sink(state: &State, sink: Sink) -> Result<(), ViewerError> {
     }
 }
 
-async fn present_sink(surface: &mut Option<Sink>) -> Result<(), ViewerError> {
+async fn present_sink(state: &State, surface: &mut Option<Sink>) -> Result<(), ViewerError> {
     // Never cancel this worker: it temporarily owns the native sink. A panic
     // leaves None and the owner's reclamation flag remains unconfirmed.
     let mut taken = surface.take().ok_or(ViewerError::TaskFailed)?;
+    let presentation = state.presentation.clone();
     let returning = tokio::task::spawn_blocking(move || {
+        let (width, height) = crate::protocol::rect::PixelTarget::size(&taken);
+        let ticket = presentation.as_ref().and_then(|owner| owner.begin_output(width, height));
+        if presentation.is_some() && ticket.is_none() {
+            // Keep the same upstream framebuffer AND its accumulated damage.
+            return (taken, Ok(false));
+        }
         let result = taken.present();
+        if matches!(result, Ok(true)) {
+            if let (Some(owner), Some(ticket)) = (presentation, ticket) {
+                owner.submitted(ticket);
+            }
+        }
         (taken, result)
     });
     let (returned, presented) = returning.await.map_err(|_| ViewerError::TaskFailed)?;
     *surface = Some(returned);
-    presented.map_err(|_| ViewerError::UnsupportedPlatform)
+    presented.map(|_| ()).map_err(|_| ViewerError::UnsupportedPlatform)
+}
+
+async fn presentation_changed(state: &State) {
+    match &state.presentation {
+        Some(owner) => owner.changed().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn rfb_loop(
@@ -3542,6 +4434,10 @@ async fn rfb_stream(
         let event = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
+            _ = presentation_changed(state) => {
+                present_sink(state, surface).await?;
+                continue;
+            }
             // A policy change is handled before anything else on the queue: the
             // release it owes is ordered ahead of the input that would otherwise
             // follow it, and the pass reads the policy it finds rather than
@@ -3562,7 +4458,7 @@ async fn rfb_stream(
             },
         };
         match event {
-            Some(RfbEvent::Painted) => present_sink(surface).await?,
+            Some(RfbEvent::Painted) => present_sink(state, surface).await?,
             Some(RfbEvent::Desktop { width, height }) => {
                 state.desktop_geometry(Geometry {
                     display: 0,
@@ -3573,7 +4469,7 @@ async fn rfb_stream(
                 });
                 // A native Desktop event may include pixels from the same
                 // update. Drain that damage now, without requesting again.
-                present_sink(surface).await?;
+                present_sink(state, surface).await?;
             }
             // A bell and a clipboard announcement carry no pixels.
             Some(RfbEvent::Bell) | Some(RfbEvent::Clipboard(_)) | None => {}
@@ -4228,6 +5124,10 @@ async fn rdp_stream(
         let event = tokio::select! {
             biased;
             _ = state.cancel.cancelled() => return Ok(()),
+            _ = presentation_changed(state) => {
+                present_sink(state, surface).await?;
+                continue;
+            }
             _ = state.input.changed.notified() => {
                 rdp_release_unadmitted(state, session, held).await?;
                 continue;
@@ -4247,7 +5147,7 @@ async fn rdp_stream(
         // capabilities before the later Desktop event publishes new geometry.
         rdp_input_capabilities(state, session);
         match event.map_err(rdp_error)? {
-            Some(RdpEvent::Painted) => present_sink(surface).await?,
+            Some(RdpEvent::Painted) => present_sink(state, surface).await?,
             Some(RdpEvent::Desktop { width, height }) => {
                 state.desktop_geometry(Geometry { display: 0, x: 0, y: 0, width, height });
             }

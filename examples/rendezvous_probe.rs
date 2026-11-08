@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         id: "m3-probe-target-that-does-not-exist".into(),
         rendezvous_server: "rs-ny.rustdesk.com:21116".into(),
         licence_key: RS_PUB_KEY.into(),
-        server_key,
+        server_key: Some(server_key),
         relay_server: None,
         connect_timeout: Duration::from_secs(20),
     })

@@ -1,11 +1,12 @@
     use super::{
         CLIPBOARD_QUEUE, COMMANDS, ClipboardMessage, DIRECT_ACCESS_PORT, Facts, GateView, Inner,
-        InputGate, MAX_HELD_INPUTS, PasswordGate, Protocol, QueuedInput, RustDeskHeld,
+        InputGate, MAX_HELD_INPUTS, Origin, Owner, PasswordGate, Pointer, Protocol, QueuedInput,
+        RustDeskHeld,
         SecondFactorGate, State, Viewer, ViewerError, ViewerInput, ViewerInputPolicy, ViewerSnapshot,
         WireReader, WireWriter, direct_address, lock, take_clipboard, take_input,
     };
     use crate::transport;
-    use base::message_proto::{ControlKey, KeyEvent, Message, message};
+    use base::message_proto::{AudioFormat, AudioFrame, ControlKey, KeyEvent, Message, Misc, message};
     use hbb_common::tcp::FramedStream;
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -60,12 +61,22 @@
     /// time.
     fn writer_state() -> Arc<State> {
         Arc::new(State {
+            forward: Mutex::new(None),
+            forward_seed: Mutex::new(crate::forward::Seed::default()),
+            forward_cursor: Arc::new(crate::forward::CursorFeed::default()),
+            pointer: Mutex::new(Pointer::default()),
+            forward_routes: Mutex::new(std::collections::HashSet::new()),
+            display_pending: AtomicBool::new(false),
+            forward_revision: super::AtomicU64::new(0),
+            peer_displays: Mutex::new(Vec::new()),
+            presentation: None,
             inner: Mutex::new(Inner {
                 conn_token: None,
                 snapshot: ViewerSnapshot::default(),
                 geometry: None,
                 decoder: None,
                 observed_peer_close_reason: None,
+                cursor: super::cursor::CursorState::default(),
             }),
             cancel: CancellationToken::new(),
             done: Notify::new(),
@@ -76,6 +87,8 @@
             authenticated: AtomicBool::new(true),
             rdp_input_flags: super::AtomicU16::new(0),
             peer_proven: AtomicBool::new(true),
+            // The reader's stage state, empty until a test drives a reading.
+            reader_progress: super::ReaderProgress::new(),
             input: InputGate::new(ViewerInputPolicy::interactive()),
             // The clipboard mailbox and its fence, with the peer's grant and the
             // local option left to each test: nothing is admitted until a test
@@ -83,6 +96,11 @@
             clipboard: crate::clipboard::ClipboardState::new(),
             peer_clipboard: AtomicBool::new(false),
             peer_file: AtomicBool::new(false),
+            // The peer's audio grant and this session's audio owner: a test that
+            // drives audio installs a real handle, and one that does not leaves
+            // both untouched.
+            peer_audio: AtomicBool::new(false),
+            audio: Mutex::new(None),
             cliprdr: Mutex::new(None),
             clipboard_out: Mutex::new(None),
             clipboard_in: super::ClipboardDecoder::default(),
@@ -93,6 +111,57 @@
             session_options: Mutex::new(crate::session_options::SessionOptions::default()),
             advertised_decoding: Mutex::new(None),
         })
+    }
+
+    #[cfg(not(target_env = "ohos"))]
+    #[tokio::test]
+    async fn local_pause_preserves_rectangle_updates_and_resumes_latest_damage() {
+        use crate::protocol::rect::{PixelTarget, Rect};
+        use crate::presentation::LocalPresentation;
+        let owner = Arc::new(LocalPresentation::default());
+        let mut state = writer_state();
+        Arc::get_mut(&mut state).unwrap().presentation = Some(owner.clone());
+        let peer_before = state.snapshot();
+        let mut surface = Some(super::Sink::Memory(crate::surface::MemorySurface::new(2, 1).unwrap()));
+        let left = Rect::new(0, 0, 1, 1);
+        surface.as_mut().unwrap().rect_mut(left).unwrap().put_pixel(0, 0, 0x01020304);
+        surface.as_mut().unwrap().damage(left);
+        super::present_sink(&state, &mut surface).await.unwrap();
+        assert!(owner.snapshot().ready.is_some());
+
+        owner.set_paused(true).unwrap();
+        surface.as_mut().unwrap().rect_mut(left).unwrap().put_pixel(0, 0, 0x05060708);
+        surface.as_mut().unwrap().damage(left);
+        // CopyRect depends on the update made while paused, not the last image shown.
+        surface.as_mut().unwrap().copy_rect(Rect::new(1, 0, 1, 1), 0, 0).unwrap();
+        super::present_sink(&state, &mut surface).await.unwrap();
+        let super::Sink::Memory(memory) = surface.as_ref().unwrap();
+        assert_eq!(memory.present_count(), 1);
+        assert_eq!(&memory.bytes()[0..4], &memory.bytes()[4..8]);
+        assert!(owner.snapshot().ready.is_none());
+
+        owner.set_paused(false).unwrap();
+        // The stored wake works even with a static upstream framebuffer.
+        super::presentation_changed(&state).await;
+        super::present_sink(&state, &mut surface).await.unwrap();
+        let super::Sink::Memory(memory) = surface.as_ref().unwrap();
+        assert_eq!(memory.present_count(), 2);
+        assert_eq!(memory.bytes(), &[8, 7, 6, 5, 8, 7, 6, 5]);
+        assert!(owner.snapshot().ready.is_some());
+        owner.rearm().unwrap();
+        super::present_sink(&state, &mut surface).await.unwrap();
+        assert!(owner.snapshot().ready.is_none()); // no new damage, no fake first image
+
+        owner.set_size(0, 3, 1).unwrap();
+        surface.as_mut().unwrap().damage(left);
+        super::present_sink(&state, &mut surface).await.unwrap();
+        assert!(owner.snapshot().ready.is_none());
+        owner.set_size(0, 2, 1).unwrap();
+        super::present_sink(&state, &mut surface).await.unwrap();
+        assert!(owner.snapshot().ready.is_some());
+        assert_eq!(state.snapshot().width, peer_before.width);
+        assert_eq!(state.snapshot().current_display, peer_before.current_display);
+        assert!(lock(&state.control).is_none()); // local sizing did not need a writer
     }
 
     /// One parsed record from the peer's end of a test wire.
@@ -117,6 +186,7 @@
         QueuedInput {
             event,
             generation: state.input.read().generation,
+            origin: Origin::Plain,
         }
     }
 
@@ -171,6 +241,135 @@
             .expect("the writer emitted the message this step expects")
             .expect("the peer's end stays open")
             .expect("the writer emitted a well-formed message")
+    }
+
+    /// Two FPS changes and the options around them arrive on one existing wire.
+    /// Each FPS record contains only its increment, never login defaults that could
+    /// reset the peer's other choices. This is wire delivery, not a peer-cap test.
+    #[tokio::test]
+    async fn custom_fps_updates_share_the_existing_writer_and_preserve_other_options() {
+        use crate::session_options::SessionOptionChange;
+        use base::message_proto::{ImageQuality, OptionMessage, misc, option_message::BoolOption};
+
+        let (viewer, mouse) = writer_viewer();
+        let (control, control_queue) = mpsc::channel(COMMANDS);
+        *lock(&viewer.state.control) = Some(control);
+        *lock(&viewer.state.advertised_decoding) = Some(Default::default());
+
+        viewer
+            .set_session_option(SessionOptionChange::ImageQuality(ImageQuality::Best))
+            .unwrap();
+        let quality = viewer.session_options_snapshot();
+        viewer.set_custom_fps(30).unwrap();
+        assert_eq!(viewer.session_options_snapshot(), quality);
+        viewer
+            .set_session_option(SessionOptionChange::AudioEnabled(false))
+            .unwrap();
+        let muted = viewer.session_options_snapshot();
+        viewer.set_custom_fps(240).unwrap();
+        assert_eq!(viewer.session_options_snapshot(), muted);
+
+        let Wire {
+            writer,
+            mut peer,
+            _client_reader,
+            _peer_writer,
+        } = writer_wire();
+        let (_bulk_tx, bulk) = mpsc::channel(COMMANDS);
+        let (_clipboard_tx, clipboard) = mpsc::channel(CLIPBOARD_QUEUE);
+        let writing = tokio::spawn(super::write(
+            viewer.state.clone(),
+            writer,
+            mouse,
+            control_queue,
+            bulk,
+            clipboard,
+            None,
+        ));
+        for expected in [
+            OptionMessage {
+                image_quality: ImageQuality::Best.into(),
+                ..Default::default()
+            },
+            OptionMessage {
+                custom_fps: 30,
+                ..Default::default()
+            },
+            OptionMessage {
+                disable_audio: BoolOption::Yes.into(),
+                ..Default::default()
+            },
+            OptionMessage {
+                custom_fps: 240,
+                ..Default::default()
+            },
+        ] {
+            let Some(message::Union::Misc(message)) = received(&mut peer).await.union else {
+                panic!("the same wire must carry a Misc increment, not another login");
+            };
+            let Some(misc::Union::Option(option)) = message.union else {
+                panic!("the same wire must carry an OptionMessage");
+            };
+            assert_eq!(option, expected, "no unrelated option is restated");
+        }
+        viewer.request_close();
+        tokio::time::timeout(RECEIVE_LIMIT, writing)
+            .await
+            .expect("the existing writer stops on cancellation")
+            .expect("the writer task joins")
+            .expect("cancelling the writer succeeds");
+    }
+
+    #[test]
+    fn custom_fps_refuses_unavailable_sessions_and_a_full_writer_queue() {
+        use crate::session_options::OptionError;
+
+        let (viewer, _mouse) = writer_viewer();
+        assert!(matches!(viewer.set_custom_fps(30), Err(ViewerError::Closed)));
+        let (control, mut queue) = mpsc::channel(1);
+        *lock(&viewer.state.control) = Some(control);
+        viewer.state.authenticated.store(false, super::Ordering::Release);
+        assert!(matches!(
+            viewer.set_custom_fps(30),
+            Err(ViewerError::SessionOption(OptionError::SessionNotStarted))
+        ));
+        viewer.state.authenticated.store(true, super::Ordering::Release);
+        for fps in [0, 241] {
+            assert!(matches!(viewer.set_custom_fps(fps), Err(ViewerError::InvalidOptions)));
+        }
+        assert!(queue.try_recv().is_err(), "refused calls queued nothing");
+        viewer.set_custom_fps(30).unwrap();
+        assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Backpressure)));
+        assert_eq!(queue.try_recv().unwrap().len(), 1);
+        assert!(queue.try_recv().is_err(), "the full queue did not admit a second request");
+        drop(queue);
+        assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Closed)));
+
+        let (control, mut queue) = mpsc::channel(1);
+        *lock(&viewer.state.control) = Some(control);
+        viewer.request_close();
+        assert!(matches!(viewer.set_custom_fps(60), Err(ViewerError::Closed)));
+        assert!(queue.try_recv().is_err());
+
+        for (protocol, mode) in [
+            (Protocol::Vnc, crate::session::SessionMode::Desktop),
+            (Protocol::Rdp, crate::session::SessionMode::Desktop),
+            (Protocol::RustDesk, crate::session::SessionMode::FileTransfer),
+        ] {
+            let mut state = writer_state();
+            let inner = Arc::get_mut(&mut state).unwrap();
+            inner.protocol = protocol;
+            inner.mode = mode;
+            let (control, mut queue) = mpsc::channel(1);
+            *lock(&state.control) = Some(control);
+            let (mouse, _input) = mpsc::channel(COMMANDS);
+            let viewer = Viewer { state, mouse };
+            assert!(matches!(
+                viewer.set_custom_fps(60),
+                Err(ViewerError::SessionOption(OptionError::UnsupportedProtocol))
+            ));
+            assert!(queue.try_recv().is_err());
+        }
     }
 
     /// The key state one message the peer received carries.
@@ -271,10 +470,10 @@
     #[test]
     fn rdp_revocation_after_relative_motion_releases_without_warping_the_pointer() {
         let down = super::rdp_batch(&super::RdpHeld::default(), &QueuedInput {
-            event: ViewerInput::Mouse { kind: 1, button: 1, x: 10, y: 20 }, generation: 3,
+            event: ViewerInput::Mouse { kind: 1, button: 1, x: 10, y: 20 }, generation: 3, origin: Origin::Plain,
         }).unwrap();
         let moved = super::rdp_batch(&down.held, &QueuedInput {
-            event: ViewerInput::Mouse { kind: 5, button: 0, x: -7, y: 9 }, generation: 3,
+            event: ViewerInput::Mouse { kind: 5, button: 0, x: -7, y: 9 }, generation: 3, origin: Origin::Plain,
         }).unwrap();
         assert_eq!(moved.held.release_event(0), super::FastPathInputEvent::MouseEventRel(super::MouseRelPdu {
             flags: super::PointerRelFlags::BUTTON1, x_delta: 0, y_delta: 0,
@@ -559,24 +758,24 @@
         assert!(held.adds(&control_key(true)));
         assert!(gate.own(generation, held.adds(&control_key(true)), &facts));
         assert_eq!(owed(&gate, &facts), 1, "the gate owns the hold it admitted");
-        assert_eq!(held.record(&control_key(true), generation), None);
+        assert_eq!(held.record(&control_key(true), generation, Owner::Local), None);
 
         // The peer's key is one key, so a repeat of the same down is one hold.
         assert!(!held.adds(&control_key(true)));
-        assert_eq!(held.record(&control_key(true), generation), None);
+        assert_eq!(held.record(&control_key(true), generation, Owner::Local), None);
         assert_eq!(owed(&gate, &facts), 1);
 
         // Its release is what drops the hold, and it drops it once — reporting
         // the stamp the hold carried, so the gate can tell a hold the operator
         // let go from one a change retired.
         assert_eq!(
-            held.record(&control_key(false), generation),
+            held.record(&control_key(false), generation, Owner::Local),
             Some(generation)
         );
         gate.released(generation);
         assert_eq!(owed(&gate, &facts), 0);
         assert_eq!(
-            held.record(&control_key(false), generation),
+            held.record(&control_key(false), generation, Owner::Local),
             None,
             "a release for a key this writer never held releases nothing"
         );
@@ -597,13 +796,13 @@
         };
         assert!(held.adds(&down));
         assert!(gate.own(generation, held.adds(&down), &facts));
-        assert_eq!(held.record(&down, generation), None);
+        assert_eq!(held.record(&down, generation, Owner::Local), None);
         assert_eq!(owed(&gate, &facts), 1);
         assert!(!held.adds(&down), "a button already held takes nothing");
-        assert_eq!(held.record(&up, generation), Some(generation));
+        assert_eq!(held.record(&up, generation, Owner::Local), Some(generation));
         gate.released(generation);
         assert_eq!(owed(&gate, &facts), 0);
-        assert_eq!(held.record(&up, generation), None);
+        assert_eq!(held.record(&up, generation, Owner::Local), None);
     }
 
     #[test]
@@ -815,6 +1014,302 @@
         );
     }
 
+    /// A viewer that shares a display: its desktop is two 100x100 displays side
+    /// by side, and the share is armed.
+    fn shared_pointer_viewer() -> (Arc<Viewer>, mpsc::Receiver<QueuedInput>) {
+        let (viewer, input) = writer_viewer();
+        let state = &viewer.state;
+        let left = crate::video::Geometry { display: 0, x: 0, y: 0, width: 100, height: 100 };
+        lock(&state.inner).geometry = Some(left);
+        *lock(&state.peer_displays) = [0, 100]
+            .map(|x| base::message_proto::DisplayInfo { x, y: 0, width: 100, height: 100, ..Default::default() })
+            .to_vec();
+        let (sender, _receiver) = mpsc::channel(1);
+        let tap = crate::forward::tap(&viewer, left, false, sender, CancellationToken::new(),
+            &crate::forward::Seed::default(), state.forward_cursor.clone(), false);
+        *lock(&state.forward) = Some(tap);
+        (viewer, input)
+    }
+
+    /// Releasing a separately subscribed share must restore B's own display,
+    /// not send `sub:[shared]`, which the peer interprets as excluding B's
+    /// current display as well.
+    #[tokio::test]
+    async fn releasing_extra_forward_subscription_restores_current_display() {
+        let (viewer, _input) = writer_viewer();
+        let state = &viewer.state;
+        lock(&state.inner).snapshot.current_display = 0;
+        let shared = crate::video::Geometry { display: 1, x: 100, y: 0, width: 100, height: 100 };
+        let (packet_sender, _packet_receiver) = mpsc::channel(1);
+        let tap = crate::forward::tap(
+            &viewer,
+            shared,
+            true,
+            packet_sender,
+            CancellationToken::new(),
+            &crate::forward::Seed::default(),
+            state.forward_cursor.clone(),
+            false,
+        );
+        *lock(&state.forward) = Some(tap.clone());
+        let (control_sender, mut control_receiver) = mpsc::channel(1);
+        *lock(&state.control) = Some(control_sender);
+
+        viewer.release_forward(&tap).await;
+
+        let messages = tokio::time::timeout(RECEIVE_LIMIT, control_receiver.recv())
+            .await
+            .expect("release queues a capture restoration")
+            .expect("the control sender remains live");
+        assert_eq!(messages.len(), 1);
+        let Some(message::Union::Misc(misc)) = messages.into_iter().next().unwrap().union else {
+            panic!("release queues a Misc control message")
+        };
+        let Some(base::message_proto::misc::Union::CaptureDisplays(capture)) = misc.union else {
+            panic!("release queues CaptureDisplays")
+        };
+        assert_eq!(capture.set, vec![0]);
+        assert!(capture.add.is_empty() && capture.sub.is_empty());
+    }
+
+    #[test]
+    fn pointer_stops_at_display_edges_and_never_jumps_a_gap() {
+        use super::cursor::constrain;
+        // B sits to the right of A and lower: the strip above B is not desktop.
+        let areas = [(0, 0, 1920, 1080), (1920, 300, 1280, 720)];
+        assert_eq!(constrain((10, 10), (60, 40), &areas), Some((60, 40)));
+        assert_eq!(constrain((1900, 500), (2000, 500), &areas), Some((2000, 500)), "onto the next display");
+        assert_eq!(constrain((1900, 100), (2000, 50), &areas), Some((1919, 50)), "slides along A's edge");
+        assert_eq!(constrain((1900, 100), (2000, -80), &areas), Some((1919, 0)), "no jump over the gap");
+        assert_eq!(constrain((9000, 9000), (3000, 5000), &areas), Some((3000, 1019)), "stale: nearest desktop point");
+        assert_eq!(constrain((0, 0), (5, 5), &[]), None);
+    }
+
+    /// B and C act on one pointer owned by the source writer: C's click lands
+    /// where the pointer is whatever coordinate it carries, moves cross every
+    /// real display, one side never releases the other's button, and C's holds
+    /// end with C while B's stay.
+    #[tokio::test]
+    async fn shared_pointer_is_one_position_and_c_holds_end_with_c_not_b() {
+        use base::message_proto::CursorPosition;
+        let (viewer, mut input) = shared_pointer_viewer();
+        let state = &viewer.state;
+        assert!(viewer.has_active_share());
+        let generation = viewer.input_generation();
+        let mut wire = writer_wire();
+        let mut held = RustDeskHeld::default();
+        macro_rules! take {
+            () => {
+                take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap()).await.unwrap()
+            };
+        }
+
+        // Unknown position means no invented centre for either clicks or moves.
+        viewer.send_shared_pointer(1, 1, 0, 0, generation).unwrap();
+        take!();
+        viewer.send_shared_pointer(5, 0, 10, 10, generation).unwrap();
+        take!();
+        assert_eq!(state.pointer_position(), None);
+        state.cursor_position(CursorPosition { x: 50, y: 50, ..Default::default() });
+        for (delta, expected) in [((10, 10), (60, 60)), ((60, -10), (120, 50)), ((200, 0), (199, 50))] {
+            viewer.send_shared_pointer(5, 0, delta.0, delta.1, generation).unwrap();
+            take!();
+            assert_eq!(pointer(received(&mut wire.peer).await), (0, expected.0, expected.1));
+        }
+        assert_eq!(viewer.snapshot().cursor.position, Some((199, 50)), "B's snapshot follows the pointer");
+        assert!(matches!(viewer.send_shared_pointer(0, 0, 5, 5, generation), Err(ViewerError::InvalidMouse)));
+
+        // C clicks with a coordinate far away: it acts on the shared pointer.
+        let remote = viewer.begin_remote_pointer();
+        viewer.send_remote_pointer(remote, 1, 1, 9999, 9999).unwrap();
+        take!();
+        assert_eq!(pointer(received(&mut wire.peer).await), (1 | (1 << 3), 199, 50));
+        // B cannot release C's button; its own move after that goes through.
+        viewer.send_shared_pointer(2, 1, 0, 0, generation).unwrap();
+        take!();
+        viewer.send_shared_pointer(5, 0, -100, 0, generation).unwrap();
+        take!();
+        assert_eq!(pointer(received(&mut wire.peer).await), (0, 99, 50));
+        // B holds another button; a stale sample from before B's write does not
+        // pull the pointer back.
+        viewer.send_shared_pointer(1, 2, 0, 0, generation).unwrap();
+        take!();
+        assert_eq!(pointer(received(&mut wire.peer).await), (1 | (2 << 3), 99, 50));
+        state.cursor_position(CursorPosition { x: 1, y: 1, ..Default::default() });
+        assert_eq!(viewer.snapshot().cursor.position, Some((99, 50)));
+        assert_eq!(viewer.snapshot().releases_owed, 2);
+
+        // C goes away with a move still queued: the move is dropped, C's button
+        // is released at the pointer, and B's button stays held.
+        viewer.send_remote_pointer(remote, 5, 0, 10, 0).unwrap();
+        viewer.end_remote_pointer(remote);
+        take!();
+        assert_eq!(pointer(received(&mut wire.peer).await), (2 | (1 << 3), 99, 50));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), wire.peer.recv()).await.is_err(),
+            "nothing else reached the peer: not C's move, not B's button release"
+        );
+        assert_eq!(viewer.snapshot().releases_owed, 1);
+        assert!(matches!(viewer.send_remote_pointer(remote, 5, 0, 1, 1), Err(ViewerError::Closed)));
+
+        // Once the grace has passed, a position the peer reports corrects it.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        state.cursor_position(CursorPosition { x: 7, y: 8, ..Default::default() });
+        assert_eq!(viewer.snapshot().cursor.position, Some((7, 8)));
+        viewer.send_shared_pointer(5, 0, 1, 1, generation).unwrap();
+        take!();
+        assert_eq!(pointer(received(&mut wire.peer).await), (0, 8, 9));
+
+        // C's plain wire click must not block B's authoritative position echo.
+        state.pointer_emitted(0, 0, false);
+        state.cursor_position(CursorPosition { x: 80, y: 81, ..Default::default() });
+        assert_eq!(viewer.snapshot().cursor.position, Some((80, 81)));
+    }
+
+    /// A generation change ends every owner's holds through the writer, drops
+    /// what was queued before it, and a read-only policy stops C like B.
+    #[tokio::test]
+    async fn generation_change_releases_both_owners_holds_and_drops_pending_intents() {
+        let (viewer, mut input) = shared_pointer_viewer();
+        let state = &viewer.state;
+        let generation = viewer.input_generation();
+        let mut wire = writer_wire();
+        let mut held = RustDeskHeld::default();
+        state.pointer_emitted(40, 40, true);
+        let remote = viewer.begin_remote_pointer();
+        viewer.send_remote_pointer(remote, 1, 1, 0, 0).unwrap();
+        viewer.send_shared_pointer(1, 2, 0, 0, generation).unwrap();
+        for _ in 0..2 {
+            take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap()).await.unwrap();
+            received(&mut wire.peer).await;
+        }
+        viewer.send_remote_pointer(remote, 5, 0, 5, 5).unwrap();
+        let outcome = viewer.release_input();
+        assert_eq!(outcome.releases_owed, 2);
+        take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap()).await.unwrap();
+        for bit in [1, 2] {
+            assert_eq!(pointer(received(&mut wire.peer).await), (2 | (bit << 3), 40, 40));
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), wire.peer.recv()).await.is_err(),
+            "the move queued before the generation changed was dropped"
+        );
+        assert_eq!(viewer.snapshot().releases_owed, 0);
+
+        viewer.set_input_policy(ViewerInputPolicy::read_only());
+        assert!(matches!(viewer.send_remote_pointer(remote, 5, 0, 1, 1), Err(ViewerError::InputNotAllowed)));
+    }
+
+    /// A focus retirement uses the existing writer and generation fence, but
+    /// never changes authorization or the independent clipboard fence/mailbox.
+    #[tokio::test]
+    async fn release_input_retires_holds_and_queued_events_without_changing_policy_or_clipboard() {
+        let (viewer, mut input) = writer_viewer();
+        let state = &viewer.state;
+        let policy = ViewerInputPolicy {
+            view_only: false,
+            unverified_accepted: true,
+        };
+        viewer.set_input_policy(policy);
+        *lock(&state.session_options) = crate::session_options::SessionOptions::default()
+            .request(crate::session_options::SessionOptionChange::ClipboardEnabled(true))
+            .unwrap();
+        state.peer_clipboard.store(true, super::Ordering::Release);
+        state.refresh_clipboard();
+        let (clipboard_tx, mut clipboard_rx) = mpsc::channel(CLIPBOARD_QUEUE);
+        *lock(&state.clipboard_out) = Some(clipboard_tx);
+        let clipboard_revision = viewer
+            .clipboard_send(crate::clipboard::ClipboardPayload::text("still queued"))
+            .unwrap();
+        super::clipboard_decode_once(
+            state,
+            clipboard_revision,
+            ClipboardMessage::Single(base::message_proto::Clipboard {
+                content: b"still pending".to_vec().into(),
+                format: base::message_proto::ClipboardFormat::Text.into(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let mut wire = writer_wire();
+        let mut held = RustDeskHeld::default();
+        let old = viewer.input_generation();
+        viewer.send_rustdesk_key(control_key_event(true), old).unwrap();
+        take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
+            .await
+            .unwrap();
+        assert!(key_state(received(&mut wire.peer).await));
+        viewer.send_mouse(3, 0, 0, 1, old).unwrap();
+        // Consume the earlier grant/policy notification before testing the wake
+        // caused by release_input itself.
+        tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified()).await.unwrap();
+
+        let outcome = viewer.release_input();
+        assert_eq!(outcome.input_generation, old + 1);
+        assert_eq!(outcome.policy, policy);
+        assert!(!outcome.revoked, "retirement does not revoke authorization");
+        assert_eq!(
+            (outcome.releases_owed, outcome.releases_retired, outcome.releases_unreleased),
+            (1, 1, 0),
+        );
+        assert!(!outcome.released(), "retirement is not a completed release");
+        assert!(matches!(
+            viewer.send_rustdesk_key(control_key_event(false), old),
+            Err(ViewerError::StaleInputGeneration)
+        ));
+        assert!(matches!(
+            viewer.send_mouse(3, 0, 0, 1, old),
+            Err(ViewerError::StaleInputGeneration)
+        ));
+
+        // Exactly the release path the writer's wake branch already runs:
+        // no fresh input is needed to let the held key go.
+        tokio::time::timeout(RECEIVE_LIMIT, state.input.changed.notified()).await.unwrap();
+        super::release_unadmitted(state, &mut wire.writer, &mut held).await.unwrap();
+        assert!(!key_state(received(&mut wire.peer).await), "the old hold is released");
+        let released = viewer.snapshot();
+        assert_eq!(
+            (released.releases_owed, released.releases_retired, released.releases_unreleased),
+            (0, 0, 0),
+        );
+        take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
+            .await
+            .unwrap();
+        assert!(input.try_recv().is_err(), "old-generation refusals queued nothing");
+
+        // The first event after that release must be the fresh key, not the
+        // mouse event queued before retirement.
+        for down in [true, false] {
+            assert_eq!(
+                viewer.send_rustdesk_key(control_key_event(down), outcome.input_generation).unwrap(),
+                outcome.input_generation,
+            );
+            take_input(state, &mut wire.writer, &mut held, input.try_recv().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(key_state(received(&mut wire.peer).await), down);
+        }
+
+        assert_eq!(viewer.input_policy(), policy);
+        assert_eq!(state.clipboard.revision(), clipboard_revision);
+        assert!(viewer.clipboard_admits(clipboard_revision));
+        assert!(viewer.snapshot().clipboard_pending, "retirement did not empty the mailbox");
+        let metadata = viewer.clipboard_take_metadata().unwrap();
+        assert_eq!(metadata.revision, clipboard_revision);
+        assert_eq!(metadata.text.as_deref(), Some("still pending"));
+        take_clipboard(state, &mut wire.writer, clipboard_rx.try_recv().unwrap())
+            .await
+            .unwrap();
+        match received(&mut wire.peer).await.union {
+            Some(message::Union::Clipboard(clipboard)) => {
+                assert_eq!(clipboard.content.as_ref(), b"still queued".as_slice());
+            }
+            other => panic!("expected the clipboard queued before retirement, got {other:?}"),
+        }
+    }
+
     /// The clipboard is the session's own: a payload queued under a generation
     /// this viewer has left is not written, and the peer's own update lands in
     /// the mailbox stamped with the generation it arrived under.
@@ -909,6 +1404,602 @@
         assert!(!viewer.snapshot().clipboard_pending);
         assert_eq!(metadata.revision, live);
         assert_eq!(metadata.text.as_deref(), Some("from peer"));
+    }
+
+    /// Audio playback is the AND of the peer's own grant and the local option,
+    /// and neither a repeated report nor the read-only switch can invent or
+    /// remove a grant on this side.
+    ///
+    /// The owner is real but never driven, so nothing here opens an OS device,
+    /// and the handle under test is the one the reader offers packets to.
+    #[tokio::test]
+    async fn audio_plays_only_the_peer_grant_and_the_local_option() {
+        let state = writer_state();
+        let playback = crate::audio::start(state.cancel.clone());
+        let _owner = playback.owner;
+        *lock(&state.audio) = Some(Arc::clone(&playback.handle));
+        let audio = &playback.handle;
+
+        // The session's own switch arrived on (the engine's desktop default) and
+        // the peer has granted nothing: asking for audio is not hearing it.
+        assert!(lock(&state.session_options).audio_enabled());
+        state.refresh_audio();
+        assert!(!state.audio_facts());
+        assert!(!audio.snapshot().allowed);
+
+        // The peer's grant beside that switch is what plays.
+        state.peer_audio.store(true, super::Ordering::Release);
+        state.refresh_audio();
+        assert!(state.audio_facts());
+        assert!(audio.snapshot().allowed);
+
+        // The operator's own switch stops it again, and the peer's grant that is
+        // still in force does not bring it back.
+        *lock(&state.session_options) = crate::session_options::SessionOptions::default()
+            .request(crate::session_options::SessionOptionChange::AudioEnabled(false))
+            .expect("audio can be turned off");
+        assert!(!state.audio_facts());
+        state.refresh_audio();
+        let muted = audio.snapshot();
+        assert!(!muted.allowed);
+
+        // A withdrawal while the switch is off changes nothing, and repeating
+        // the answer does not move the generation...
+        state.peer_audio.store(false, super::Ordering::Release);
+        state.refresh_audio();
+        state.refresh_audio();
+        assert!(!audio.snapshot().allowed);
+        assert_eq!(
+            audio.snapshot().generation,
+            muted.generation,
+            "a repeated answer changes nothing"
+        );
+        // ... and a fresh grant cannot override the local switch either, so this
+        // side never re-grants what the peer withdrew or the operator stopped.
+        state.peer_audio.store(true, super::Ordering::Release);
+        state.refresh_audio();
+        assert!(!audio.snapshot().allowed, "the local switch is still off");
+
+        // Asking for audio again restores playback for a peer whose grant stands.
+        *lock(&state.session_options) = crate::session_options::SessionOptions::default();
+        state.refresh_audio();
+        assert!(audio.snapshot().allowed);
+
+        // A read-only viewer still hears its peer: that switch stops what this
+        // viewer sends, and listening sends nothing.
+        state
+            .input
+            .set(ViewerInputPolicy::read_only(), &facts(Protocol::RustDesk, true));
+        assert!(state.input.policy().view_only);
+        state.refresh_audio();
+        assert!(
+            audio.snapshot().allowed,
+            "a read-only viewer still listens to the peer"
+        );
+
+        // Closing withdraws the allowance with the session, so nothing admitted
+        // under it can reach a sink afterwards.
+        state.request_close();
+        assert!(!state.audio_facts());
+        assert!(!audio.snapshot().allowed);
+    }
+
+    fn cursor_bitmap(id: u64, value: u8) -> base::message_proto::CursorData {
+        base::message_proto::CursorData {
+            id,
+            hotx: 1,
+            width: 2,
+            height: 1,
+            colors: hbb_common::compress::compress(&[value; 8]).into(),
+            ..Default::default()
+        }
+    }
+
+    /// The echoed probe proves preceding cursor records passed through the real
+    /// reader, without sleeps or polling the state for an assumed delivery.
+    async fn cursor_barrier(
+        peer: &mut WireWriter,
+        echoed: &mut mpsc::Receiver<Vec<Message>>,
+        state: &State,
+    ) -> ViewerSnapshot {
+        let mut probe = Message::new();
+        probe.set_test_delay(base::message_proto::TestDelay::default());
+        peer.send(&probe).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(RECEIVE_LIMIT, echoed.recv()).await.unwrap().unwrap(),
+            vec![probe],
+        );
+        state.snapshot()
+    }
+
+    #[tokio::test]
+    async fn peer_cursor_messages_keep_cached_images_and_global_positions_without_media_progress() {
+        use base::message_proto::CursorPosition;
+
+        let state = writer_state();
+        lock(&state.inner).snapshot.displays.push(super::PeerDisplayInfo {
+            x: -1920, y: 640, width: 1920, height: 1080, ..Default::default()
+        });
+        let before = state.snapshot();
+        let (control, mut echoed) = mpsc::channel(COMMANDS);
+        let (transfer, _transfer_rx) = mpsc::channel(COMMANDS);
+        let Wire {
+            writer: _client_writer,
+            peer: _peer_reader,
+            _client_reader: reader,
+            _peer_writer: mut peer,
+        } = writer_wire();
+        let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+        let id = (1u64 << 53) + 7;
+        let first = cursor_bitmap(id, 17);
+        // A slow consumer sees neither intermediate bitmap. Selecting A by ID
+        // still supplies its real bitmap, not the most recently received B.
+        for data in [first.clone(), cursor_bitmap(9, 29)] {
+            let mut message = Message::new();
+            message.set_cursor_data(data);
+            peer.send(&message).await.unwrap();
+        }
+        let mut selected = Message::new();
+        selected.set_cursor_id(id);
+        peer.send(&selected).await.unwrap();
+        let mut position = Message::new();
+        position.set_cursor_position(CursorPosition { x: -1500, y: 900, ..Default::default() });
+        peer.send(&position).await.unwrap();
+        let observed = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        let image = observed.cursor.image.as_ref().unwrap();
+        assert_eq!((image.id, image.hotx, image.hoty, image.width, image.height), (id, 1, 0, 2, 1));
+        assert_eq!(image.rgba, vec![17; 8]);
+        assert_eq!(observed.cursor.revision, 3);
+        assert!(observed.cursor.from_id);
+        assert_eq!(observed.cursor.position, Some((-1500, 900)), "no display-origin subtraction");
+
+        peer.send(&selected).await.unwrap();
+        peer.send(&position).await.unwrap();
+        let mut repeated = Message::new();
+        repeated.set_cursor_data(first.clone());
+        peer.send(&repeated).await.unwrap();
+        let repeated = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        assert_eq!(repeated.cursor.revision, observed.cursor.revision);
+        assert_eq!(repeated.cursor.position_revision, observed.cursor.position_revision);
+        assert!(Arc::ptr_eq(image, repeated.cursor.image.as_ref().unwrap()));
+
+        let mut changed = Message::new();
+        changed.set_cursor_data(cursor_bitmap(id, 43));
+        peer.send(&changed).await.unwrap();
+        for x in 0..64 {
+            position.set_cursor_position(CursorPosition { x, y: 1000, ..Default::default() });
+            peer.send(&position).await.unwrap();
+        }
+        let changed = cursor_barrier(&mut peer, &mut echoed, &state).await;
+        assert_eq!(changed.cursor.image.as_ref().unwrap().rgba, vec![43; 8]);
+        assert!(!Arc::ptr_eq(image, changed.cursor.image.as_ref().unwrap()));
+        assert!(!changed.cursor.from_id, "same-ID data replaces the old bitmap");
+        assert_eq!(changed.cursor.position, Some((63, 1000)), "only the latest move is retained");
+        assert_eq!(changed.input_generation, before.input_generation);
+        assert_eq!(changed.keyboard_allowed, before.keyboard_allowed);
+        assert_eq!((changed.received_units, changed.pushed_units, changed.render_submissions), (0, 0, 0));
+        assert!(changed.authenticated && !changed.closed);
+
+        state.request_close();
+        state.cursor_data(first);
+        state.cursor_id(id);
+        state.cursor_position(CursorPosition { x: 1, y: 2, ..Default::default() });
+        let closing = state.snapshot();
+        assert!(closing.cursor.id.is_none());
+        assert!(closing.cursor.image.is_none());
+        assert!(closing.cursor.position.is_none());
+        state.finish(Ok(()));
+        assert!(state.snapshot().cursor.image.is_none());
+        tokio::time::timeout(RECEIVE_LIMIT, reading).await.unwrap().unwrap().unwrap();
+    }
+
+    #[test]
+    fn invalid_cursor_bitmaps_and_unknown_ids_clear_the_image_without_ending_the_session() {
+        use std::io::Write;
+
+        let state = writer_state();
+        let valid = cursor_bitmap(7, 17);
+        let before = state.snapshot();
+        state.authenticated.store(false, super::Ordering::Release);
+        state.cursor_data(valid.clone());
+        state.cursor_id(7);
+        assert!(state.snapshot().cursor.id.is_none(), "no cursor is published before authorization");
+        state.authenticated.store(true, super::Ordering::Release);
+        let mut bad_size = valid.clone();
+        bad_size.width = 513;
+        let mut bad_hotspot = valid.clone();
+        bad_hotspot.hotx = 2;
+        let mut short = valid.clone();
+        short.colors = hbb_common::compress::compress(&[0; 7]).into();
+        let mut inflated = valid.clone();
+        inflated.colors = hbb_common::compress::compress(&[0; 1024]).into();
+        let mut corrupt = valid.clone();
+        corrupt.colors = vec![1, 2, 3].into();
+        let mut too_large = valid.clone();
+        too_large.colors = vec![0; 2 * 512 * 512 * 4 + 1].into();
+        let mut encoder = zstd::Encoder::new(Vec::<u8>::new(), 3).unwrap();
+        encoder.window_log(23).unwrap();
+        encoder.write_all(b"abcdefgh").unwrap();
+        let frame = encoder.finish().unwrap();
+        assert_eq!(zstd::decode_all(frame.as_slice()).unwrap(), b"abcdefgh".to_vec());
+        let mut large_window = valid.clone();
+        large_window.colors = frame.into();
+
+        for invalid in [bad_size, bad_hotspot, short, inflated, corrupt, too_large, large_window] {
+            state.cursor_data(valid.clone());
+            assert!(state.snapshot().cursor.image.is_some());
+            state.cursor_data(invalid);
+            let refused = state.snapshot();
+            assert_eq!(refused.cursor.id, Some(7));
+            assert!(refused.cursor.image.is_none(), "no previous same-ID image survives rejection");
+            state.cursor_id(7);
+            assert!(state.snapshot().cursor.image.is_none(), "the cache was invalidated too");
+            assert!(refused.authenticated && !refused.closed);
+            assert_eq!(refused.input_generation, before.input_generation);
+            assert_eq!(refused.received_units, 0);
+        }
+        state.cursor_data(valid.clone());
+        state.cursor_id(u64::MAX);
+        assert_eq!(state.snapshot().cursor.id, Some(u64::MAX));
+        assert!(state.snapshot().cursor.image.is_none());
+        state.cursor_data(valid);
+        assert_eq!(state.snapshot().cursor.image.as_ref().unwrap().rgba, vec![17; 8]);
+    }
+
+    #[test]
+    fn cursor_cache_is_fifo_bounded_by_both_image_count_and_rgba_bytes() {
+        let state = writer_state();
+        for id in 0..=256 {
+            state.cursor_data(cursor_bitmap(id, 17));
+        }
+        state.cursor_id(0);
+        assert!(state.snapshot().cursor.image.is_none());
+        state.cursor_id(1);
+        assert!(state.snapshot().cursor.image.is_some(), "FIFO keeps the next-oldest ID");
+
+        let state = writer_state();
+        let mut bitmap = base::message_proto::CursorData {
+            width: 512,
+            height: 512,
+            colors: hbb_common::compress::compress(&vec![17; 512 * 512 * 4]).into(),
+            ..Default::default()
+        };
+        for id in 0..=16 {
+            bitmap.id = id;
+            state.cursor_data(bitmap.clone());
+        }
+        state.cursor_id(0);
+        assert!(state.snapshot().cursor.image.is_none(), "17 MiB does not fit the 16 MiB cache");
+        state.cursor_id(1);
+        assert_eq!(state.snapshot().cursor.image.as_ref().unwrap().rgba.len(), 512 * 512 * 4);
+        assert!(state.snapshot().authenticated);
+    }
+
+    #[tokio::test]
+    async fn peer_test_delay_retains_the_last_positive_rtt_and_echoes_unchanged() {
+        use base::message_proto::TestDelay;
+
+        let state = writer_state();
+        assert_eq!(state.snapshot().network_rtt_ms, None);
+        let (control, mut echoed) = mpsc::channel(COMMANDS);
+        let (transfer, _transfer_rx) = mpsc::channel(COMMANDS);
+        let Wire {
+            writer: _client_writer,
+            peer: _peer_reader,
+            _client_reader: reader,
+            _peer_writer: mut peer,
+        } = writer_wire();
+        let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+
+        // A client-origin report is neither a peer RTT nor a probe to echo.
+        let mut ignored = Message::new();
+        ignored.set_test_delay(TestDelay {
+            time: 7,
+            from_client: true,
+            last_delay: 99,
+            ..Default::default()
+        });
+        peer.send(&ignored).await.unwrap();
+
+        for (last_delay, expected) in [(0, None), (37, Some(37)), (0, Some(37)), (19, Some(19))] {
+            let mut message = Message::new();
+            message.set_test_delay(TestDelay {
+                time: 123,
+                last_delay,
+                target_bitrate: 4_000,
+                ..Default::default()
+            });
+            peer.send(&message).await.unwrap();
+            // Receiving this echo also proves earlier records were processed.
+            let batch = tokio::time::timeout(RECEIVE_LIMIT, echoed.recv())
+                .await
+                .expect("the reader queues the peer probe's echo")
+                .expect("the reader keeps the control channel open");
+            assert_eq!(batch, vec![message], "the peer probe is queued unchanged");
+            assert_eq!(state.snapshot().network_rtt_ms, expected);
+        }
+
+        state.cancel.cancel();
+        tokio::time::timeout(RECEIVE_LIMIT, reading)
+            .await
+            .expect("the reader stops on cancellation")
+            .expect("the reader task joins")
+            .expect("cancelling the reader succeeds");
+    }
+
+    /// The one reader publishes the stage it is standing in, so a session that stops
+    /// producing frames can be asked where its only reader actually is: here the
+    /// peer's file messages leave it waiting inside the bounded transfer queue, and
+    /// that wait is visible — with its dwell age growing — before anything is
+    /// released.
+    #[tokio::test]
+    async fn reader_progress_reports_the_transfer_stage_while_the_one_reader_waits() {
+        let state = writer_state();
+        // No reader publishes a stage yet, so a caller is told nothing rather than
+        // shown a zero-filled stage.
+        assert_eq!(state.snapshot().reader_progress, None);
+
+        let (control, mut echoed) = mpsc::channel(COMMANDS);
+        // One slot this test deliberately leaves full: the second action is the one
+        // the reader waits inside.
+        let (transfer, mut inbound) = mpsc::channel(1);
+        let Wire {
+            writer: _client_writer,
+            peer: _peer_reader,
+            _client_reader: reader,
+            _peer_writer: mut peer,
+        } = writer_wire();
+        let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+        let actions = ["/first", "/second"].map(|path| {
+            let mut action = base::message_proto::FileAction::new();
+            action.set_read_dir(base::message_proto::ReadDir {
+                path: path.into(),
+                ..Default::default()
+            });
+            action
+        });
+        for action in &actions {
+            let mut message = Message::new();
+            message.set_file_action(action.clone());
+            peer.send(&message)
+                .await
+                .expect("the peer's file message reaches the wire");
+        }
+
+        let mut probe = Message::new();
+        probe.set_test_delay(base::message_proto::TestDelay {
+            time: 123,
+            last_delay: 21,
+            ..Default::default()
+        });
+        peer.send(&probe)
+            .await
+            .expect("the peer's probe arrives behind the blocked file records");
+
+        // Wait for the reading itself instead of sleeping: the stage is published
+        // before the reader waits, so a bounded poll observes the wait it is in.
+        let waiting = tokio::time::timeout(RECEIVE_LIMIT, async {
+            loop {
+                if let Some(progress) = state.snapshot().reader_progress {
+                    if progress.phase == "transfer_dispatch" {
+                        return progress;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the reader reports the dispatch it is waiting in");
+
+        // A real wait, so the age reported afterwards is a measurement of this wait
+        // rather than the zero a getter would return.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let grown = state
+            .snapshot()
+            .reader_progress
+            .expect("the waiting reader is still published");
+        assert_eq!(
+            grown.phase, "transfer_dispatch",
+            "the reader did not leave the stage it is blocked in"
+        );
+        assert!(
+            grown.age_ms >= waiting.age_ms + 50,
+            "the dwell age grows while the reader waits: {} -> {}",
+            waiting.age_ms,
+            grown.age_ms
+        );
+        assert!(matches!(
+            echoed.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // Freeing one slot lets the blocked send finish; the queue keeps the order
+        // the peer sent in, so nothing was dropped or reordered to unblock it.
+        let first = tokio::time::timeout(RECEIVE_LIMIT, inbound.recv())
+            .await
+            .expect("the first action was queued")
+            .expect("the inbound queue stays open");
+        let crate::transfer::Inbound::Action(first) = first else {
+            panic!("the reader queued something other than the peer's action");
+        };
+        assert_eq!(first, actions[0]);
+        let second = tokio::time::timeout(RECEIVE_LIMIT, inbound.recv())
+            .await
+            .expect("the blocked send completes once a slot frees")
+            .expect("the inbound queue stays open");
+        let crate::transfer::Inbound::Action(second) = second else {
+            panic!("the reader queued something other than the peer's action");
+        };
+        assert_eq!(second, actions[1]);
+
+        // A probe that arrived behind the blocked records is still echoed unchanged,
+        // and its answer reaches the control queue only after them.
+        let batch = tokio::time::timeout(RECEIVE_LIMIT, echoed.recv())
+            .await
+            .expect("the reader queues the probe's echo after the blocked dispatch")
+            .expect("the control queue stays open");
+        assert_eq!(batch, vec![probe], "the probe is echoed unchanged");
+        assert_eq!(state.snapshot().network_rtt_ms, Some(21));
+
+        // Done dispatching, the reader is waiting on the wire again: the live stage
+        // is the one it is really in, never the one it left.
+        tokio::time::timeout(RECEIVE_LIMIT, async {
+            loop {
+                if state
+                    .snapshot()
+                    .reader_progress
+                    .is_some_and(|progress| progress.phase == "wire_wait")
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the reader returns to waiting on the wire");
+
+        state.cancel.cancel();
+        tokio::time::timeout(RECEIVE_LIMIT, reading)
+            .await
+            .expect("the reader stops on cancellation")
+            .expect("the reader task joins")
+            .expect("cancelling the reader succeeds");
+        // An ended reader leaves a terminal reading, never the stage it left.
+        assert_eq!(
+            state.snapshot().reader_progress.map(|progress| progress.phase),
+            Some("stopped")
+        );
+    }
+
+    /// The one reader hands the peer's format and frames to the session's own
+    /// audio owner — the same handle a client reads — and admits none of it once
+    /// the peer withdraws its grant.
+    #[tokio::test]
+    async fn the_one_reader_offers_audio_only_to_the_session_owner() {
+        let state = writer_state();
+        let playback = crate::audio::start(state.cancel.clone());
+        let _owner = playback.owner;
+        *lock(&state.audio) = Some(Arc::clone(&playback.handle));
+        let audio = &playback.handle;
+        state.peer_audio.store(true, super::Ordering::Release);
+        *lock(&state.session_options) = crate::session_options::SessionOptions::default()
+            .request(crate::session_options::SessionOptionChange::AudioEnabled(true))
+            .expect("audio can be asked for");
+        state.refresh_audio();
+        assert!(audio.snapshot().allowed);
+
+        let (control, _control_rx) = mpsc::channel(COMMANDS);
+        let (transfer, _transfer_rx) = mpsc::channel(COMMANDS);
+        // Both halves of each end are kept: dropping one cancels the other
+        // through the transport's own shared token.
+        let Wire {
+            writer: _client_writer,
+            peer: _peer_reader,
+            _client_reader: reader,
+            _peer_writer: mut peer,
+        } = writer_wire();
+        let reading = tokio::spawn(super::receive(state.clone(), reader, None, control, transfer));
+
+        // The peer declares its format and then sends one packet. Both are the
+        // wire's own messages, and the reader decodes neither.
+        let mut declared = Misc::new();
+        declared.set_audio_format(AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            ..Default::default()
+        });
+        let mut message = Message::new();
+        message.set_misc(declared);
+        peer.send(&message).await.expect("the peer's format reaches the wire");
+        let mut message = Message::new();
+        message.set_audio_frame(AudioFrame {
+            data: vec![0x01; 40].into(),
+            ..Default::default()
+        });
+        peer.send(&message).await.expect("the peer's packet reaches the wire");
+        tokio::time::timeout(RECEIVE_LIMIT, async {
+            while audio.snapshot().received_packets == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the reader offered the peer's packet to the session's audio owner");
+        let admitted = audio.snapshot();
+        let format = admitted.format.as_ref().expect("the peer's format is in force");
+        assert_eq!((format.sample_rate, format.channels), (48_000, 2));
+        assert_eq!(admitted.received_packets, 1);
+        assert_eq!(
+            admitted.decoded_packets, 0,
+            "the reader hands packets over and decodes nothing itself"
+        );
+        assert!(!admitted.active, "no sink was opened by this handle");
+
+        // The peer withdraws its grant and sends one more packet, then closes:
+        // the close is what makes the reader's own order of processing
+        // observable, so the refusal is asserted after it, not raced with it.
+        state.peer_audio.store(false, super::Ordering::Release);
+        state.refresh_audio();
+        let mut message = Message::new();
+        message.set_audio_frame(AudioFrame {
+            data: vec![0x02; 40].into(),
+            ..Default::default()
+        });
+        peer.send(&message).await.expect("the peer's packet reaches the wire");
+        let mut closing = Misc::new();
+        closing.set_close_reason("peer closed".into());
+        let mut message = Message::new();
+        message.set_misc(closing);
+        peer.send(&message).await.expect("the peer's close reaches the wire");
+
+        assert!(matches!(
+            reading.await.expect("the reader task joins"),
+            Err(ViewerError::RemoteClosed)
+        ));
+        let refused = audio.snapshot();
+        assert!(!refused.allowed);
+        assert_eq!(
+            refused.received_packets, 1,
+            "a packet the live allowance refuses was never admitted"
+        );
+        assert_eq!(
+            refused.played_samples, 0,
+            "nothing claims to have been heard without a device"
+        );
+    }
+
+    /// An audio reclamation is its own fact: a clean audio owner confirms
+    /// nothing unconfirmed, and the video pipeline's own unconfirmed release is
+    /// not cleared by that answer.
+    #[test]
+    fn audio_reclamation_is_never_a_fake_confirmation() {
+        let clean = writer_state();
+        let playback = crate::audio::start(clean.cancel.clone());
+        let _owner = playback.owner;
+        *lock(&clean.audio) = Some(Arc::clone(&playback.handle));
+        assert!(!clean.audio_unconfirmed());
+        assert!(!clean.resources_unconfirmed_any());
+        clean.finish(Ok(()));
+        assert!(
+            matches!(lock(&clean.result).clone(), Some(Ok(()))),
+            "an audio owner that opened nothing confirms nothing unconfirmed"
+        );
+
+        let state = writer_state();
+        let playback = crate::audio::start(state.cancel.clone());
+        let _owner = playback.owner;
+        *lock(&state.audio) = Some(Arc::clone(&playback.handle));
+        // The video pipeline's flag is the other half of the same verdict: the
+        // audio answer must not clear it.
+        state.resources_unconfirmed.store(true, super::Ordering::Release);
+        assert!(state.resources_unconfirmed_any());
+        state.finish(Ok(()));
+        assert!(
+            matches!(
+                lock(&state.result).clone(),
+                Some(Err(ViewerError::ReclamationUnconfirmed))
+            ),
+            "an unconfirmed release fails the close even when the run ended cleanly"
+        );
     }
 
     /// The enqueue boundary answers with the generation it stamped, and the
@@ -1396,9 +2487,21 @@
                     );
                     let (identity, session_id) = (first.my_id.clone(), first.session_id);
 
+                    // A login that carried none is offered the password step while
+                    // the peer's operator decides, before the peer has said a word.
+                    wait_password(&state, 1).await;
+                    {
+                        let inner = lock(&state.inner);
+                        assert_eq!(inner.snapshot.phase, "awaiting_password");
+                        assert_eq!(
+                            inner.snapshot.password_failure,
+                            Some(super::LoginFailure::EmptyPassword)
+                        );
+                    }
+
                     // The peer wants a password this attempt did not send.
                     refuse(&mut peer, "Empty Password").await;
-                    wait_password(&state, 1).await;
+                    wait_password(&state, 2).await;
                     {
                         let inner = lock(&state.inner);
                         assert_eq!(inner.snapshot.phase, "awaiting_password");
@@ -1449,7 +2552,7 @@
                     // The peer refused it: the step is armed again, and the
                     // second answer is that same login once more.
                     refuse(&mut peer, "Wrong Password").await;
-                    wait_password(&state, 2).await;
+                    wait_password(&state, 3).await;
                     {
                         let inner = lock(&state.inner);
                         assert_eq!(inner.snapshot.phase, "password_rejected");
@@ -1490,7 +2593,7 @@
                 let (result, ()) = tokio::join!(driver, fixture);
                 assert!(result.is_ok(), "the same wire reaches authorization");
                 let snapshot = lock(&state.inner).snapshot.clone();
-                assert_eq!(snapshot.password_challenge, 2);
+                assert_eq!(snapshot.password_challenge, 3);
                 assert_eq!(snapshot.second_factor_challenge, 1);
                 // The last answer is on the wire, so no mid-flight reason is
                 // left beside the authorized session.
@@ -1500,3 +2603,201 @@
         .await
         .expect("the whole exchange must finish within one budget");
     }
+
+    /// A login that carried no password is offered the password step while the
+    /// peer's operator decides, and a typed password settles that same attempt.
+    ///
+    /// The peer says nothing here: no `Empty Password` and no refusal. The answer
+    /// is the first login again on the wire that is already open, under the
+    /// identity and session id it carried, and the peer's later acceptance is what
+    /// authorizes the session.
+    #[tokio::test]
+    async fn a_typed_password_settles_a_login_that_awaits_the_peers_operator() {
+        use crate::handshake::{self, ViewerIdentity};
+        use crate::session::ViewerSession;
+        use base::message_proto::{Hash, LoginResponse, PeerInfo};
+
+        tokio::time::timeout(RECEIVE_LIMIT, async {
+            let address: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let (client, peer) = tokio::io::duplex(1);
+            let mut peer = FramedStream::from(peer, address);
+            let (established, greeting) = tokio::join!(
+                handshake::viewer(
+                    FramedStream::from(client, address),
+                    ViewerIdentity::LegacyUnverified,
+                    RECEIVE_LIMIT,
+                ),
+                receive(&mut peer),
+            );
+            assert!(greeting.union.is_none());
+            let session =
+                ViewerSession::from_established(established.unwrap(), RECEIVE_LIMIT, RECEIVE_LIMIT);
+            let state = writer_state();
+            state.authenticated.store(false, super::Ordering::Release);
+            let (mouse, _) = mpsc::channel(COMMANDS);
+            let viewer = Viewer {
+                state: state.clone(),
+                mouse,
+            };
+            let options = super::ViewerOptions {
+                target: super::ViewerTarget::RustDesk { address: None },
+                mode: crate::session::SessionMode::Desktop,
+                transfer_root: None,
+                username: "fixture".into(),
+                local_id: "controller".into(),
+                local_name: "fixture".into(),
+                password: String::new(),
+                conn_token: None,
+                requested_fps: 0,
+                input_policy: ViewerInputPolicy::interactive(),
+                session_options: Default::default(),
+            };
+            let mut password = super::Password(Vec::new());
+            let (codes, code_answers) = mpsc::channel(1);
+            let (passwords, password_answers) = mpsc::channel(1);
+            let mut answers = super::AuthAnswers {
+                codes: code_answers,
+                passwords: password_answers,
+            };
+            let driver = super::authenticate_loop(
+                &state,
+                session,
+                &options,
+                &mut password,
+                None,
+                Default::default(),
+                &codes,
+                &passwords,
+                &mut answers,
+            );
+            let fixture = async {
+                let mut challenge = Message::new();
+                challenge.set_hash(Hash {
+                    salt: "fixture".into(),
+                    challenge: "challenge".into(),
+                    ..Default::default()
+                });
+                peer.send(&challenge).await.unwrap();
+                let Some(message::Union::LoginRequest(first)) = receive(&mut peer).await.union else {
+                    panic!("expected the owned login request");
+                };
+                assert!(first.password.is_empty());
+                let (identity, session_id) = (first.my_id.clone(), first.session_id);
+
+                // Nothing is demanded by the peer, yet the consumer can answer.
+                while lock(&state.inner).snapshot.password_challenge != 1 {
+                    tokio::task::yield_now().await;
+                }
+                {
+                    let inner = lock(&state.inner);
+                    assert_eq!(inner.snapshot.phase, "awaiting_password");
+                    assert_eq!(
+                        inner.snapshot.password_failure,
+                        Some(super::LoginFailure::EmptyPassword)
+                    );
+                }
+                assert!(
+                    !viewer.snapshot().authenticated,
+                    "an offered password step is not an authorization"
+                );
+                viewer.send_password("typed".into()).unwrap();
+                assert_eq!(lock(&state.inner).snapshot.phase, "verifying_password");
+
+                let Some(message::Union::LoginRequest(retried)) = receive(&mut peer).await.union else {
+                    panic!("expected the retried login request");
+                };
+                assert_eq!(retried.session_id, session_id, "the same login attempt");
+                assert_eq!(retried.my_id, identity);
+                assert_eq!(retried.username, "fixture");
+                assert!(!retried.password.is_empty());
+
+                let mut success = LoginResponse::new();
+                success.set_peer_info(PeerInfo::new());
+                let mut message = Message::new();
+                message.set_login_response(success);
+                peer.send(&message).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(driver, fixture);
+            assert!(result.is_ok(), "the same wire reaches authorization");
+            let snapshot = lock(&state.inner).snapshot.clone();
+            assert_eq!(snapshot.password_challenge, 1);
+            assert_eq!(snapshot.password_failure, None);
+        })
+        .await
+        .expect("the whole exchange must finish within one budget");
+    }
+
+/// One session's record of the pipeline stages: the two admission operations are
+/// samples of their own, a finished decoder contributes its stages exactly once,
+/// and polling again publishes the same answer.
+#[test]
+fn pipeline_timing_a_session_counts_each_stage_once() {
+    use super::PipelineTimings;
+    use super::decoder::{DecoderProjection, DecoderStageTimings, StageTiming};
+    use super::video::VideoOwner;
+
+    let state = writer_state();
+    // A session with no compressed-record path reports no stage at all, which is
+    // how "not instrumented" stays distinct from "measured, nothing yet".
+    assert_eq!(
+        state.snapshot().pipeline_timings,
+        PipelineTimings::default()
+    );
+
+    state.video_timings_enabled();
+    let idle = state.snapshot().pipeline_timings;
+    assert_eq!(idle.record_admission, Some(StageTiming::default()));
+    assert_eq!(idle.decoder_admission, Some(StageTiming::default()));
+    // No decoder exists yet, so its four stages are not claimed either way.
+    assert_eq!(idle.input_wait, None);
+    assert_eq!(idle.input_dispatch, None);
+    assert_eq!(idle.push_api, None);
+    assert_eq!(idle.render_api, None);
+
+    state.video_record_admission(Duration::from_millis(1));
+    state.video_record_admission(Duration::from_millis(9));
+    state.video_decoder_admission(Duration::from_millis(2));
+    let admitted = state.snapshot().pipeline_timings;
+    assert_eq!(
+        admitted.record_admission,
+        Some(StageTiming {
+            samples: 2,
+            total_ns: 10_000_000,
+            peak_ns: 9_000_000,
+            over_8_ms: 1,
+        })
+    );
+    assert_eq!(admitted.decoder_admission.map(|timing| timing.samples), Some(1));
+
+    let mut input_wait = StageTiming::default();
+    input_wait.record_ns(3_000_000);
+    let mut push_api = StageTiming::default();
+    push_api.record_ns(4_000_000);
+    state.video_decoder_closed(Some(DecoderProjection {
+        pushed_units: 1,
+        render_submissions: 1,
+        render_timing: None,
+        stage_timings: Some(DecoderStageTimings {
+            input_wait,
+            input_dispatch: StageTiming::default(),
+            push_api,
+            render_api: StageTiming::default(),
+        }),
+        queued_units: 0,
+        closed: true,
+        quarantined: false,
+        failure: None,
+    }));
+
+    // The finished decoder's stages are stored once, with its observer gone: the
+    // same totals on every later poll, and the admission samples recorded while
+    // it lived are untouched.
+    let closed = state.snapshot().pipeline_timings;
+    assert_eq!(closed.input_wait, Some(input_wait));
+    assert_eq!(closed.push_api, Some(push_api));
+    assert_eq!(closed.input_dispatch, Some(StageTiming::default()));
+    assert_eq!(closed.render_api, Some(StageTiming::default()));
+    assert_eq!(closed.record_admission.map(|timing| timing.samples), Some(2));
+    assert_eq!(state.snapshot().pipeline_timings, closed);
+    assert_eq!(state.snapshot().pushed_units, 1);
+}

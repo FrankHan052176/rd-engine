@@ -1,5 +1,6 @@
 //! Pinned official-client localization; attribution and adaptations are in UPSTREAM.json.
 
+#[rustfmt::skip]
 mod upstream {
     pub(super) mod lang;
 }

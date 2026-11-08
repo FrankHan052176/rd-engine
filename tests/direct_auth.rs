@@ -1,8 +1,14 @@
 //! Actual loopback TCP tests, with hbb_common framing/crypto as peer fixtures.
 //! These are NOT tests against a released RustDesk application binary.
-pub use rd_engine::{conn_token, transport};
+pub use rd_engine::transport;
 #[path = "../src/authentication.rs"]
 mod authentication;
+// The copied session builds its reconnect credential with the same material this
+// crate hands it, so it needs the same `pub(crate)` construction and the same
+// `cfg(test)` reader `src/` has. The dependency crate's own copy cannot lend
+// either to this one: giving it up would mean widening that boundary.
+#[path = "../src/conn_token.rs"]
+mod conn_token;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/session.rs"]
@@ -385,6 +391,28 @@ fn approval_two_factor_trusted_and_role_states_fail_closed() {
     cfg.approval = Box::new(Manual(approved.clone()));
     let mut auth = HostAuthentication::new(cfg).unwrap();
     assert!(matches!(auth.login(login()), AuthAction::PendingApproval));
+    assert_eq!(auth.state(), HostAuthState::AwaitApproval);
+    approved.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        auth.poll_approval(),
+        AuthAction::Authorized { .. }
+    ));
+    // Password-or-click answers the very first, passwordless attempt the way the
+    // official host does: the client is told a password is required, not that a
+    // password was wrong. The local request must stay open so a click here still
+    // admits the same attempt.
+    let approved = Arc::new(AtomicBool::new(false));
+    let mut cfg = config(b"fixture");
+    cfg.policy = PrimaryPolicy::PasswordOrClick;
+    cfg.approval = Box::new(Manual(approved.clone()));
+    let mut auth = HostAuthentication::new(cfg).unwrap();
+    assert!(matches!(
+        auth.login(login()),
+        AuthAction::Error {
+            message: EMPTY_PASSWORD,
+            terminal: false
+        }
+    ));
     assert_eq!(auth.state(), HostAuthState::AwaitApproval);
     approved.store(true, Ordering::SeqCst);
     assert!(matches!(

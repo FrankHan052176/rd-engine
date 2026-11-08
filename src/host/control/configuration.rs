@@ -116,6 +116,7 @@ pub(super) fn host_options(id: String, signing_key: sign::SecretKey,
     Ok(HostOptions {
         listen: if enabled(&options, "direct-server") { Some(direct_address(&options)?) } else { None },
         allow_legacy_plain: enabled(&options, "allow-legacy-direct"), id, display_name: name,
+        allow_routed_legacy_plain: false,
         signing_key, width: binding.width(), height: binding.height(), bitrate: 20_000_000,
         platform: "Windows".into(), credentials, publisher_backend: PublisherBackend::Auto,
         security: None,

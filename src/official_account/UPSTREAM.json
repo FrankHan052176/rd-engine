@@ -10,7 +10,7 @@
     "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
     "git_blob_sha1": "0ad25db4bd1d86c452db3f9602ccdbe172438f52"
   },
-  "scope": "Only source-backed native account API/device resolution, HTTP polling/transport and OIDC for rd-engine official-account/FRB. Password/verification/account/cloud business stays in the pinned official Dart consumer. No NAPI/Resk capability is added.",
+  "scope": "Source-backed native account API/device resolution, strict HTTP transport and OIDC on the pinned official sources. The shared service also supplies token-free OHOS account/cloud address-book JSON; the official Dart consumer and its password/verification business remain intact.",
   "modified_date": "2026-09-23",
   "fetch_method": "Independent HTTPS raw.githubusercontent.com retrieval at the full immutable rustdesk revision; full original file SHA-256 and Git blob SHA-1 computed from received bytes. No historical artifact was substituted for source.",
   "source_files": {
@@ -417,7 +417,7 @@
   "adapted_files": [
     {
       "path": "api.rs",
-      "sha256": "ff330127210180c7cec707064e72f219d3f947483907b982e75e9af58c5d7aeb",
+      "sha256": "f5c698ac437bb6eb79aae628ff9570adf16ececcf90b72e9407875957b28d4c9",
       "baseline_recipe": {
         "join": "one LF between the exact snapshot UTF-8 texts, in this order",
         "snapshots": [
@@ -428,11 +428,11 @@
       },
       "baseline_sha256": "41c68e53f4ffddfe89b27be65f20721b652e17f3d92a76b0eadad19ab91184a3",
       "adaptation_patch": "upstream/api.adaptation.patch",
-      "patch_sha256": "811e4476a9c604b9ca5f3bf43579eb1f60cb79335fd832ea28a5b464b550ce4b"
+      "patch_sha256": "8bce772487af841db4baa4bd786189bcb0c02f45636c4a6f30c72e369db66a13"
     },
     {
       "path": "http.rs",
-      "sha256": "4f23ee0c0f3b1bf98b1a4c575085b1beaba36a8952a74c8cc96bd1cc202a9029",
+      "sha256": "bbfa8a7446ea706fc9a907a14dd146e94e832569f5e03c82954a4d43459dd93f",
       "baseline_recipe": {
         "join": "one LF between the exact snapshot UTF-8 texts, in this order",
         "snapshots": [
@@ -443,11 +443,11 @@
       },
       "baseline_sha256": "cf5af83857496e9c9a4fabd2b45b410d22dbed2e9e29618cbb5bee9b02ff7c7d",
       "adaptation_patch": "upstream/http.adaptation.patch",
-      "patch_sha256": "e6baa12bf17180fc756ab15564cd944b31afa45d09f0e92377ef3bf34ee6d832"
+      "patch_sha256": "76a132d5d6fcab14649c0f8dd9e5523dfc9f56c10d2f5a7a21f591f5436b56b0"
     },
     {
       "path": "oidc.rs",
-      "sha256": "bfe2daccf2541e9b3d4878e8079f659e68c8f20082629836f9a36cc92fa8ca30",
+      "sha256": "86e1612a324760e48b69b762c2c6bdc5944e1fb1d044fdfead49a3b545471010",
       "baseline_recipe": {
         "join": "one LF between the exact snapshot UTF-8 texts, in this order",
         "snapshots": [
@@ -457,7 +457,7 @@
       },
       "baseline_sha256": "f2093bacc14150e73b449a26825fe127e6ff290b36cff375ed372080e89647f3",
       "adaptation_patch": "upstream/oidc.adaptation.patch",
-      "patch_sha256": "6ed32a29c0d686cf6682ffe87ee1829edad1cf89edc25a41eeaa6408abac3b1a"
+      "patch_sha256": "2314639b40b7c696eb355993c5d3d4326e212f1a72fc51eee426c4318a088891"
     },
     {
       "path": "upstream/custom_server.rs",
@@ -503,7 +503,7 @@
       ],
       "changes": [
         "Return actual OS/client/name JSON. Desktop hostnames retain official ASCII lowercase and macOS .local stripping. Main-approved set_device_name routes the existing mobile main_device_name input; no new FRB method.",
-        "New integration-only account scope SHA-256 binds canonical effective API scheme/host/effective port/base path, actual rendezvous endpoint, official selected public key, explicit raw-TCP mode and websocket setting. Reject malformed endpoints, userinfo, base-URL query/fragment and ambiguous URL repair. Do not silently upgrade an official HTTP resolver result. This lifecycle identity is an rd-engine integration addition, not an upstream transplant."
+        "New integration-only account scope SHA-256 binds canonical effective API scheme/host/effective port/base path, actual rendezvous endpoint, selected public key or explicit no-public-key shared/TLS scope, raw-TCP mode and websocket setting. Native single-Key classification uses only nonsecret rd-engine-account-key-kind Config metadata; shared licence text never enters Config or account replies. Public/official scope serialization remains unchanged; shared accounts require real HTTPS and cannot use the signed-public-key raw-TCP proxy. Reject malformed endpoints, userinfo, base-URL query/fragment and ambiguous URL repair. No official fallback or invented public key. This lifecycle identity is an rd-engine integration addition, not an upstream transplant."
       ]
     },
     {
@@ -523,7 +523,8 @@
         "Bound client construction caller wait to 6 seconds and concurrent blocking builders to 4; a timed-out OS operation keeps its permit until it finishes. Bound each probe/request to 12 seconds and HTTP job to 24 seconds. No nested Tokio runtime/block_on; spawn on the existing engine executor.",
         "Reject unsupported methods, malformed/non-string/invalid/duplicate-case-folded headers. Canonical get/post/put/delete (case-insensitive) remain supported. Preserve real 2xx/4xx/5xx status_code, headers and body envelope.",
         "Bound request/response bytes to 16 MiB, headers to 64 KiB, and concurrent/unconsumed URL requests to 32. Read decompressed chunks with a limit before UTF-8 loss replacement. The authoritative pin disables reqwest default features and does not enable charset: this is its actual Response.text decoding, not a charset regression.",
-        "Return fixed safe transport/build/parse errors without retaining reqwest/proxy errors as sources. Do not log URL, headers, request/response body or errors containing them. Mark request header values sensitive and clear locally controlled payload/retained response buffers; third-party/FRB/Dart copies are outside complete-erasure guarantees."
+        "Return fixed safe transport/build/parse errors without retaining reqwest/proxy errors as sources. Do not log URL, headers, request/response body or errors containing them. Mark request header values sensitive and clear locally controlled payload/retained response buffers; third-party/FRB/Dart copies are outside complete-erasure guarantees.",
+        "HarmonyOS selects the same reqwest version without native-tls/OpenSSL; a cached NativeTls choice is refused there. Strict mobile rustls construction and TLS validation remain unchanged."
       ]
     },
     {
@@ -584,7 +585,8 @@
         "Replace all upstream LocalConfig token/user_info writes with B commit_oidc(original attempt, token, official user_info JSON, remember_me) -> committed receipt. Commit remembered/session-only accounts before publishing access_token success and return that exact receipt in account_scope. Verification/intermediate AuthBody stays Dart-owned and does not commit an account.",
         "B advances account generation on commit but retains a committed-attempt witness; all post-commit OIDC publish/read/retirement predicates use auth_is_current(original attempt), not context_is_current(original context). B alone owns atomic current-attempt commit.",
         "Remove raw auth-result Debug/logs and secret Clone derives. Keep URL/code and returned AuthBody lifetime bounded; serialize a borrowed view and consume terminal payload once, then retain only non-secret attempt ownership for normal dialog-close cancellation. RAII retires retained payloads on task cancellation/unwind. Cancel can only retire its matched actual attempt/result, never a later attempt or already committed account. One required token copy feeds B while the authorized body is returned to Dart; no all-copies erasure claim.",
-        "All discard/expiry/task-drop paths retire B's exact AuthAttempt witness before deleting A's receipt mapping: abort alone cannot stop an already queued spawn_blocking commit. Explicit cancellation preserves the B error; cleanup cannot cancel a later attempt or log out a commit that already won B's owner lock. Result expiry is read under the current session lock after the B check, not copied before a possible terminal publication."
+        "All discard/expiry/task-drop paths retire B's exact AuthAttempt witness before deleting A's receipt mapping: abort alone cannot stop an already queued spawn_blocking commit. Explicit cancellation preserves the B error; cleanup cannot cancel a later attempt or log out a commit that already won B's owner lock. Result expiry is read under the current session lock after the B check, not copied before a possible terminal publication.",
+        "A public-result projection serves the OHOS service without serializing auth_body or its token/secret. Auth-query values use Url query encoding; existing Dart result/cancel behavior stays available."
       ]
     }
   ],

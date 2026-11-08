@@ -11,7 +11,7 @@
 //! run registers with; it is never taken from a LAN scan, a target string or an
 //! ambient mutable configuration.
 use super::{
-    app_context::{AppScope, app_scope, id_admission},
+    app_context::{AppScope, app_scope, hold_id_admission, id_admission},
     host_security::{admit_security, SecurityOp, SecurityWork},
     server_profile::ApprovedRoute,
 };
@@ -28,6 +28,11 @@ use rd_engine::host::{
         HostServiceStatus, DEFAULT_BITRATE,
     },
     HostCaptureSnapshot, HostError, HostPeerSnapshot,
+};
+#[cfg(target_env = "ohos")]
+use rd_engine::ohos_input::{
+    authorization_status, cancel_injection_request, request_injection, AuthorizationAnswer,
+    InjectionStatus, InputError,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -50,16 +55,22 @@ struct BridgeState {
     /// The current (or last) owner. Retained after a stop so a status read keeps
     /// reporting the real terminal facts instead of inventing "disabled".
     service: Option<Arc<HostService>>,
+    shared_profile_revision: Option<u64>,
     /// Geometry supplied by the platform display owner, used by the next start.
     screen: Option<ScreenConfig>,
     /// Last local ID this bridge admitted, so a status read needs no Config I/O.
     local_id: String,
+    /// Explicit injection request owned by the admitted app generation. Unlike
+    /// a Host run epoch, this exists while the system dialog is still pending.
+    input_authorization_request_id: Option<u64>,
 }
 
 static BRIDGE: Mutex<BridgeState> = Mutex::new(BridgeState {
     service: None,
+    shared_profile_revision: None,
     screen: None,
     local_id: String::new(),
+    input_authorization_request_id: None,
 });
 
 fn bridge() -> MutexGuard<'static, BridgeState> {
@@ -88,13 +99,6 @@ fn boolean_or(value: &Value, name: &str, default: bool) -> Result<bool, String> 
         None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
         Some(_) => Err(format!("{name} must be a boolean")),
-    }
-}
-
-fn service_error_text(error: HostServiceError) -> String {
-    match error {
-        HostServiceError::Host(error) => host_error_text(error),
-        error => error.to_string(),
     }
 }
 
@@ -127,6 +131,221 @@ pub(super) fn service_error_text(error: HostServiceError) -> String {
     }
 }
 
+/// The system injection-authorization fact this bridge reports.
+///
+/// On a real HarmonyOS target this is read from the engine's own
+/// `rd_engine::ohos_input` seam, which serializes request ownership with the SDK
+/// fact. Every other build target has no multimodal-input SDK, so the only
+/// honest answer there is `unsupported`: the bridge never fabricates a grant it
+/// cannot hold, and no callback here hands Host a policy.
+struct InputAuthorization {
+    /// The request's real return code, or the QueryAuthorizedStatus code after
+    /// status/cancel. Off-target unsupported has no SDK call and reports `0`.
+    result_code: i32,
+    /// `unauthorized` | `authorizing` | `authorized` | `unsupported` | `failed`.
+    status: &'static str,
+    /// Process request owner, never an authorization epoch or a Host run epoch.
+    request_id: Option<u64>,
+}
+
+#[cfg(target_env = "ohos")]
+fn input_authorization_answer(answer: AuthorizationAnswer) -> InputAuthorization {
+    InputAuthorization {
+        result_code: answer.result_code,
+        status: injection_status_word(answer.status),
+        request_id: answer.request_id,
+    }
+}
+
+#[cfg(target_env = "ohos")]
+fn injection_status_word(status: InjectionStatus) -> &'static str {
+    match status {
+        InjectionStatus::Unauthorized => "unauthorized",
+        InjectionStatus::Authorizing => "authorizing",
+        InjectionStatus::Authorized => "authorized",
+        InjectionStatus::Unsupported => "unsupported",
+        InjectionStatus::Failed(_) => "failed",
+    }
+}
+
+/// Asks the system for injection authorization. Short and synchronous by
+/// contract: it starts no polling thread, retries nothing and only runs when the
+/// ArkTS application calls it from an explicit user action.
+#[cfg(target_env = "ohos")]
+fn request_input_authorization() -> InputAuthorization {
+    input_authorization_answer(request_injection())
+}
+
+/// Reads status and its request owner in one engine registry snapshot. A status
+/// query creates no owner; a late OS grant cannot revive a cancelled request.
+#[cfg(target_env = "ohos")]
+fn query_input_authorization() -> InputAuthorization {
+    input_authorization_answer(authorization_status())
+}
+
+#[cfg(target_env = "ohos")]
+fn cancel_input_authorization(request_id: u64) -> Result<InputAuthorization, String> {
+    cancel_injection_request(request_id)
+        .map(input_authorization_answer)
+        .map_err(|error| match error {
+            InputError::InvalidInput => {
+                "the injection authorization requestId is stale or is not owned by this app".into()
+            }
+            InputError::Unsupported => {
+                "a live host run or held input owns injection authorization; stop that exact run and await native cleanup before cancelling".into()
+            }
+            InputError::ReclamationUnconfirmed => {
+                "native input reclamation is unconfirmed; the injection owner is retained".into()
+            }
+            other => format!("injection authorization cancellation failed: {other:?}"),
+        })
+}
+
+/// No multimodal-input injection authorization exists off a HarmonyOS target.
+/// Reporting `unsupported` with no return code is the whole answer; a fabricated
+/// `authorized` here would be the fake grant this bridge must never produce.
+#[cfg(not(target_env = "ohos"))]
+fn request_input_authorization() -> InputAuthorization {
+    InputAuthorization {
+        result_code: 0,
+        status: "unsupported",
+        request_id: None,
+    }
+}
+
+#[cfg(not(target_env = "ohos"))]
+fn query_input_authorization() -> InputAuthorization {
+    InputAuthorization {
+        result_code: 0,
+        status: "unsupported",
+        request_id: None,
+    }
+}
+
+#[cfg(not(target_env = "ohos"))]
+fn cancel_input_authorization(_request_id: u64) -> Result<InputAuthorization, String> {
+    Ok(query_input_authorization())
+}
+
+fn parse_input_authorization_request_id(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|request_id| *request_id != 0 && request_id.to_string() == value)
+        .ok_or_else(|| {
+            "input authorization requestId must be a canonical non-zero decimal u64 string".into()
+        })
+}
+
+/// The app guard covers SDK request plus token publication, not the dialog's
+/// lifetime. AppContext::retire holds the same guard before calling our closer.
+/// Dropping a short request scope must not cancel the dialog it just opened.
+fn request_scoped_input_authorization() -> Result<InputAuthorization, String> {
+    let _scope = app_scope()?;
+    let admission = id_admission()?;
+    let _admission_guard = hold_id_admission(&admission)?;
+    let mut state = bridge();
+    let answer = request_input_authorization();
+    state.input_authorization_request_id = answer.request_id;
+    Ok(answer)
+}
+
+/// Cleanup deliberately needs no fresh foreground AppScope: a backgrounded or
+/// detached app must still retire its original request. Both the bridge slot
+/// and the engine compare the exact token; neither substitutes a current one.
+fn cancel_owned_input_authorization(request_id: u64) -> Result<InputAuthorization, String> {
+    let mut state = bridge();
+    #[cfg(target_env = "ohos")]
+    if state.input_authorization_request_id != Some(request_id) {
+        return Err("the injection authorization requestId is stale or is not owned by this app".into());
+    }
+    let answer = cancel_input_authorization(request_id)?;
+    state.input_authorization_request_id = answer.request_id;
+    Ok(answer)
+}
+
+fn input_authorization_message(status: &str) -> &'static str {
+    match status {
+        "unauthorized" => {
+            "the system does not authorize injection; only an explicit user action may request it"
+        }
+        "authorizing" => "the system injection authorization request is waiting for the user's decision",
+        "authorized" => "the system reports injection authorization; remote input still requires a current request owner",
+        "unsupported" => "this device or build has no multimodal input injection authorization",
+        "failed" => "the system injection authorization call failed and reported its own result code",
+        _ => "the injection authorization state is not one this bridge reports",
+    }
+}
+
+/// `ok` only says the call produced a real fact, never "granted" or "the dialog
+/// closed". In particular cancel returns the SDK's observed state after its
+/// void CancelInjection call, not an invented unauthorized answer.
+fn input_authorization_document(action: &str, authorization: InputAuthorization) -> Value {
+    let message = if action == "input_authorization_cancel" && authorization.request_id.is_none() {
+        match authorization.status {
+            "unauthorized" => "this request owner is retired and the system reports injection unauthorized",
+            "authorizing" => "this request owner is retired; the system still reports authorizing, so closing the authorization dialog is unconfirmed",
+            "authorized" => "this request owner is retired; the system still reports authorized, so system authorization revocation is unconfirmed",
+            _ => input_authorization_message(authorization.status),
+        }
+    } else {
+        input_authorization_message(authorization.status)
+    };
+    json!({
+        "ok": matches!(authorization.status, "unauthorized" | "authorizing" | "authorized"),
+        "action": action,
+        "resultCode": authorization.result_code,
+        "status": authorization.status,
+        "requestId": authorization.request_id.map(|request_id| request_id.to_string()).unwrap_or_default(),
+        "message": message,
+    })
+}
+
+fn input_authorization_failure(action: &str, error: &str) -> Value {
+    json!({
+        "ok": false,
+        "action": action,
+        "resultCode": 0,
+        "status": "failed",
+        "requestId": "",
+        "message": error,
+    })
+}
+
+/// Why an `enableInput` start was refused, in the same five words the status
+/// exports use. A refused start never falls back to a view-only run that claims
+/// input.
+fn input_authorization_rejection(authorization: InputAuthorization) -> String {
+    match authorization.status {
+        "unauthorized" => {
+            "remote input needs the system's injection authorization, which is currently unauthorized"
+                .into()
+        }
+        "authorizing" => {
+            "remote input needs the system's injection authorization, and the request is still waiting for the user's decision".into()
+        }
+        "unsupported" => "this device or build cannot inject remote input".into(),
+        "failed" => format!(
+            "the system injection authorization call failed with result code {}, so remote input cannot be admitted",
+            authorization.result_code
+        ),
+        _ => "remote input is not granted by the system".into(),
+    }
+}
+
+fn admit_input_authorization(
+    request_id: u64,
+    authorization: InputAuthorization,
+) -> Result<u64, String> {
+    if authorization.status != "authorized" {
+        return Err(input_authorization_rejection(authorization));
+    }
+    if authorization.request_id != Some(request_id) {
+        return Err("the input authorization requestId is stale or has no current owner".into());
+    }
+    Ok(request_id)
+}
+
 fn capture_value(capture: &HostCaptureSnapshot) -> Value {
     json!({
         "state": capture.state,
@@ -138,6 +357,7 @@ fn capture_value(capture: &HostCaptureSnapshot) -> Value {
         "queuedBytes": capture.queued_bytes,
         "width": capture.width,
         "height": capture.height,
+        "openedAtMs": if capture.opened_unix_ms == 0 { Value::Null } else { json!(capture.opened_unix_ms) },
         "error": capture.error.as_ref().map(ToString::to_string),
     })
 }
@@ -149,6 +369,8 @@ fn peer_value(run_epoch: u64, peer: &HostPeerSnapshot) -> Value {
         "peerId": peer.peer_id,
         "peerName": peer.name,
         "authorized": peer.authorized,
+        "encrypted": peer.encrypted,
+        "peerVerified": peer.peer_verified,
         "disconnected": peer.disconnected,
         "phase": peer.phase,
         "keyboard": peer.keyboard,
@@ -158,15 +380,22 @@ fn peer_value(run_epoch: u64, peer: &HostPeerSnapshot) -> Value {
     })
 }
 
-/// The capture owner this service currently has, preferring the one that really
-/// reported consent. There is no aggregate claim when no publisher exists: a
-/// listening host with no controller has no capture at all.
+/// The capture owner this service currently has. The run's own owner comes
+/// first: it exists from the start of the run, with or without a controller, and
+/// is read from the platform publisher. A per-peer owner is only a fallback for
+/// a host that does not own a run-level capture. There is no aggregate claim when
+/// no publisher exists.
 fn aggregate_capture(status: &HostServiceStatus) -> Option<&HostCaptureSnapshot> {
     status
-        .peers
-        .iter()
-        .filter_map(|peer| peer.capture.as_ref())
-        .find(|capture| capture.authorized)
+        .capture
+        .as_ref()
+        .or_else(|| {
+            status
+                .peers
+                .iter()
+                .filter_map(|peer| peer.capture.as_ref())
+                .find(|capture| capture.authorized)
+        })
         .or_else(|| status.peers.iter().find_map(|peer| peer.capture.as_ref()))
 }
 
@@ -221,19 +450,58 @@ pub(super) fn republish_host_security(store: &Arc<HostSecurity>) -> Result<(), S
     }
 }
 
-/// App-lifecycle fence hook for the parent-owned app context.
+/// App-lifecycle fence hook that closes the viewed-host service.
 ///
-/// `app_set_lifecycle` is the privacy/foreground boundary; a revocation must not
-/// leave a viewed-host listener accepting. This only *requests* the close: the
-/// owner still joins its own native cleanup through `stop`, so an unconfirmed
-/// teardown is reported as such rather than claimed here.
-pub(super) fn close_after_lifecycle_fence() {
+/// `app_set_lifecycle` is the privacy/foreground boundary. A *withdrawn* consent,
+/// a destroyed Ability or a detached environment must not leave a viewed-host
+/// listener accepting, so those fences close the run. A foreground/background
+/// transition alone does not call this: a consented run keeps its listener, its
+/// peers and its capture in the background, and its own status keeps reporting
+/// the real listening/registration facts because nothing here changes them.
+///
+/// This only *requests* the close: the owner still joins its own native cleanup
+/// through `stop`, so an unconfirmed teardown is reported as such rather than
+/// claimed here.
+pub(super) fn request_host_close_after_lifecycle_fence() {
     if let Some(service) = current_service() {
         HostService::request_close(&service);
     }
 }
 
+pub(super) fn request_host_close_after_profile_change() {
+    let service = {
+        let state = bridge();
+        state.shared_profile_revision.and_then(|_| state.service.clone())
+    };
+    if let Some(service) = service { HostService::request_close(&service); }
+}
+
+/// App-lifecycle fence hook that revokes this app's injection authorization.
+///
+/// Every fence runs this, including the ones that keep a consented run alive: a
+/// backgrounded app must not keep a pre-run injection request, and a request that
+/// outlived its generation must not answer for a later one. A live run owns its
+/// own grant, so the engine's own owner refuses this cancellation; that refusal
+/// is reported, never turned into a claimed revocation.
+pub(super) fn revoke_input_after_lifecycle_fence() {
+    // APP is already held by AppContext::retire. Request publication uses
+    // APP -> BRIDGE -> engine registry in the same order, so no newer app
+    // request can be cancelled by this fence.
+    let request_id = bridge().input_authorization_request_id;
+    if let Some(request_id) = request_id {
+        if let Err(error) = cancel_owned_input_authorization(request_id) {
+            // A live run/held input is not pre-run cancellation. Its real close
+            // owner still owes cleanup; keep the token and report the refusal.
+            hbb_common::log::warn!("app lifecycle injection cancellation refused: {error}");
+        }
+    }
+}
+
 pub(super) fn failure_document(action: &str, error: &str) -> Value {
+    // No successful status was produced, so enabled input is only whatever the
+    // retained owner still reports: false when this process never ran a host.
+    let input_enabled = current_service().is_some_and(|service| service.status().input_enabled);
+    let authorization = query_input_authorization();
     json!({
         "ok": false,
         "action": action,
@@ -245,18 +513,21 @@ pub(super) fn failure_document(action: &str, error: &str) -> Value {
         "lastError": error,
         "audioEnabled": false,
         "audioSupported": false,
-        "inputEnabled": false,
+        "inputEnabled": input_enabled,
+        "inputAuthorization": authorization.status,
         "clipboardEnabled": false,
     })
 }
 
 fn status_document(action: &str, status: Option<&HostServiceStatus>, my_id: &str) -> Value {
+    let authorization = query_input_authorization();
     let mut document = json!({
         "ok": true,
         "action": action,
         "audioEnabled": false,
         "audioSupported": false,
         "inputEnabled": false,
+        "inputAuthorization": authorization.status,
         "clipboardEnabled": false,
         "registration": "stopped",
         "registrationObserved": false,
@@ -280,6 +551,8 @@ fn status_document(action: &str, status: Option<&HostServiceStatus>, my_id: &str
         return document;
     };
     document["state"] = json!(status.state);
+    // The run's own advertised fact, never the request's `enableInput`.
+    document["inputEnabled"] = json!(status.input_enabled);
     document["serverState"] = json!(status.state);
     document["serverRunning"] = json!(status.state == "listening");
     document["hostPhase"] = json!(status.host_phase);
@@ -312,6 +585,23 @@ fn status_document(action: &str, status: Option<&HostServiceStatus>, my_id: &str
         None => Value::Null,
     };
     document["captureActive"] = json!(capture.is_some() && !terminal);
+    // Who owns the capture, and the cadence it was really opened with. The run's
+    // owner is requested at start; `systemCaptureConfirmed` is the consent and
+    // `framesObserved` the encoded units, so a requested capture is never
+    // reported as one that produces frames.
+    document["captureOwner"] = if status.capture.is_some() {
+        json!("run")
+    } else if capture.is_some() {
+        json!("peer")
+    } else {
+        Value::Null
+    };
+    document["captureOpenedAtMs"] = match capture {
+        Some(capture) if capture.opened_unix_ms != 0 => json!(capture.opened_unix_ms),
+        _ => Value::Null,
+    };
+    document["captureFps"] = json!(status.capture_fps);
+    document["captureEncodedBytes"] = json!(capture.map_or(0, |capture| capture.bytes));
     document["systemCaptureConfirmed"] = json!(capture.is_some_and(|capture| capture.authorized));
     document["consentState"] = match capture {
         Some(capture) => json!(capture.state),
@@ -342,6 +632,11 @@ struct PendingStart {
     display_name: String,
     bitrate: i64,
     audio_requested: bool,
+    /// The local grant admitted for this run: true only when the system's own
+    /// injection authorization was `authorized` at admission.
+    allow_input: bool,
+    /// Frozen at admission, never replaced by a worker's newer system grant.
+    input_authorization_request_id: Option<u64>,
     require_local_approval: bool,
     screen: ScreenConfig,
     id: String,
@@ -384,12 +679,22 @@ fn admit_start(options_json: &str, local_id: String) -> Result<PendingStart, Str
     // A local-approval request must not become password-or-click. When false,
     // passwords still require verification; there is no anonymous auto-approve.
     let require_local_approval = boolean_or(&value, "requireLocalApproval", true)?;
-    // Remote keyboard/pointer injection and clipboard transfer are not
-    // implemented on this platform; a request for them is refused rather than
-    // silently dropped.
-    if boolean_or(&value, "enableInput", false)? {
-        return Err("this engine has no remote input grant on HarmonyOS".into());
-    }
+    // Remote keyboard/pointer injection needs a real system injection grant on
+    // this device and the caller's exact explicit request owner. Preserve that
+    // token until native run registration rechecks it under the engine mutex.
+    let allow_input = boolean_or(&value, "enableInput", false)?;
+    let input_authorization_request_id = if allow_input {
+        let token = value
+            .get("inputAuthorizationRequestId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "inputAuthorizationRequestId must be a decimal string for enableInput".to_string())?;
+        let request_id = parse_input_authorization_request_id(token)?;
+        Some(admit_input_authorization(request_id, query_input_authorization())?)
+    } else {
+        None
+    };
+    // Clipboard transfer is still not implemented on this platform; a request
+    // for it is refused rather than silently dropped.
     if boolean_or(&value, "enableClipboard", false)? {
         return Err("this engine has no remote clipboard transfer on HarmonyOS".into());
     }
@@ -417,6 +722,8 @@ fn admit_start(options_json: &str, local_id: String) -> Result<PendingStart, Str
         display_name,
         bitrate,
         audio_requested,
+        allow_input,
+        input_authorization_request_id,
         require_local_approval,
         screen,
         id: local_id,
@@ -474,6 +781,9 @@ impl HostWork {
                 "the host start request was not admitted",
             ));
         };
+        if let Some(error) = self.scope.as_ref().and_then(|scope| scope.check().err()) {
+            return HostResult::Done(failure_document("server_start", &error));
+        }
         if current_service().is_some_and(|service| service.is_running()) {
             return HostResult::Done(failure_document(
                 "server_start",
@@ -492,6 +802,14 @@ impl HostWork {
             Ok(identity) => identity,
             Err(error) => return HostResult::Done(failure_document("server_start", &error)),
         };
+        let shared = request.route.is_shared();
+        let profile_revision = request.route.revision();
+        if shared {
+            if let Some(error) = self.scope.as_ref().and_then(|scope|
+                super::app_profile::require_profile_revision(scope, profile_revision).err()) {
+                return HostResult::Done(failure_document("server_start", &error));
+            }
+        }
         let route = request.route.configuration();
         let service = HostService::start(HostServiceOptions {
             id: request.id.clone(),
@@ -502,11 +820,15 @@ impl HostWork {
             rendezvous_server: route.rendezvous_server,
             relay_server: route.relay_server,
             licence_key: route.licence_key,
+            allow_routed_legacy_plain: shared,
             width: request.screen.width,
             height: request.screen.height,
             bitrate: request.bitrate,
             platform: HOST_PLATFORM.to_string(),
             require_local_approval: request.require_local_approval,
+            allow_input: request.allow_input,
+            #[cfg(target_env = "ohos")]
+            input_authorization_request_id: request.input_authorization_request_id,
             security,
         });
         let status = service.status();
@@ -533,7 +855,23 @@ impl HostWork {
         {
             let mut state = bridge();
             state.service = Some(service.clone());
+            state.shared_profile_revision = shared.then_some(profile_revision);
             state.local_id = request.id.clone();
+        }
+        // Publish first, then check the original scope. A fence before
+        // publication is caught here; a closing fence after it sees this service
+        // in request_host_close_after_lifecycle_fence. Cleanup does not depend on
+        // JS resolving.
+        if let Some(error) = self.scope.as_ref().and_then(|scope| scope.check().err()) {
+            HostService::request_close(&service);
+            return HostResult::Done(failure_document("server_start", &error));
+        }
+        if shared {
+            if let Some(error) = self.scope.as_ref().and_then(|scope|
+                super::app_profile::require_profile_revision(scope, profile_revision).err()) {
+                HostService::request_close(&service);
+                return HostResult::Done(failure_document("server_start", &error));
+            }
         }
         HostResult::Started(service, document)
     }
@@ -809,6 +1147,49 @@ pub fn controlled_incoming_resolve(request_id_value: String, allow: bool) -> Str
     }
 }
 
+/// Requests the system injection authorization for this app.
+///
+/// This is the one caller-triggered entry point: the ArkTS application decides
+/// that an explicit user action exists, and this bridge starts no polling
+/// thread, retries nothing and grants no Host policy from a callback. The
+/// answer's `status` is the authorization fact; `ok` only says the call produced
+/// one. It never starts a run or admits input on its own.
+#[napi]
+pub fn controlled_input_authorization_request() -> String {
+    let action = "input_authorization_request";
+    match request_scoped_input_authorization() {
+        Ok(answer) => input_authorization_document(action, answer).to_string(),
+        Err(error) => input_authorization_failure(action, &error).to_string(),
+    }
+}
+
+/// The current system injection-authorization fact. A query requests nothing
+/// and starts no run; it cannot create or revive an admission owner. Status,
+/// resultCode and requestId come from the same engine registry snapshot.
+#[napi]
+pub fn controlled_input_authorization_status() -> String {
+    let action = "input_authorization_status";
+    if let Err(error) = app_scope() {
+        return input_authorization_failure(action, &error).to_string();
+    }
+    input_authorization_document(action, query_input_authorization()).to_string()
+}
+
+/// Cancels only a named pre-run request. Cleanup is allowed after the app scope
+/// is revoked, but a stale token and an owner held by a live Host are refused.
+/// The system may keep reporting authorizing/authorized after its void cancel
+/// call; neither this document nor `ok` confirms that the OS dialog closed.
+#[napi]
+pub fn controlled_input_authorization_cancel(request_id: String) -> String {
+    let action = "input_authorization_cancel";
+    let cancelled = parse_input_authorization_request_id(&request_id)
+        .and_then(cancel_owned_input_authorization);
+    match cancelled {
+        Ok(answer) => input_authorization_document(action, answer).to_string(),
+        Err(error) => input_authorization_failure(action, &error).to_string(),
+    }
+}
+
 /// The password panel's view. Every fact here is read from the record the host
 /// really checks and from this run's own state: the stored verification method,
 /// whether a permanent verifier is stored, and the live run's temporary
@@ -860,4 +1241,118 @@ pub fn controlled_password_get() -> AsyncTask<SecurityWork> {
 #[napi(ts_return_type = "Promise<string>")]
 pub fn controlled_password_refresh() -> AsyncTask<SecurityWork> {
     admit_security(SecurityOp::PasswordRefresh)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        admit_input_authorization, input_authorization_document, input_authorization_rejection,
+        parse_input_authorization_request_id, InputAuthorization,
+    };
+    use serde_json::json;
+
+    fn authorization(status: &'static str, result_code: i32) -> InputAuthorization {
+        InputAuthorization {
+            result_code,
+            status,
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn request_ids_are_strict_nonzero_decimal_u64_strings() {
+        for token in ["1", "18446744073709551615"] {
+            assert_eq!(
+                parse_input_authorization_request_id(token).map(|id| id.to_string()),
+                Ok(token.to_string())
+            );
+        }
+        for token in ["", "0", "+1", "-1", "01", " 1", "1 ", "1.0", "１", "18446744073709551616"] {
+            assert!(parse_input_authorization_request_id(token).is_err(), "{token:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_grant_cannot_replace_the_admitted_start_request() {
+        let granted = |request_id| InputAuthorization {
+            result_code: 0,
+            status: "authorized",
+            request_id,
+        };
+        let original = admit_input_authorization(17, granted(Some(17))).unwrap();
+        assert_eq!(original, 17);
+        assert!(admit_input_authorization(original, granted(Some(18))).is_err());
+        assert!(admit_input_authorization(original, granted(None)).is_err());
+        assert!(admit_input_authorization(original, InputAuthorization {
+            status: "authorizing",
+            ..granted(Some(17))
+        }).is_err());
+        assert_eq!(
+            admit_input_authorization(original, granted(Some(17))),
+            Ok(original)
+        );
+    }
+
+    /// The shared answer shape must never turn a status into a grant: `ok` only
+    /// says the call produced a real fact, and the client reads `status`.
+    #[test]
+    fn a_status_answer_is_not_an_authorization() {
+        for status in ["unauthorized", "authorizing", "authorized"] {
+            let document = input_authorization_document(
+                "input_authorization_status",
+                InputAuthorization {
+                    request_id: Some(u64::MAX),
+                    ..authorization(status, 0)
+                },
+            );
+            assert_eq!(document["status"], json!(status));
+            assert_eq!(document["requestId"], json!("18446744073709551615"));
+            assert_eq!(document["ok"], json!(true), "a real status is still a real answer");
+            let cancelled = input_authorization_document(
+                "input_authorization_cancel",
+                authorization(status, 0),
+            );
+            assert_eq!(cancelled["status"], json!(status), "cancel preserves the observed OS state");
+            assert_eq!(cancelled["requestId"], json!(""), "the cancelled owner is not revived");
+        }
+        for status in ["unsupported", "failed"] {
+            let document = input_authorization_document(
+                "input_authorization_status",
+                authorization(status, 0),
+            );
+            assert_eq!(document["status"], json!(status));
+            assert_eq!(document["ok"], json!(false), "no fact this bridge can hold");
+        }
+    }
+
+    #[test]
+    fn a_failed_query_keeps_the_system_result_code() {
+        let document = input_authorization_document(
+            "input_authorization_status",
+            authorization("failed", 401),
+        );
+        assert_eq!(document["status"], json!("failed"));
+        assert_eq!(document["resultCode"], json!(401));
+        assert_eq!(document["requestId"], json!(""));
+    }
+
+    /// An `enableInput` start is refused for the real reason, and a failed
+    /// system call keeps its own code in the refusal text.
+    #[test]
+    fn a_refused_start_names_the_real_authorization_state() {
+        let refused: Vec<String> = ["unauthorized", "authorizing", "unsupported", "failed"]
+            .into_iter()
+            .map(|status| input_authorization_rejection(authorization(status, 401)))
+            .collect();
+        assert!(refused.iter().all(|text| !text.is_empty()));
+        let mut distinct = refused.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            refused.len(),
+            "each state refuses differently"
+        );
+        assert!(refused[3].contains("401"), "the real code is reported");
+    }
 }

@@ -6,15 +6,15 @@
 use base::message_proto::{ControlKey, KeyEvent, KeyboardMode};
 use napi_derive_ohos::napi;
 use napi_ohos::{
-    bindgen_prelude::{AsyncTask, Task},
+    bindgen_prelude::{AsyncTask, Task, Uint8Array},
     Env, JsValue, Unknown,
 };
 use rd_engine::protocol::Target;
 use rd_engine::conn_token::ConnToken;
 use rd_engine::session::{PeerCloseReason, SessionMode};
 use rd_engine::viewer::{
-    direct_address, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer, ViewerInputPolicy,
-    ViewerOptions, ViewerSnapshot, ViewerTarget,
+    direct_address, CursorImage, InputPolicyOutcome, LoginFailure, SurfaceLease, Viewer,
+    ViewerInputPolicy, ViewerOptions, ViewerSnapshot, ViewerTarget,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -22,8 +22,9 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::c_void,
     path::{Component, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
+mod account;
 mod app_context;
 mod app_directory;
 mod app_presence;
@@ -33,17 +34,24 @@ mod clipboard;
 mod cliprdr;
 mod host_bridge;
 mod host_security;
+mod server_credentials;
 mod server_profile;
 mod session_options;
+mod share_bridge;
 mod transfer;
 use rd_engine::session_options::SessionOptions;
 use session_options::{
-    session_set_image_quality, session_set_custom_image_quality,
-    session_set_codec_preference, session_set_show_remote_cursor,
-    session_switch_display, session_change_resolution, session_get_image_quality,
-    session_get_toggle_option, session_toggle_option, session_get_remote_audio_state,
+    session_change_resolution, session_get_image_quality, session_get_remote_audio_state,
+    session_get_toggle_option, session_set_codec_preference, session_set_custom_fps,
+    session_set_custom_image_quality, session_set_image_quality, session_set_show_remote_cursor,
+    session_switch_display, session_toggle_option,
 };
 mod xcomponent;
+use account::{
+    account_bind_server, account_logout, account_oidc_cancel, account_oidc_result,
+    account_oidc_start, account_providers, account_snapshot, cloud_address_book_list,
+    cloud_address_book_load, cloud_address_book_mutate,
+};
 use app_context::{
     app_init, app_set_lifecycle, lan_peer_remove, lan_peers_query, lan_scan_start, lan_scan_stop,
 };
@@ -62,6 +70,8 @@ use cliprdr::{
     session_set_clipboard_file_root, session_take_clipboard_file_events,
 };
 use host_bridge::{
+    controlled_input_authorization_cancel, controlled_input_authorization_request,
+    controlled_input_authorization_status,
     controlled_incoming_poll, controlled_incoming_resolve, controlled_password_get,
     controlled_password_refresh, controlled_screen_capture_status, controlled_screen_capture_stop,
     controlled_screen_configure, controlled_server_get_status, controlled_server_start,
@@ -76,6 +86,11 @@ use host_security::{
 use server_profile::{validate_server_profile, ApprovedRoute};
 mod capabilities;
 use capabilities::query_decoder_capabilities;
+use share_bridge::{
+    share_connect_transport, share_get_invite, share_get_status, share_get_transport_status,
+    share_poll_send_data, share_push_receive_data, share_report_send_result, share_start,
+    share_stop, SharedSession,
+};
 
 /// This session's one Surface destination: a slot filled exactly once from a
 /// real native XComponent holder borrow and never redirected afterwards.
@@ -90,12 +105,14 @@ use capabilities::query_decoder_capabilities;
 /// and is refused before the slot is touched.
 struct PendingSurfaceLease {
     published: Mutex<Option<Arc<dyn SurfaceLease>>>,
+    presentation: Arc<rd_engine::presentation::LocalPresentation>,
 }
 
 impl PendingSurfaceLease {
     fn new() -> Self {
         Self {
             published: Mutex::new(None),
+            presentation: Arc::new(rd_engine::presentation::LocalPresentation::default()),
         }
     }
 
@@ -138,6 +155,9 @@ impl PendingSurfaceLease {
 // (not ready) rather than a destination. Filling it is serialized and one-shot,
 // so a live destination cannot be swapped under a decoder.
 unsafe impl SurfaceLease for PendingSurfaceLease {
+    fn local_presentation(&self) -> Option<Arc<rd_engine::presentation::LocalPresentation>> {
+        Some(self.presentation.clone())
+    }
     fn surface_id(&self) -> u64 {
         self.published_surface_id()
     }
@@ -191,6 +211,11 @@ struct SessionRecord {
     /// Explicit-save profile and local identity, owned at registration. Starts
     /// never read editable server settings or import trust from the target.
     id_route: Option<IdRoute>,
+    /// The B→C share this record was registered from, or `None` for every
+    /// ordinary target. A shared record has no route approval, no reusable
+    /// credential, and grants only B's forwarded display and pointer intents:
+    /// every other capability checks this flag independently of view-only.
+    shared: Option<SharedSession>,
     /// A confirmed terminal record remains until receipt consumption is ACKed.
     /// Registration never overwrites an existing id, even after reclamation.
     closed: bool,
@@ -203,6 +228,8 @@ struct SessionRecord {
     reclaimed: Option<bool>,
     password: String,
     conn_token: Option<ConnToken>,
+    /// Last accepted FPS request, queued for the running writer or saved for
+    /// the next login. This is not the peer's applied rate or effective cap.
     fps: u32,
     session_options: SessionOptions,
     viewer: Option<Arc<Viewer>>,
@@ -287,16 +314,25 @@ fn scrub_terminal_record(record: &mut SessionRecord) {
     record.cursor = None;
     record.common.clear();
     record.id_route = None;
+    // A terminal shared record keeps no byte transport: whether its stream ever
+    // reached a viewer or not, the queues are the record's and end here.
+    if let Some(shared) = record.shared.as_ref() {
+        shared.close_transport();
+    }
 }
 
 /// Authorization and terminal facts already reported for the current viewer.
 ///
-/// Phases are forwarded unchanged. Waiting for the host operator is not a
-/// password rejection and must not fabricate an input-password event.
-/// Starting a new viewer resets these one-shot facts.
+/// Phases are forwarded unchanged. The peer's `awaiting_approval` answer is not
+/// a password rejection and raises no input-password event; one is reported
+/// only when the engine itself armed the password step (the peer demanded or
+/// refused a password, or a login that carried none went out and may still be
+/// settled by a typed one). Starting a new viewer resets these one-shot facts.
 #[derive(Default)]
 struct Reported {
     pending: VecDeque<serde_json::Value>,
+    presentation_generation: u64,
+    peer_info: Option<serde_json::Value>,
     /// The engine's own evidence that the peer authorized this session.
     authorized: bool,
     /// The viewer finished; the snapshot's error rides on that event.
@@ -304,6 +340,11 @@ struct Reported {
     /// The last peer-issued 2FA challenge shown to this consumer.
     second_factor_challenge: u64,
     password_challenge: u64,
+    cursor_revision: u64,
+    cursor_position_revision: u64,
+    /// Last exported image, only to split data/id over a limited poll. Earlier
+    /// images may have been evicted by the UI, so selecting one resends its data.
+    cursor_image: Weak<CursorImage>,
 }
 
 impl Reported {
@@ -328,6 +369,10 @@ impl Reported {
                     "title": if wrong { "Wrong Password" } else { "Password Required" },
                     "text": if wrong { "Wrong Password" } else { "Empty Password" },
                     "challenge_revision": snapshot.password_challenge.to_string(),
+                    // The wire as the handshake really left it, so the consumer
+                    // can say so before a password is typed.
+                    "encrypted": snapshot.encrypted,
+                    "peer_verified": snapshot.peer_verified,
                 }));
             }
         }
@@ -357,8 +402,30 @@ impl Reported {
         // window or the client can never create the binding the viewer awaits.
         if snapshot.authenticated && !self.authorized {
             self.authorized = true;
-            events.push(peer_info_event(snapshot));
+            let peer = peer_info_event(snapshot);
+            self.peer_info = Some(peer.clone());
+            events.push(peer);
             events.push(authorized_event(snapshot));
+        } else if snapshot.authenticated && !snapshot.closed {
+            let mut peer = peer_info_event(snapshot);
+            if self.peer_info.as_ref() != Some(&peer) {
+                self.peer_info = Some(peer.clone());
+                if snapshot.protocol == "rustdesk" {
+                    if let Some(display) = snapshot.displays.get(snapshot.current_display as usize) {
+                        events.push(serde_json::json!({
+                            "name": "switch_display",
+                            "display": snapshot.current_display,
+                            "width": display.width.to_string(),
+                            "height": display.height.to_string(),
+                            "x": display.x.to_string(),
+                            "y": display.y.to_string(),
+                        }));
+                    }
+                } else {
+                    peer["name"] = serde_json::json!("sync_peer_info");
+                    events.push(peer);
+                }
+            }
         }
         // `State::finish` is what sets `closed`; `"closing"` is a teardown that
         // has not finished, and an error a running decoder reports is not one.
@@ -385,6 +452,65 @@ impl Reported {
             events.push(serde_json::json!({ "name": "clipboard_files" }));
         }
         events
+    }
+
+    /// Cursor state is coalesced, never appended to `pending`: a slow consumer
+    /// gets the latest selection/position inside its remaining poll budget.
+    fn cursor_events(
+        &mut self,
+        snapshot: &ViewerSnapshot,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+        let mut events = Vec::new();
+        if snapshot.closed || !snapshot.authenticated || snapshot.protocol != "rustdesk" {
+            self.cursor_image = Weak::new();
+            return Ok(events);
+        }
+        let cursor = &snapshot.cursor;
+        if limit > 0 && cursor.revision != self.cursor_revision {
+            if let Some(id) = cursor.id {
+                if let Some(image) = &cursor.image {
+                    let weak = Arc::downgrade(image);
+                    let known = self.cursor_image.ptr_eq(&weak);
+                    if !cursor.from_id || !known {
+                        let colors = serde_json::to_string(&image.rgba)?;
+                        events.push(serde_json::json!({
+                            "name": "cursor_data",
+                            "id": image.id.to_string(),
+                            "hotx": image.hotx.to_string(),
+                            "hoty": image.hoty.to_string(),
+                            "width": image.width.to_string(),
+                            "height": image.height.to_string(),
+                            "colors": colors,
+                        }));
+                        self.cursor_image = weak;
+                    }
+                    if !cursor.from_id {
+                        self.cursor_revision = cursor.revision;
+                    } else if events.len() < limit {
+                        events.push(serde_json::json!({ "name": "cursor_id", "id": id.to_string() }));
+                        self.cursor_revision = cursor.revision;
+                    }
+                } else {
+                    // Preserve the actual wire ID, but explicitly invalidate a
+                    // consumer's older same-ID bitmap after rejection/eviction.
+                    self.cursor_image = Weak::new();
+                    events.push(serde_json::json!({
+                        "name": "cursor_id", "id": id.to_string(), "cache_miss": "true",
+                    }));
+                    self.cursor_revision = cursor.revision;
+                }
+            }
+        }
+        if events.len() < limit && cursor.position_revision != self.cursor_position_revision {
+            if let Some((x, y)) = cursor.position {
+                events.push(serde_json::json!({
+                    "name": "cursor_position", "x": x.to_string(), "y": y.to_string(),
+                }));
+                self.cursor_position_revision = cursor.position_revision;
+            }
+        }
+        Ok(events)
     }
 }
 
@@ -561,6 +687,19 @@ fn expected_input_generation(action: &str, value: f64) -> Result<u64, String> {
     Ok(value as u64)
 }
 
+/// The X11 keysym carried by one typed input call, without rounding or clamping
+/// ArkTS's number into a different wire value.
+fn input_keysym(value: f64) -> Result<u32, &'static str> {
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < 1.0
+        || value > 0x1fff_ffffu32 as f64
+    {
+        return Err("sessionSendKeysym keysym must be an integer in 1..=0x1FFFFFFF");
+    }
+    Ok(value as u32)
+}
+
 /// Parses the protocol without choosing a trust source. A RustDesk ID needs a
 /// separately approved route at registration. Direct VNC/RDP retain their
 /// endpoints; RDP requires an explicit account and engine certificate checks.
@@ -608,9 +747,16 @@ fn parse_viewer_target(
     }
 }
 
-/// Starts the existing direct or strict rendezvous connector with one immutable
-/// record. ID username/config.id are the same canonical target; the raw wire
-/// key and decoded signer stay separate in the captured route.
+/// Starts the existing direct, strict rendezvous or pinned connector with one
+/// immutable record. ID username/config.id are the same canonical target; the raw
+/// wire key and decoded signer stay separate in the captured route.
+///
+/// A shared (B→C) record dials the nearby transport it already owns: the invite
+/// named one ephemeral peer and the key that peer must prove, so there is no
+/// fallback to an ordinary direct or rendezvous dial for it, and its username is
+/// that pinned id rather than anything derived from an address. The framed stream
+/// is handed over exactly once, and the one-time token it holds lives in the
+/// record's scrubbed password field and is spent at this dial.
 ///
 /// The destination handed over is this session's single slot, which may still be
 /// empty: a viewer that authenticates before the client has attached its
@@ -627,10 +773,13 @@ fn dial(record: &mut SessionRecord) -> Result<Arc<Viewer>, String> {
         target: record.viewer_target.clone(),
         mode: record.mode,
         transfer_root: record.transfer_root.clone(),
-        username: record.id_route.as_ref().map_or_else(
-            || record.target.clone(),
-            |route| route.profile.id().to_owned(),
-        ),
+        username: match &record.shared {
+            Some(shared) => shared.pin.expected_id.clone(),
+            None => record.id_route.as_ref().map_or_else(
+                || record.target.clone(),
+                |route| route.profile.id().to_owned(),
+            ),
+        },
         local_id: record.id_route.as_ref().map_or_else(
             || LOCAL_ID.to_owned(),
             |route| route.admission.local_id.clone(),
@@ -643,11 +792,39 @@ fn dial(record: &mut SessionRecord) -> Result<Arc<Viewer>, String> {
         session_options: record.session_options.clone(),
     };
     let lease: Arc<dyn SurfaceLease> = record.lease.clone();
-    match &record.id_route {
-        Some(route) => Viewer::start_rendezvous(options, lease, route.profile.configuration()),
-        None => Viewer::start(options, lease),
+    let result = match (&record.id_route, &record.shared) {
+        // A shared view dials the nearby transport this record already owns. The
+        // framed stream is handed to the viewer exactly once, so a record whose
+        // stream was already spent cannot start a second viewer on it.
+        (_, Some(shared)) => match shared.take_wire() {
+            Some(wire) => Viewer::start_nearby_verified(
+                options,
+                lease,
+                wire,
+                shared.pin.expected_id.clone(),
+                shared.pin.public_key,
+            ),
+            None => {
+                return Err(
+                    "this shared record's nearby stream was already handed to a viewer; register a new code from B"
+                        .to_string(),
+                )
+            }
+        },
+        (Some(route), None) => Viewer::start_rendezvous(options, lease, route.profile.configuration()),
+        (None, None) => Viewer::start(options, lease),
+    };
+    match result {
+        Ok(viewer) => Ok(viewer),
+        Err(error) => {
+            if let Some(shared) = record.shared.as_ref() {
+                // The stream is already spent, so this record cannot dial again:
+                // end its byte transport instead of leaving a dead path open.
+                shared.close_transport();
+            }
+            Err(format!("{error:?}"))
+        }
     }
-    .map_err(|error| format!("{error:?}"))
 }
 
 /// Publishes one session's input policy to whatever is running for it.
@@ -677,7 +854,7 @@ fn publish_input_policy(
 /// buttons the operator is holding right now.
 fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     if retired > 0 {
-        Some("this viewer's writer has not yet released the keys and buttons a policy or permission change retired; release_pending says that release has not completed")
+        Some("this viewer's writer has not yet released the keys and buttons an input generation change retired; release_pending says that release has not completed")
     } else if unreleased > 0 {
         Some("a release this viewer owed is unconfirmed: its writer stopped before the release was made, so whether the peer still holds the key or button is unknown; releases_unreleased counts it")
     } else {
@@ -685,14 +862,14 @@ fn release_note(retired: u64, unreleased: u64) -> Option<&'static str> {
     }
 }
 
-/// The answer a policy change returns.
+/// The answer a policy change or explicit input retirement returns.
 ///
 /// `admission_revoked` is what the call already did, and `release_pending` is
 /// what the engine's writer still owes the peer for the keys and buttons a
 /// change retired. `releases_owed` is everything the writer owns, a key the
 /// operator is holding included; `releases_unreleased` counts holds whose writer
 /// stopped before it could release them. A release is never reported as
-/// completed merely because a setter returned, and `input_generation` names the
+/// completed merely because the request returned, and `input_generation` names the
 /// generation this viewer's gate is at now, so a client that keeps input state
 /// of its own can tell that the engine invalidated what came before this answer
 /// even when this particular call changed nothing.
@@ -895,6 +1072,7 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
             transfer_root,
             transfer: None,
             id_route,
+            shared: None,
             closed: false,
             closing: false,
             reclaimed: None,
@@ -932,6 +1110,393 @@ pub fn session_add(session_id: String, target: String, mut options: String) -> S
         Ok(response)
     });
     registered.unwrap_or_else(|message| error_json(&message))
+}
+
+/// The refusal a shared view owes a call that would widen what the share grants.
+///
+/// A shared session is one forwarded display with pointer intents routed via B:
+/// it takes no keyboard, clipboard or file input of its own, it cannot select a
+/// different peer display, and it holds no reusable credential for the peer behind
+/// it. The engine enforces pointer arbitration; this is the layer that
+/// refuses the rest, because those open capabilities the forward host does not have.
+const SHARED_VIEW_REFUSAL: &str =
+    "a shared view grants only pointer intents via its source: no keyboard, clipboard, file, display-switch or reconnect capability";
+
+/// Whether this record came from a B→C share invite.
+///
+/// Registry state, never a guess from the target string or the protocol: only
+/// `session_add_shared` sets the flag, and `session_response` publishes it.
+fn is_shared_session(session_id: &str) -> bool {
+    with_sessions(|sessions| {
+        sessions
+            .get(session_id)
+            .is_some_and(|record| record.shared.is_some())
+    })
+}
+
+/// The same answer for a caller that already holds the record.
+fn shared_view_refusal(record: &SessionRecord) -> Option<&'static str> {
+    record.shared.as_ref().map(|_| SHARED_VIEW_REFUSAL)
+}
+
+/// Registers the C side of a B→C share from the invite code, without dialling.
+///
+/// The code is the only thing that crosses from B: it names B's one-time LAN
+/// endpoint, the ephemeral host id C has to prove and a single-use token. This
+/// bridge parses it, keeps that token in the record's scrubbed password field and
+/// limits the session to a forwarded desktop and pointer intents via B. Nothing about A, B's long-term
+/// identity or any server route is recorded; the invite's own deadline is
+/// enforced here and again at `sessionStart`, and `dial` can start this record
+/// only through the pinned connector.
+#[napi]
+pub fn session_add_shared(session_id: String, mut invite_code: String, mut options: String) -> String {
+    let blank = options.trim().is_empty();
+    let decoded = serde_json::from_str::<serde_json::Value>(&options);
+    scrub_password(&mut options);
+    // The code carries the share token, so this function owns its bytes whether
+    // it is accepted or not.
+    let parsed = share_bridge::ShareInvite::parse(&invite_code);
+    scrub_password(&mut invite_code);
+    let invite = match parsed {
+        Ok(invite) => invite,
+        Err(message) => return error_json(&message),
+    };
+    let options = match decoded {
+        Ok(value) => value,
+        Err(_) if blank => serde_json::Value::Null,
+        Err(_) => return error_json("sessionAddShared options are not JSON"),
+    };
+    let fps = match &options {
+        serde_json::Value::Null => 60,
+        serde_json::Value::Object(object) => {
+            for field in object.keys() {
+                if !["customFps", "isViewOnly"].contains(&field.as_str()) {
+                    return error_json(&format!(
+                        "sessionAddShared does not take {field:?}: a shared view has no role, route, \
+                         file transfer or reconnect option to set"
+                    ));
+                }
+            }
+            match object.get("isViewOnly") {
+                None | Some(serde_json::Value::Null) => {}
+                Some(serde_json::Value::Bool(_)) => {}
+                Some(_) => return error_json("sessionAddShared isViewOnly must be a boolean"),
+            }
+            match object.get("customFps") {
+                None | Some(serde_json::Value::Null) => 60,
+                Some(value) => match value.as_u64().filter(|fps| (1..=240).contains(fps)) {
+                    Some(fps) => fps as u32,
+                    None => return error_json("sessionAddShared customFps must be 1..=240"),
+                },
+            }
+        }
+        _ => return error_json("sessionAddShared options must be a JSON object or empty"),
+    };
+    if session_id.is_empty() {
+        return error_json("empty session id");
+    }
+    // An invitation is a few minutes long and single-use. A record created from a
+    // dead code would hold a credential no host can accept, so the deadline is
+    // checked before anything is registered.
+    if let Err(message) = invite.admitted_at(share_bridge::now_ms()) {
+        return error_json(&message);
+    }
+    let registered = with_sessions(|sessions| -> Result<String, String> {
+        // The same cold, count-bounded observation `session_add` performs: it
+        // scrubs confirmed viewers whose owner has not polled, and never evicts a
+        // record that still owes a receipt.
+        for record in sessions.values_mut() {
+            if record.viewer.is_some() {
+                observe_terminal_reclamation(record);
+            }
+        }
+        if sessions.contains_key(&session_id) {
+            return Err(
+                "session id is still registered; poll and acknowledge its confirmed terminal receipt before registering a new session"
+                    .to_string(),
+            );
+        }
+        if sessions.len() >= MAX_SESSION_RECORDS {
+            return Err(
+                "session registry capacity exhausted; retire confirmed terminal receipts before registering a new session"
+                    .to_string(),
+            );
+        }
+        // The nearby byte transport is created here, not at `sessionStart`: a
+        // collaborator's first bytes can arrive while the login is still running,
+        // and they need this record's bounded queue to land in. The framed stream
+        // half waits in the record until the dial consumes it exactly once.
+        let (bridge, wire) = match rd_engine::nearby::Bridge::pair() {
+            Ok(pair) => pair,
+            Err(error) => {
+                return Err(format!("the nearby transport could not be created: {error}"))
+            }
+        };
+        let record = SessionRecord {
+            lifecycle_epoch: allocate_native_id().map_err(str::to_owned)?,
+            // An opaque label: the pin lives in the shared record and the byte
+            // transport is the record's own, so no receipt names an address.
+            target: format!("share:{}", invite.share_epoch),
+            viewer_target: ViewerTarget::RustDesk { address: None },
+            mode: SessionMode::Desktop,
+            transfer_root: None,
+            transfer: None,
+            id_route: None,
+            shared: Some(SharedSession {
+                pin: share_bridge::PinnedHost {
+                    expected_id: invite.host_id,
+                    public_key: invite.public_key,
+                },
+                expires_at_ms: invite.expires_at_ms,
+                share_epoch: invite.share_epoch,
+                transport: Mutex::new(share_bridge::SharedTransport::paired(bridge, wire)),
+            }),
+            closed: false,
+            closing: false,
+            reclaimed: None,
+            password: invite.token,
+            conn_token: None,
+            fps,
+            session_options: SessionOptions::default(),
+            dials: 0,
+            started: Instant::now(),
+            viewer: None,
+            terminal_snapshot: None,
+            terminal_elapsed_ms: None,
+            terminal_receipt_constructed: false,
+            lease: Arc::new(PendingSurfaceLease::new()),
+            borrow: None,
+            binding: None,
+            input_policy: ViewerInputPolicy {
+                view_only: options.get("isViewOnly").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                unverified_accepted: false,
+            },
+            cursor: None,
+            common: HashMap::new(),
+            reported: Reported::default(),
+        };
+        let mut response = session_response(
+            true,
+            "session_add_shared",
+            &session_id,
+            &record,
+            None,
+        );
+        response["routable"] = serde_json::json!(true);
+        response["fps"] = serde_json::json!(fps);
+        response["expiresAtMs"] = serde_json::json!(invite.expires_at_ms);
+        response["note"] = serde_json::json!(
+            "shared view registered: the pinned one-time host identity and its single-use token are held natively; sessionStart dials only that pinned peer and nothing about A, its account or any server route exists on this side"
+        );
+        let response = response.to_string();
+        sessions.insert(session_id.clone(), record);
+        Ok(response)
+    });
+    registered.unwrap_or_else(|message| error_json(&message))
+}
+
+/// The refusal a nearby byte call answers with. `code` is the stable name a caller
+/// branches on, and nothing here claims a frame was sent, received or applied.
+fn byte_refusal(action: &str, code: &str, message: &str) -> String {
+    serde_json::json!({
+        "ok": false,
+        "action": action,
+        "code": code,
+        "reason": code,
+        "error": message,
+        "message": message,
+        "accepted": false,
+    })
+    .to_string()
+}
+
+/// The nearby transport of the shared record a C-side byte call names.
+///
+/// The epoch must be the record's current one, so a reused session id is never
+/// answered with a retired record's transport, and a terminal record is refused
+/// before its transport is read: a closed or closing view must not keep taking
+/// frames.
+fn shared_session_of<'a>(
+    record: &'a SessionRecord,
+    lifecycle_epoch: &str,
+) -> Result<&'a share_bridge::SharedSession, (&'static str, String)> {
+    if record.lifecycle_epoch.to_string() != lifecycle_epoch {
+        return Err((
+            "stale_lifecycle_epoch",
+            "lifecycleEpoch is not this session's current epoch".to_string(),
+        ));
+    }
+    if record.closed || record.closing {
+        return Err((
+            "session_terminal",
+            "this session is closed or closing; its nearby transport is closed".to_string(),
+        ));
+    }
+    record.shared.as_ref().ok_or_else(|| {
+        (
+            "not_a_shared_view",
+            "this session is not a nearby (B to C) view".to_string(),
+        )
+    })
+}
+
+/// Takes the next framed chunk the nearby transport queued for this shared view.
+///
+/// The core frames these bytes (sequence and length), so they cross as they are:
+/// ArkTS hands `chunk.buffer` to `sendData` and never rebuilds, joins, re-frames
+/// or text-encodes them. An empty array is the one answer for "nothing queued
+/// now", a stale epoch and a terminal record, so only a non-empty array is a
+/// chunk to send.
+#[napi]
+pub fn session_poll_send_data(session_id: String, lifecycle_epoch: String) -> Uint8Array {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return Uint8Array::new(Vec::new());
+        };
+        observe_terminal_reclamation(record);
+        let Ok(shared) = shared_session_of(record, &lifecycle_epoch) else {
+            return Uint8Array::new(Vec::new());
+        };
+        match shared.take_output() {
+            Ok(Some(chunk)) => Uint8Array::new(chunk),
+            Ok(None) => Uint8Array::new(Vec::new()),
+            Err(_) => {
+                // The transport ended, or a lifecycle fence closed it: this record
+                // keeps no byte path, and its own poll receipt carries the rest.
+                shared.close_transport();
+                Uint8Array::new(Vec::new())
+            }
+        }
+    })
+}
+
+/// Hands one byte chunk received from the nearby transport to this shared view.
+///
+/// `accepted` means the chunk entered the core's bounded, framed queue; it is not
+/// an acknowledgement that the peer read it and not proof of a presented frame.
+/// A full queue or a closed transport is refused rather than dropped silently.
+#[napi]
+pub fn session_push_receive_data(
+    session_id: String,
+    lifecycle_epoch: String,
+    data: Uint8Array,
+) -> String {
+    const ACTION: &str = "session_receive_data";
+    let bytes = data.len();
+    if bytes == 0 {
+        return byte_refusal(
+            ACTION,
+            "empty_data",
+            "the nearby transport delivered no bytes",
+        );
+    }
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return byte_refusal(ACTION, "unknown_session", "unknown session");
+        };
+        observe_terminal_reclamation(record);
+        let shared = match shared_session_of(record, &lifecycle_epoch) {
+            Ok(shared) => shared,
+            Err((code, message)) => return byte_refusal(ACTION, code, &message),
+        };
+        match shared.push_input(&data) {
+            Ok(()) => serde_json::json!({
+                "ok": true,
+                "action": ACTION,
+                "sessionId": session_id.clone(),
+                "accepted": true,
+                "bytes": bytes,
+            })
+            .to_string(),
+            Err(error) => {
+                shared.close_transport();
+                byte_refusal(ACTION, "transport_rejected", &error)
+            }
+        }
+    })
+}
+
+/// Records what the platform's `sendData` call did with one chunk of a shared view.
+///
+/// `ok: true` means only that the platform call completed: not a peer read, not a
+/// decode and not a presented frame. A rejection closes this record's transport
+/// and is answered as a failure, because a link that refused a frame cannot be
+/// handed the next one in order.
+///
+/// The caller names a fixed `label` and a numeric platform `code`; no platform
+/// message text crosses this boundary, since such a message can quote the frame or
+/// the transport session.
+#[napi]
+pub fn session_report_send_result(
+    session_id: String,
+    lifecycle_epoch: String,
+    ok: bool,
+    label: String,
+    code: i32,
+) -> String {
+    const ACTION: &str = "session_send_result";
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return byte_refusal(ACTION, "unknown_session", "unknown session");
+        };
+        observe_terminal_reclamation(record);
+        let shared = match shared_session_of(record, &lifecycle_epoch) {
+            Ok(shared) => shared,
+            Err((code, message)) => return byte_refusal(ACTION, code, &message),
+        };
+        if ok {
+            return serde_json::json!({
+                "ok": true,
+                "action": ACTION,
+                "sessionId": session_id.clone(),
+                "reported": true,
+                "meaning": "platform_call_completed",
+            })
+            .to_string();
+        }
+        let label = share_bridge::send_failure_label(&label);
+        shared.close_transport();
+        serde_json::json!({
+            "ok": false,
+            "action": ACTION,
+            "sessionId": session_id.clone(),
+            "code": "send_failed",
+            "label": label,
+            "platformCode": code,
+            "transportClosed": true,
+            "message": "the platform rejected a nearby send; this record's transport is closed",
+        })
+        .to_string()
+    })
+}
+
+/// Observed nearby-transport state for one shared view.
+///
+/// `transportClosed` is the only fact a caller branches on. A record registered
+/// but not yet dialled reports its transport as open, because `sessionAddShared`
+/// created the byte queues before the login; a terminal record, a stale epoch and
+/// a record that is not a shared view are refusals, never a fabricated "closed".
+#[napi]
+pub fn session_get_transport_status(session_id: String, lifecycle_epoch: String) -> String {
+    const ACTION: &str = "session_transport_status";
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return byte_refusal(ACTION, "unknown_session", "unknown session");
+        };
+        observe_terminal_reclamation(record);
+        let shared = match shared_session_of(record, &lifecycle_epoch) {
+            Ok(shared) => shared,
+            Err((code, message)) => return byte_refusal(ACTION, code, &message),
+        };
+        serde_json::json!({
+            "ok": true,
+            "action": ACTION,
+            "sessionId": session_id.clone(),
+            "lifecycleEpoch": lifecycle_epoch,
+            "transportClosed": shared.transport_closed(),
+        })
+        .to_string()
+    })
 }
 
 fn surface_receipts(record: &SessionRecord, released: bool) -> Vec<serde_json::Value> {
@@ -1004,6 +1569,17 @@ fn session_response(
         "phase": phase,
         "protocol": kind,
         "target": record.target,
+        // A shared (B→C) record carries no route approval, no reusable credential
+        // and no role beyond one forwarded display plus pointer intents via B.
+        // `view_only` remains the operator's input switch, not a role grant.
+        "shared": record.shared.is_some(),
+        // The nearby byte transport is the record's own; a closed one is reported
+        // where the client already reads state instead of inventing a counter.
+        "transportClosed": record
+            .shared
+            .as_ref()
+            .map(share_bridge::SharedSession::transport_closed),
+        "view_only": record.input_policy.view_only,
         "closed": snapshot.map_or(record.closed, |snapshot| snapshot.closed),
         "closing": record.closing,
         "reclamation_known": record.reclaimed.is_some(),
@@ -1049,6 +1625,24 @@ fn session_response(
             "pushed_units": snapshot.pushed_units,
             "render_submissions": snapshot.render_submissions,
             "queued_units": snapshot.queued_units,
+            "audio": snapshot.audio.as_ref().map(|audio| serde_json::json!({
+                "allowed": audio.allowed,
+                "generation": audio.generation.to_string(),
+                "format": audio.format.as_ref().map(|format| serde_json::json!({
+                    "sample_rate": format.sample_rate,
+                    "channels": format.channels,
+                })),
+                "active": audio.active,
+                "received_packets": audio.received_packets,
+                "decoded_packets": audio.decoded_packets,
+                "dropped_packets": audio.dropped_packets,
+                "stale_packets": audio.stale_packets,
+                "rejected_packets": audio.rejected_packets,
+                "queued_samples": audio.queued_samples,
+                "played_samples": audio.played_samples,
+                "last_error": audio.last_error,
+                "resources_unconfirmed": audio.resources_unconfirmed,
+            })),
             "note": release_note(snapshot.releases_retired, snapshot.releases_unreleased)
                 .unwrap_or_else(|| poll_note(phase, snapshot.error.as_deref())),
         });
@@ -1131,6 +1725,19 @@ pub fn session_start(session_id: String) -> String {
         let started = record.viewer.is_none();
         let mut surface_retirement: Option<String> = None;
         if started {
+            // An invitation is single-use and minutes long. A record whose code has
+            // expired holds a token no host will accept, so the dial is refused
+            // instead of spending that credential and failing at the peer.
+            if record.shared.as_ref().is_some_and(|shared| {
+                shared.expired(share_bridge::now_ms())
+            }) {
+                let message = "the share invite has expired; register a new code from B";
+                let mut response =
+                    session_response(false, "session_start", &session_id, record, None);
+                response["action_error"] = serde_json::json!(message);
+                response["message"] = serde_json::json!(message);
+                return response.to_string();
+            }
             match dial(record) {
                 Ok(viewer) => {
                     record.viewer = Some(viewer.clone());
@@ -1216,6 +1823,12 @@ pub fn session_login(session_id: String, mut payload: String) -> String {
             let Some(record) = sessions.get_mut(&session_id) else {
                 return error_json("unknown session");
             };
+            // A shared view authenticates with the token its invite carried, and
+            // nothing else: another password would be answered against a forward
+            // host that has no account behind it.
+            if let Some(message) = shared_view_refusal(record) {
+                return error_json(message);
+            }
             if let Err(error) = mutable_snapshot(record) {
                 return error_json(error);
             }
@@ -1272,6 +1885,11 @@ pub fn session_send_2fa(session_id: String, mut code: String, trust_this_device:
         let Some(record) = sessions.get_mut(&session_id) else {
             return error_json("unknown session");
         };
+        // The forward host has no second factor; a code typed here could only be
+        // rejected, so it is refused before the engine is asked to hold it.
+        if let Some(message) = shared_view_refusal(record) {
+            return error_json(message);
+        }
         if let Err(error) = mutable_snapshot(record) {
             return error_json(error);
         }
@@ -1315,11 +1933,13 @@ pub fn session_get_enable_trusted_devices(session_id: String) -> napi_ohos::Resu
 }
 
 /// Explicit export only; an input token is never returned before peer authorization.
+/// A shared view never has one: the invite's single-use token is the password this
+/// record spends at its own dial, not reconnect material for the peer behind B.
 #[napi]
 pub fn session_get_conn_token(session_id: String) -> Option<String> {
     with_sessions(|sessions| {
         let record = sessions.get(&session_id)?;
-        if record.closed || record.closing {
+        if record.closed || record.closing || record.shared.is_some() {
             return None;
         }
         record.viewer.as_ref()?.conn_token_json()
@@ -1331,7 +1951,7 @@ pub fn session_get_conn_token(session_id: String) -> Option<String> {
 pub fn session_has_conn_token(session_id: String) -> bool {
     with_sessions(|sessions| {
         sessions.get(&session_id)
-            .filter(|record| !record.closed && !record.closing)
+            .filter(|record| !record.closed && !record.closing && record.shared.is_none())
             .and_then(|record| record.viewer.as_ref())
             .is_some_and(|viewer| viewer.has_conn_token())
     })
@@ -1599,6 +2219,12 @@ impl CloseWork {
                 return CloseRequest::Complete(close_receipt_json(&session_id, record));
             }
             record.closing = true;
+            // The byte path ends with the close request, before any join: a
+            // terminal shared view must not keep taking frames, and a record whose
+            // stream never reached a viewer still owns its bounded queues.
+            if let Some(shared) = record.shared.as_ref() {
+                shared.close_transport();
+            }
             if let Some(viewer) = &record.viewer {
                 viewer.request_close();
                 return CloseRequest::Join {
@@ -1736,6 +2362,11 @@ fn submit_transfer(session_id: &str, action: &str, command: rd_engine::transfer:
         let Some(record) = sessions.get_mut(session_id) else {
             return transfer::error_response(action, "unknown session");
         };
+        // A shared view publishes one display and carries no file or directory
+        // capability: the peer behind B is a forward host, not a desktop session.
+        if let Some(message) = shared_view_refusal(record) {
+            return transfer::error_response(action, message);
+        }
         if let Err(message) = mutable_snapshot(record) {
             return transfer::error_response(action, message);
         }
@@ -1920,8 +2551,43 @@ pub fn session_poll_events(session_id: String, limit: u32) -> String {
             None => Vec::new(),
         };
         record.reported.pending.extend(observed);
+        let presentation = record.lease.presentation.snapshot();
+        let generation = presentation.generation.to_string();
+        // A queued event may have been superseded while the consumer was
+        // draining a smaller poll limit. Never deliver an old ready after rearm.
+        record.reported.pending.retain(|event| {
+            event["name"] != "native_render_ready"
+                || (!record.closing && !record.closed
+                    && event["presentation_generation"] == generation)
+        });
+        if !record.closing && !record.closed {
+            if let Some(output) = presentation.ready {
+                if output.generation > record.reported.presentation_generation {
+                    record.reported.presentation_generation = output.generation;
+                    record.reported.pending.push_back(serde_json::json!({
+                        "name": "native_render_ready",
+                        "presentation_generation": output.generation.to_string(),
+                        "lifecycleEpoch": record.lifecycle_epoch.to_string(),
+                        "display": output.display,
+                        "width": output.width.to_string(),
+                        "height": output.height.to_string(),
+                        "evidence": "native_submission",
+                    }));
+                }
+            }
+        }
         let count = record.reported.pending.len().min(limit as usize);
+        let cursor = match snapshot.as_ref() {
+            Some(snapshot) if !record.closing && !record.closed => {
+                match record.reported.cursor_events(snapshot, limit as usize - count) {
+                    Ok(events) => events,
+                    Err(_) => return error_json("cursor event encoding failed"),
+                }
+            }
+            _ => Vec::new(),
+        };
         let mut events: Vec<_> = record.reported.pending.drain(..count).collect();
+        events.extend(cursor);
         if record.transfer.is_none() {
             record.transfer = record.viewer.as_ref().and_then(|viewer| viewer.transfer_handle());
         }
@@ -1987,12 +2653,27 @@ fn resolve_mouse_coordinates(
     }
 }
 
+/// Shared clicks carry no location: B alone resolves the current pointer.
+/// Absolute moves are refused even when a caller bypasses the ArkTS mapper.
+fn shared_pointer_coordinates(
+    kind: u32,
+    x: Option<i32>,
+    y: Option<i32>,
+) -> Result<(i32, i32), String> {
+    match kind {
+        1 | 2 => Ok((0, 0)),
+        3..=5 => Ok((x.unwrap_or(0), y.unwrap_or(0))),
+        _ => Err("shared pointer input accepts only deltas, buttons and scrolling".to_string()),
+    }
+}
+
 /// Mouse input, straight through to the engine's viewer.
 ///
 /// The canonical mobile input contract sends pointer moves with coordinates,
 /// then button transitions without duplicating them. This layer retains only the
-/// last absolute position the engine actually admitted for that session and
-/// refuses a coordinate-less button before any such position is known.
+/// last absolute position the engine actually admitted for an ordinary session.
+/// In a share, buttons instead address B's authoritative pointer and movement is
+/// relative; neither B's UI nor C may replace that position with a touch point.
 ///
 /// `input_generation` is the epoch the client is acting on, and it is required:
 /// the engine compares it with the gate it decides under, so an event queued
@@ -2068,13 +2749,29 @@ pub fn session_send_mouse(session_id: String, mouse_json: String, input_generati
         let Some(viewer) = record.viewer.as_ref() else {
             return error_json("session has no running viewer");
         };
-        let (x, y) = match resolve_mouse_coordinates(kind, x, y, record.cursor) {
+        let source_share = viewer.has_active_share();
+        let shared_pointer = record.shared.is_some() || source_share;
+        let coordinates = if shared_pointer {
+            shared_pointer_coordinates(kind, x, y)
+        } else {
+            resolve_mouse_coordinates(kind, x, y, record.cursor)
+        };
+        let (x, y) = match coordinates {
             Ok(position) => position,
             Err(message) => return error_json(&message),
         };
-        match viewer.send_mouse(kind, button, x, y, generation) {
+        let outcome = if source_share {
+            viewer.send_shared_pointer(kind, button, x, y, generation)
+        } else {
+            viewer.send_mouse(kind, button, x, y, generation)
+        };
+        match outcome {
             Ok(admitted) => {
-                if kind <= 2 {
+                if shared_pointer {
+                    // No old pre-share absolute coordinate may become a later
+                    // coordinate-less click when B returns to ordinary input.
+                    record.cursor = None;
+                } else if kind <= 2 {
                     record.cursor = Some((x, y));
                 }
                 serde_json::json!({ "ok": true, "input_generation": admitted }).to_string()
@@ -2082,6 +2779,37 @@ pub fn session_send_mouse(session_id: String, mouse_json: String, input_generati
             Err(error) => refusal_json(&format!("{error:?}"), viewer.input_generation()),
         }
     })
+}
+
+/// Sends one X11 keysym transition through the existing VNC/RDP adapter.
+///
+/// RustDesk physical keys use `session_input_key` instead. Admission and refusal
+/// carry the same generation contract as `session_send_mouse`; success only
+/// means queued, never that the peer applied the transition.
+#[napi]
+pub fn session_send_keysym(
+    session_id: String,
+    keysym: f64,
+    down: bool,
+    input_generation: f64,
+) -> String {
+    let generation = match expected_input_generation("sessionSendKeysym", input_generation) {
+        Ok(generation) => generation,
+        Err(message) => return error_json(&message),
+    };
+    let keysym = match input_keysym(keysym) {
+        Ok(keysym) => keysym,
+        Err(message) => return error_json(message),
+    };
+    match active_keyboard_viewer(&session_id) {
+        Ok(viewer) => match viewer.send_key(keysym, down, generation) {
+            Ok(admitted) => {
+                serde_json::json!({ "ok": true, "input_generation": admitted }).to_string()
+            }
+            Err(error) => refusal_json(&format!("{error:?}"), viewer.input_generation()),
+        },
+        Err(message) => error_json(&message),
+    }
 }
 
 fn control_key(name: &str) -> Option<ControlKey> {
@@ -2232,7 +2960,7 @@ fn legacy_key_event(value: &serde_json::Value) -> Result<KeyEvent, String> {
     Ok(event)
 }
 
-/// The running viewer a legacy key event belongs to.
+/// The running viewer a keyboard event belongs to.
 ///
 /// The local policy is not read here: the engine holds it and refuses the event
 /// itself, both when it is queued and again at the writer, so this layer cannot
@@ -2242,6 +2970,11 @@ fn active_keyboard_viewer(session_id: &str) -> Result<Arc<Viewer>, String> {
         let Some(record) = sessions.get(session_id) else {
             return Err("unknown session".to_string());
         };
+        // The one registry lookup the keyboard, keysym and text entry points use,
+        // so a shared view refuses all of them here rather than in each caller.
+        if let Some(message) = shared_view_refusal(record) {
+            return Err(message.to_string());
+        }
         record
             .viewer
             .clone()
@@ -2307,6 +3040,91 @@ pub fn session_input_string(session_id: String, value: String, input_generation:
     }
 }
 
+fn update_presentation(
+    session_id: &str,
+    action: &str,
+    update: impl FnOnce(&rd_engine::presentation::LocalPresentation, &ViewerSnapshot)
+        -> Result<u64, &'static str>,
+) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(session_id) else {
+            return error_json("unknown session");
+        };
+        let snapshot = match mutable_snapshot(record) {
+            Ok(Some(snapshot)) if record.viewer.is_some() => snapshot,
+            Ok(_) => return error_json("session has no running viewer"),
+            Err(error) => return error_json(error),
+        };
+        if snapshot.mode != SessionMode::Desktop {
+            return error_json("file-transfer sessions have no local renderer");
+        }
+        let generation = match update(&record.lease.presentation, &snapshot) {
+            Ok(generation) => generation,
+            Err(error) => return error_json(error),
+        };
+        let mut response = session_response(true, action, session_id, record, Some(&snapshot));
+        response["effect"] = serde_json::json!("local_applied");
+        response["presentation_generation"] = serde_json::json!(generation.to_string());
+        response["video_paused"] = serde_json::json!(record.lease.presentation.snapshot().paused);
+        response["note"] = serde_json::json!(
+            "local presentation gate applied; already admitted native submissions may finish; new output is reported by native_render_ready, not physical scanout"
+        );
+        response.to_string()
+    })
+}
+
+/// Rearms the first-image notification without redisplaying old pixels.
+#[napi]
+pub fn session_on_waiting_for_image_dialog_show(session_id: String) -> String {
+    update_presentation(&session_id, "sessionOnWaitingForImageDialogShow", |owner, _| owner.rearm())
+}
+
+/// Expected local image geometry, as in the pinned Flutter renderer. A mismatch
+/// suppresses presentation only; it does not resize the peer or its decoder.
+#[napi]
+pub fn session_set_size(session_id: String, display: f64, width: f64, height: f64) -> String {
+    let integer = |value: f64| value.is_finite() && value.fract() == 0.0
+        && value >= 0.0 && value <= i32::MAX as f64;
+    if !integer(display) || !integer(width) || !integer(height) {
+        return error_json("renderer display and size must be finite nonnegative integers");
+    }
+    update_presentation(&session_id, "sessionSetSize", |owner, snapshot| {
+        if snapshot.displays.get(display as usize).is_none() {
+            return Err("unknown peer display");
+        }
+        owner.set_size(display as i32, width as i32, height as i32)
+    })
+}
+
+/// Presentation only: the ordered compressed reference chain continues decoding.
+#[napi]
+pub fn session_set_video_paused(session_id: String, paused: bool) -> String {
+    update_presentation(&session_id, "sessionSetVideoPaused", |owner, _| owner.set_paused(paused))
+}
+
+/// Retires this viewer's queued and held input without changing its policy.
+///
+/// The one writer releases the holds it emitted under the previous generation.
+/// The policy-shaped answer names the new generation and any release still
+/// pending; returning from this call is not confirmation of a remote release.
+/// A record with no running viewer has no input gate to retire.
+#[napi]
+pub fn session_release_input(session_id: String) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return error_json("unknown session");
+        };
+        if let Err(message) = mutable_snapshot(record) {
+            return error_json(message);
+        }
+        let Some(viewer) = record.viewer.as_ref() else {
+            return error_json("session has no running viewer");
+        };
+        let outcome = viewer.release_input();
+        policy_json("sessionReleaseInput", outcome.policy, Some(outcome))
+    })
+}
+
 /// Publishes the client's view-only policy for this session.
 ///
 /// The engine enforces it, not this layer: the running viewer stops admitting
@@ -2321,6 +3139,8 @@ pub fn session_set_view_only(session_id: String, enabled: bool) -> String {
             if let Err(message) = mutable_snapshot(record) {
                 return error_json(message);
             }
+            // Shared sessions can enable pointer intents, never the other
+            // capabilities guarded separately by shared_view_refusal.
             record.input_policy.view_only = enabled;
             let policy = record.input_policy;
             let outcome = publish_input_policy(record, policy);
@@ -2346,6 +3166,13 @@ pub fn session_set_unverified_input_accepted(session_id: String, accepted: bool)
             if let Err(message) = mutable_snapshot(record) {
                 return error_json(message);
             }
+            // The pinned one-time peer *is* B: there is no unproved peer to accept
+            // on a shared view, and accepting one would only widen its policy.
+            if accepted {
+                if let Some(message) = shared_view_refusal(record) {
+                    return error_json(message);
+                }
+            }
             record.input_policy.unverified_accepted = accepted;
             let policy = record.input_policy;
             let outcome = publish_input_policy(record, policy);
@@ -2358,8 +3185,8 @@ pub fn session_set_unverified_input_accepted(session_id: String, accepted: bool)
 /// Records a client option pair and answers what the engine does with it.
 ///
 /// The engine acts on `view-only` (the running viewer's own policy, published
-/// here, refuses input while it is on) and `fps` (the rate the next
-/// `session_start` asks for). Every other key is kept on the record so the
+/// here, refuses input while it is on) and `fps` (queued on the running writer
+/// or held for the next login). Every other key is kept on the record so the
 /// client can be told it arrived, and answered as not acted on rather than
 /// silently dropped.
 #[napi]
@@ -2369,12 +3196,13 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
             if let Err(message) = mutable_snapshot(record) {
                 return error_json(message);
             }
-            record.common.insert(key.clone(), value.clone());
             let mut published: Option<InputPolicyOutcome> = None;
+            let mut fps_scope = None;
+            let mut refusal = None;
             let (acted, action_note) = match key.as_str() {
                 "view-only" => {
-                    record.input_policy.view_only =
-                        matches!(value.trim(), "Y" | "y" | "true" | "1");
+                    let clearing = !matches!(value.trim(), "Y" | "y" | "true" | "1");
+                    record.input_policy.view_only = !clearing;
                     let policy = record.input_policy;
                     published = publish_input_policy(record, policy);
                     if record.input_policy.view_only {
@@ -2389,21 +3217,33 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
                         )
                     }
                 }
-                "fps" => match value.trim().parse::<u32>() {
-                    Ok(fps) if (1..=240).contains(&fps) => {
-                        record.fps = fps;
-                        (true, "rate applied to the next session_start; a running viewer keeps its rate".to_string())
+                "fps" => {
+                    let result = value
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| "fps must be between 1 and 240".to_string())
+                        .and_then(|fps| session_options::request_custom_fps(record, fps));
+                    match result {
+                        Ok(scope) => {
+                            fps_scope = Some(scope);
+                            (true, scope.note().to_string())
+                        }
+                        Err(message) => {
+                            refusal = Some(message.clone());
+                            (false, message)
+                        }
                     }
-                    _ => (
-                        false,
-                        "recorded, not acted on: fps takes a rate between 1 and 240".to_string(),
-                    ),
-                },
+                }
                 _ => (
                     false,
                     format!("recorded, not acted on: the engine acts on {COMMON_ACTED_ON:?} only"),
                 ),
             };
+            // A refused FPS request is neither the next login value nor a
+            // successfully recorded common pair.
+            if refusal.is_none() {
+                record.common.insert(key.clone(), value.clone());
+            }
             let recorded_only: Vec<&str> = record
                 .common
                 .keys()
@@ -2417,7 +3257,7 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
             // is what an answer with nothing outstanding says.
             let note = release_note(retired, unreleased).map_or(action_note, str::to_owned);
             let mut answer = serde_json::json!({
-                "ok": true,
+                "ok": refusal.is_none(),
                 "key": key,
                 "acted": acted,
                 "acted_on": COMMON_ACTED_ON,
@@ -2432,6 +3272,18 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
                 "fps": record.fps,
                 "note": note,
             });
+            if key == "fps" {
+                answer["action"] = serde_json::json!("sessionSetCommon");
+                answer["applied"] = serde_json::json!(false);
+            }
+            if let Some(scope) = fps_scope {
+                answer["scope"] = serde_json::json!(scope.name());
+                answer["requested_fps"] = serde_json::json!(record.fps);
+            }
+            if let Some(message) = refusal {
+                answer["error"] = serde_json::json!(message);
+                answer["message"] = serde_json::json!(message);
+            }
             // Published only when a viewer is running: a session with none has
             // no gate to name.
             if let Some(outcome) = published {
@@ -2443,28 +3295,47 @@ pub fn session_set_common(session_id: String, key: String, value: String) -> Str
     })
 }
 
-/// The engine takes the requested frame rate when the viewer starts, so this
-/// records it for the next session_start instead of implying a running session
-/// changed rate.
-#[napi]
-pub fn session_set_custom_fps(session_id: String, fps: u32) -> String {
-    if fps == 0 || fps > 240 {
-        return error_json("fps must be between 1 and 240");
+fn stage_timing_json(timing: Option<rd_engine::viewer::decoder::StageTiming>) -> serde_json::Value {
+    match timing {
+        Some(timing) => serde_json::json!({
+            "samples": timing.samples,
+            "totalNs": timing.total_ns,
+            "peakNs": timing.peak_ns,
+            "over8Ms": timing.over_8_ms,
+        }),
+        None => serde_json::Value::Null,
     }
-    with_sessions(|sessions| match sessions.get_mut(&session_id) {
-        Some(record) => {
-            if let Err(message) = mutable_snapshot(record) {
-                return error_json(message);
-            }
-            record.fps = fps;
-            serde_json::json!({
-                "ok": true,
-                "note": "applied to the next session_start; a running viewer keeps its rate",
-            })
-            .to_string()
-        }
-        None => error_json("unknown session"),
+}
+
+/// Each aggregate is cumulative for this dial, including closed decoders.
+/// Null means uninstrumented; zero samples means enabled with no observations.
+fn pipeline_timings_json(value: &rd_engine::viewer::PipelineTimings) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "recordAdmission": stage_timing_json(value.record_admission),
+        "decoderAdmission": stage_timing_json(value.decoder_admission),
+        "inputWait": stage_timing_json(value.input_wait),
+        "inputDispatch": stage_timing_json(value.input_dispatch),
+        "pushApi": stage_timing_json(value.push_api),
+        "renderApi": stage_timing_json(value.render_api),
     })
+}
+
+/// Where the one reader stands, or null when no reader publishes a stage for
+/// this session (another protocol's wire, or a reader that has not started).
+/// `ageMs` is dwell time in `phase` on the reader's own monotonic clock — not
+/// CPU time and not a per-frame duration — and `stopped` is the terminal
+/// reading of a reader that has returned.
+fn reader_progress_json(
+    progress: Option<rd_engine::transport::ReaderProgressSnapshot>,
+) -> serde_json::Value {
+    match progress {
+        Some(progress) => serde_json::json!({
+            "phase": progress.phase,
+            "ageMs": progress.age_ms,
+        }),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// Cumulative counters from `Viewer::snapshot`. The engine reports totals, not
@@ -2489,11 +3360,17 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
         Some((dials, fps, elapsed_ms, Some(value))) => serde_json::json!({
             "available": true,
             "source": "engine_viewer_snapshot",
+            "display": value.current_display,
+            "frameWidth": (value.width > 0).then_some(value.width),
+            "frameHeight": (value.height > 0).then_some(value.height),
+            "networkRttMs": value.network_rtt_ms,
             // Both identities change when the viewer is dialled again, which is
             // what makes the client start a fresh window, and every rate it
             // shows is computed from the cumulative counters below.
             "generation": dials.to_string(),
             "intentRevision": dials.to_string(),
+            // Last accepted request only: queue admission does not prove the
+            // peer applied this value or that its effective cap can reach it.
             "desiredFps": fps,
             "safetyFpsCap": null,
             "elapsedMs": elapsed_ms,
@@ -2516,11 +3393,17 @@ pub fn session_get_frame_rate_snapshot(session_id: String, _display: u32) -> Str
             "conversionNs": 0,
             "targetCalls": 0,
             "targetNs": 0,
-            // Admission never waits for a slot: a full queue is refused rather
-            // than queued behind, so no frame ever spends time waiting in one.
-            "queueCalls": 0,
-            "queueNs": 0,
-            "busyFrames": 0,
+            // The old generic queue fields never measured the reader/decoder
+            // waits. Keep them explicitly unknown; the named stage timings
+            // below distinguish admission, SDK input return and dispatch.
+            "queueCalls": null,
+            "queueNs": null,
+            "busyFrames": null,
+            "queueTimingAvailable": false,
+            "pipelineTimings": pipeline_timings_json(&value.pipeline_timings),
+            // The stage the one reader is in right now. Null is an observation
+            // this session never had, not a reader standing still.
+            "readerProgress": reader_progress_json(value.reader_progress),
             // The interval this path measures runs from taking a unit to the
             // submission of its picture: the round trip through the codec,
             // pipeline delay included, not the decode work itself. The client's
@@ -2585,6 +3468,16 @@ implemented_entry_points!(
     ("appSetLifecycle", app_set_lifecycle),
     ("appInit", app_init),
     ("validateServerProfile", validate_server_profile),
+    ("accountBindServer", account_bind_server),
+    ("accountSnapshot", account_snapshot),
+    ("accountProviders", account_providers),
+    ("accountOidcStart", account_oidc_start),
+    ("accountOidcResult", account_oidc_result),
+    ("accountOidcCancel", account_oidc_cancel),
+    ("accountLogout", account_logout),
+    ("cloudAddressBookList", cloud_address_book_list),
+    ("cloudAddressBookLoad", cloud_address_book_load),
+    ("cloudAddressBookMutate", cloud_address_book_mutate),
     ("runtimeGetServerConfig", runtime_get_server_config),
     ("runtimeSetServerConfig", runtime_set_server_config),
     ("runtimeTestServerConfig", runtime_test_server_config),
@@ -2602,6 +3495,9 @@ implemented_entry_points!(
     ("controlledServerStart", controlled_server_start),
     ("controlledServerStop", controlled_server_stop),
     ("controlledServerGetStatus", controlled_server_get_status),
+    ("controlledInputAuthorizationRequest", controlled_input_authorization_request),
+    ("controlledInputAuthorizationStatus", controlled_input_authorization_status),
+    ("controlledInputAuthorizationCancel", controlled_input_authorization_cancel),
     ("controlledScreenCaptureGetStatus", controlled_screen_capture_status),
     ("controlledScreenCaptureStop", controlled_screen_capture_stop),
     ("controlledScreenConfigure", controlled_screen_configure),
@@ -2619,6 +3515,20 @@ implemented_entry_points!(
     ("controlledTwoFactorRemoveTrustedDevices", controlled_two_factor_remove_trusted_devices),
     ("controlledTwoFactorClearTrustedDevices", controlled_two_factor_clear_trusted_devices),
     ("sessionAdd", session_add),
+    ("sessionAddShared", session_add_shared),
+    ("shareStart", share_start),
+    ("shareStop", share_stop),
+    ("shareGetStatus", share_get_status),
+    ("shareGetInvite", share_get_invite),
+    ("sharePollSendData", share_poll_send_data),
+    ("sharePushReceiveData", share_push_receive_data),
+    ("shareReportSendResult", share_report_send_result),
+    ("shareConnectTransport", share_connect_transport),
+    ("shareGetTransportStatus", share_get_transport_status),
+    ("sessionPollSendData", session_poll_send_data),
+    ("sessionPushReceiveData", session_push_receive_data),
+    ("sessionReportSendResult", session_report_send_result),
+    ("sessionGetTransportStatus", session_get_transport_status),
     ("sessionStart", session_start),
     ("sessionLogin", session_login),
     ("sessionSend2fa", session_send_2fa),
@@ -2648,11 +3558,16 @@ implemented_entry_points!(
     ("sessionSetCommon", session_set_common),
     ("sessionSetCustomFps", session_set_custom_fps),
     ("sessionSetViewOnly", session_set_view_only),
+    ("sessionReleaseInput", session_release_input),
+    ("sessionOnWaitingForImageDialogShow", session_on_waiting_for_image_dialog_show),
+    ("sessionSetSize", session_set_size),
+    ("sessionSetVideoPaused", session_set_video_paused),
     (
         "sessionSetUnverifiedInputAccepted",
         session_set_unverified_input_accepted
     ),
     ("sessionSendMouse", session_send_mouse),
+    ("sessionSendKeysym", session_send_keysym),
     ("sessionInputKey", session_input_key),
     ("sessionInputString", session_input_string),
     ("sessionSendClipboard", session_send_clipboard),
@@ -2682,61 +3597,76 @@ implemented_entry_points!(
 /// advertised as implemented merely because another bridge accepts the name.
 #[napi]
 pub fn har_surface_manifest() -> String {
-    // RustDeskNativeApi.ets imports, plus this bridge's explicit input-policy
-    // export. A refused entry point remains pending, not implemented.
+    // Canonical Resk imports plus the explicit policy and retirement exports.
+    // Platform input acquisition belongs to ArkTS, not legacy interceptor or
+    // Flutter-key entry points. A refused operation remains pending.
     let expected = [
-        "backendSummary",
-        "buildMarker",
-        "healthcheck",
-        "inputInterceptorPollEvents",
-        "inputInterceptorStart",
-        "inputInterceptorStop",
+        "controlledInputAuthorizationRequest",
+        "controlledInputAuthorizationStatus",
+        "controlledInputAuthorizationCancel",
+        "accountBindServer",
+        "accountSnapshot",
+        "accountProviders",
+        "accountOidcStart",
+        "accountOidcResult",
+        "accountOidcCancel",
+        "accountLogout",
+        "cloudAddressBookList",
+        "cloudAddressBookLoad",
+        "cloudAddressBookMutate",
         "nativeVersion",
-        "runtimeGetApiServer",
         "runtimeGetDecoderCapabilities",
         "runtimeGetServerConfig",
-        "runtimeInit",
         "runtimeListFavorites",
-        "runtimeListLanPeers",
-        "runtimeListLocalDir",
         "runtimeListRecentPeers",
         "peerQueryOnline",
-        "runtimeRemoveDiscoveredPeer",
-        "runtimeScanLanPeers",
-        "runtimeSetLifecycle",
-        "runtimeSetRecordingDirectory",
+        "runtimeRecordRecentPeer",
+        "runtimeRemoveRecentPeer",
+        "runtimeSetFavorite",
         "runtimeSetServerConfig",
         "runtimeTestServerConfig",
         "sessionAcknowledgeClose",
         "sessionAdd",
+        "sessionAddShared",
+        "shareStart",
+        "shareStop",
+        "shareGetStatus",
+        "shareGetInvite",
+        "sharePollSendData",
+        "sharePushReceiveData",
+        "shareReportSendResult",
+        "shareConnectTransport",
+        "shareGetTransportStatus",
+        "sessionPollSendData",
+        "sessionPushReceiveData",
+        "sessionReportSendResult",
+        "sessionGetTransportStatus",
         "sessionBindSurface",
         "sessionCancelJob",
         "sessionChangeResolution",
         "sessionClose",
-        "sessionEnterOrLeave",
+        "sessionGetClipboardFileState",
         "sessionGetConnToken",
+        "sessionHasConnToken",
         "sessionGetEnableTrustedDevices",
         "sessionGetFrameRateSnapshot",
         "sessionGetImageQuality",
-        "sessionGetIsRecording",
         "sessionGetRemoteAudioState",
-        "sessionGetRgbaSize",
         "sessionGetToggleOption",
-        "sessionHandleFlutterKeyEvent",
         "sessionInputKey",
         "sessionInputString",
         "sessionLogin",
-        "sessionNextRgba",
         "sessionOnWaitingForImageDialogShow",
         "sessionPollEvents",
         "sessionReadRemoteDir",
-        "sessionRecordScreen",
         "sessionRefresh",
+        "sessionReleaseInput",
         "sessionSend2fa",
         "sessionSendClipboard",
         "sessionSendClipboardFiles",
         "sessionSendClipboardImage",
         "sessionSendFiles",
+        "sessionSendKeysym",
         "sessionSendMouse",
         "sessionSetClipboardFileRoot",
         "sessionSetCodecPreference",
@@ -2749,18 +3679,17 @@ pub fn har_surface_manifest() -> String {
         "sessionSetSize",
         "sessionSetVideoPaused",
         "sessionSetViewOnly",
-        "sessionSetUnverifiedInputAccepted",
         "sessionStart",
-        "sessionSurfaceDestroyed",
         "sessionSwitchDisplay",
         "sessionTakeClipboard",
+        "sessionTakeClipboardFileEvents",
         "sessionTakeClipboardImage",
-        "sessionTakeRgbaFrame",
         "sessionToggleOption",
         "transferNextJobId",
         "xcomponentAttach",
         "xcomponentDetach",
         "xcomponentSetFrameRateRangeNative",
+        "sessionSetUnverifiedInputAccepted",
     ];
     // Kept separate on purpose: these accept the call but only touch local state.
     let registry_only: [&str; 0] = [];
@@ -2775,32 +3704,68 @@ pub fn har_surface_manifest() -> String {
         "registry_only": registry_only,
         "pending": pending,
         "refused_entry_points": [],
+        "input_adapter": {
+            "entry_points": [
+                "sessionSendMouse", "sessionInputKey", "sessionInputString",
+                "sessionSendKeysym", "sessionReleaseInput",
+            ],
+            "generation": "input calls require a numeric positive safe integer; retirement advances it without changing input or clipboard policy",
+            "keyboard_protocols": {
+                "sessionInputKey": ["rustdesk", "rdp"],
+                "sessionInputString": ["rustdesk", "rdp"],
+                "sessionSendKeysym": ["vnc", "rdp"],
+            },
+            "release": "retirement wakes the existing ordered writer; release_pending and releases_unreleased remain distinct from a confirmed release",
+            "ohos_host_authorization": {
+                "entry_points": [
+                    "controlledInputAuthorizationRequest", "controlledInputAuthorizationStatus",
+                    "controlledInputAuthorizationCancel",
+                ],
+                "request_id": "request/status/cancel JSON carries requestId: an opaque decimal string, empty without an owner; it is neither runEpoch nor input_generation",
+                "start": "enableInput:true also requires inputAuthorizationRequestId; native and engine check the same request owner atomically",
+                "cancel": "cancel names the exact authorization request, including before any runEpoch exists; it is not a server-stop fallback",
+            },
+            "ohos_host_limitations": [
+                "Unicode and text-sequence injection are not supported",
+                "KeyboardMode::Map injection is not supported",
+                "nonzero relative pointer injection is not supported",
+                "OS injection authorization and the adapter's supported event representations bound host input",
+                "key-state preflight reports down only, not physical/injected origin or episode; query and injection are not atomic",
+                "there is no physical mouse-button query, so strict concurrent local/remote hold attribution is not guaranteed",
+            ],
+            "ohos_host_not_verified": ["axis units have not been calibrated on a real device"],
+        },
         "not_served": {
             "rgba_pull": {
                 "entry_points": ["sessionGetRgbaSize", "sessionNextRgba", "sessionTakeRgbaFrame"],
                 "reason": "the engine presents each frame into the surface sessionBindSurface recorded and has no CPU-side RGBA pull path",
             },
-            "viewer_controls": {
-                "entry_points": [
-                    "sessionSetSize", "sessionSetVideoPaused",
-                ],
-                "reason": "local renderer sizing and pause are not implemented; remote resolution is a distinct control",
-            },
-            "input_adapter": {
-                "entry_points": ["sessionEnterOrLeave", "sessionHandleFlutterKeyEvent"],
-                "reason": "no focus/grab owner or Flutter key translator is wired to the shared Viewer; existing input exports require an explicit input generation",
-            },
         },
-        "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; runtimeGetDecoderCapabilities shares the advertised-metadata query without measured or recommended codec claims; pending entries are not implemented; presentation remains the bound Surface, not RGBA pull",
+        "local_presentation": {
+            "entry_points": ["sessionSetSize", "sessionSetVideoPaused", "sessionOnWaitingForImageDialogShow"],
+            "size": "expected image geometry per real peer display; consumed at output admission, never ChangeResolution",
+            "pause": "decode and rectangle updates continue; only native presentation is suppressed",
+            "ready": "native_render_ready reports a successful new native submission in the current presentation generation, not physical scanout",
+            "in_flight": "native submissions admitted before pause may still finish",
+        },
+        "note": "sessionStart uses the captured explicit-save route for RustDesk IDs or the unchanged direct protocol connector; a shared (B to C) view dials the pinned nearby byte transport instead and has no address; appInit and LAN cache/completion work are asynchronous and consent/lifecycle fenced; runtimeGetDecoderCapabilities shares the advertised-metadata query without measured or recommended codec claims; pending entries are not implemented; presentation remains the bound Surface, not RGBA pull",
     })
     .to_string()
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_clicks_never_carry_a_touch_position() {
+        assert_eq!(super::shared_pointer_coordinates(1, None, None).unwrap(), (0, 0));
+        assert_eq!(super::shared_pointer_coordinates(2, Some(1250), Some(-80)).unwrap(), (0, 0));
+        assert_eq!(super::shared_pointer_coordinates(5, Some(-23), Some(19)).unwrap(), (-23, 19));
+        assert!(super::shared_pointer_coordinates(0, Some(20), Some(40)).is_err());
+    }
+
     use super::{
         apply_terminal_reclamation, bind_surface, client_mouse_button_to_wire, error_json,
-        expected_input_generation, parse_viewer_target, policy_json, refusal_json,
+        expected_input_generation, input_keysym, parse_viewer_target, policy_json, refusal_json,
         record_terminal_reclamation, resolve_mouse_coordinates, session_acknowledge_close,
         session_add, session_cancel_job, session_poll_events, with_sessions, ApprovedRoute,
         CloseWork, InputPolicyOutcome, LoginFailure, PendingSurfaceLease, Reported,
@@ -2854,6 +3819,39 @@ mod tests {
         let epoch = added["session"]["lifecycleEpoch"].as_str().unwrap();
         assert!(epoch.parse::<u64>().unwrap() > 0);
         epoch.to_owned()
+    }
+
+    #[test]
+    fn fps_setters_share_prestart_requests_and_do_not_record_refusals() {
+        let id = "napi-test-fps-request";
+        let epoch = register_lifecycle_test(id);
+        let requested = json(super::session_set_custom_fps(id.into(), 120));
+        assert_eq!(requested["ok"], true);
+        assert_eq!(requested["action"], "sessionSetCustomFps");
+        assert_eq!(requested["scope"], "next_session");
+        assert_eq!(requested["requested_fps"], 120);
+        assert_eq!(requested["applied"], false);
+        let common = json(super::session_set_common(id.into(), "fps".into(), "240".into()));
+        assert_eq!(common["ok"], true);
+        assert_eq!(common["acted"], true);
+        assert_eq!(common["fps"], 240);
+        assert_eq!(common["scope"], "next_session");
+        assert_eq!(common["requested_fps"], 240);
+        assert_eq!(common["applied"], false);
+        assert_eq!(json(super::session_set_custom_fps(id.into(), 0))["ok"], false);
+        let refused = json(super::session_set_common(id.into(), "fps".into(), "invalid".into()));
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["acted"], false);
+        assert_eq!(refused["fps"], 240, "legacy field stays the accepted request");
+        assert!(refused["error"].is_string());
+        with_sessions(|sessions| {
+            let record = sessions.get(id).unwrap();
+            assert_eq!(record.fps, 240);
+            assert_eq!(record.common.get("fps").map(String::as_str), Some("240"));
+            assert!(record.viewer.is_none(), "prestart requests do not dial a viewer");
+        });
+        assert_eq!(json(CloseWork::prepare(id.into()).run())["ok"], true);
+        assert_eq!(json(session_acknowledge_close(id.into(), epoch))["ok"], true);
     }
 
     #[test]
@@ -3047,6 +4045,101 @@ mod tests {
         assert!(reported.events(&snapshot).is_empty());
     }
 
+    fn cursor_snapshot(id: u64, color: u8) -> ViewerSnapshot {
+        ViewerSnapshot {
+            protocol: "rustdesk".into(),
+            authenticated: true,
+            cursor: rd_engine::viewer::CursorSnapshot {
+                revision: 1,
+                id: Some(id),
+                image: Some(Arc::new(super::CursorImage {
+                    id, hotx: 0, hoty: 0, width: 1, height: 1, rgba: vec![color; 4],
+                })),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cursor_poll_supplies_an_unseen_cached_bitmap_before_id_within_the_limit() {
+        let id = (1u64 << 53) + 7;
+        let mut snapshot = cursor_snapshot(id, 17);
+        snapshot.cursor.revision = 3;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.position_revision = 2;
+        snapshot.cursor.position = Some((-1500, 900));
+        let mut reported = Reported::default();
+        assert!(reported.cursor_events(&snapshot, 0).unwrap().is_empty());
+        // The engine already saw A, B, then ID(A); this consumer saw none of
+        // them. A limit of one must not lose either the data or the ID.
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_data", "id": id.to_string(),
+            "hotx": "0", "hoty": "0", "width": "1", "height": "1",
+            "colors": "[17,17,17,17]",
+        })]);
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": id.to_string(),
+        })]);
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_position", "x": "-1500", "y": "900",
+        })]);
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+
+        let first = snapshot.cursor.image.clone();
+        snapshot.cursor.id = Some(9);
+        snapshot.cursor.image = cursor_snapshot(9, 29).cursor.image;
+        snapshot.cursor.revision = 4;
+        snapshot.cursor.from_id = false;
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap()[0]["name"], "cursor_data");
+        snapshot.cursor.id = Some(id);
+        snapshot.cursor.image = first;
+        snapshot.cursor.revision = 5;
+        snapshot.cursor.from_id = true;
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap()[0]["name"], "cursor_data",
+            "a consumer may have evicted a previously exported image");
+        assert_eq!(reported.cursor_events(&snapshot, 1).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": id.to_string(),
+        })]);
+        assert!(reported.cursor_events(&snapshot, 1).unwrap().is_empty());
+
+        let mut next_viewer = Reported::default();
+        let next = next_viewer.cursor_events(&snapshot, 2).unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0]["name"], "cursor_data", "no bitmap receipt crosses a dial/epoch reset");
+        assert_eq!(next[1]["name"], "cursor_id");
+    }
+
+    #[test]
+    fn cursor_poll_replaces_same_id_data_and_clears_missing_images_without_post_close_events() {
+        let mut snapshot = cursor_snapshot(7, 17);
+        let mut reported = Reported::default();
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[17,17,17,17]");
+        snapshot.cursor.image = cursor_snapshot(7, 43).cursor.image;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.revision = 2;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[43,43,43,43]");
+        snapshot.cursor.image = None;
+        snapshot.cursor.from_id = true;
+        snapshot.cursor.revision = 3;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap(), vec![serde_json::json!({
+            "name": "cursor_id", "id": "7", "cache_miss": "true",
+        })]);
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        snapshot.cursor.image = cursor_snapshot(7, 61).cursor.image;
+        snapshot.cursor.from_id = false;
+        snapshot.cursor.revision = 4;
+        assert_eq!(reported.cursor_events(&snapshot, 128).unwrap()[0]["colors"], "[61,61,61,61]");
+
+        snapshot.authenticated = false;
+        snapshot.cursor.position = Some((1, 2));
+        snapshot.cursor.position_revision = 1;
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        snapshot.closed = true;
+        assert!(reported.cursor_events(&snapshot, 128).unwrap().is_empty());
+        assert_eq!(reported.events(&snapshot), vec![serde_json::json!({ "name": "close" })]);
+    }
+
     /// A clipboard update waiting in the mailbox is announced on every poll until
     /// it is taken, and a closed session announces nothing to take.
     #[test]
@@ -3152,6 +4245,22 @@ mod tests {
                 expected_input_generation("sessionInputKey", rejected).is_err(),
                 "{rejected} is not a positive safe integer"
             );
+        }
+    }
+
+    #[test]
+    fn a_keysym_must_fit_the_exact_positive_wire_range() {
+        assert_eq!(input_keysym(1.0), Ok(1));
+        assert_eq!(input_keysym(0x1fff_ffffu32 as f64), Ok(0x1fff_ffff));
+        for rejected in [
+            0.0,
+            -1.0,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            0x2000_0000u32 as f64,
+        ] {
+            assert!(input_keysym(rejected).is_err(), "{rejected} is not a wire keysym");
         }
     }
 

@@ -58,6 +58,18 @@ fn active_viewer(session_id: &str) -> Result<std::sync::Arc<Viewer>, String> {
     crate::active_keyboard_viewer(session_id)
 }
 
+/// A shared (B→C) view has no file clipboard.
+///
+/// B's forward host serves one encoded display and nothing else, so neither a
+/// file offer nor an incoming-root command has an owner there to receive it.
+fn shared_refusal(action: &str) -> String {
+    refused(
+        action,
+        "not_allowed",
+        "a shared view has no file clipboard: the peer behind B is a forward host, not a desktop session",
+    )
+}
+
 /// The receipt for a command that really entered the owner's queue.
 fn queued(action: &str, request_id: u64) -> String {
     serde_json::json!({
@@ -109,6 +121,9 @@ fn reason(error: &CliprdrError) -> &'static str {
 /// later failure event; nothing here pretends it happened.
 #[napi]
 pub fn session_send_clipboard_files(session_id: String, paths_json: String) -> String {
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(SEND_FILES_ACTION);
+    }
     if paths_json.len() > MAX_PATHS_JSON_BYTES {
         return refused(
             SEND_FILES_ACTION,
@@ -152,6 +167,9 @@ pub fn session_send_clipboard_files(session_id: String, paths_json: String) -> S
 /// reported as a later failure event rather than as a successful receipt.
 #[napi]
 pub fn session_set_clipboard_file_root(session_id: String, root: String) -> String {
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(SET_ROOT_ACTION);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused(SET_ROOT_ACTION, "unknown_session", &message),
@@ -198,6 +216,9 @@ fn file_event(event: CliprdrEvent) -> serde_json::Value {
 #[napi]
 pub fn session_get_clipboard_file_state(session_id: String) -> String {
     let action = "session_get_clipboard_file_state";
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(action);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused(action, "unknown_session", &message),
@@ -221,6 +242,9 @@ pub fn session_get_clipboard_file_state(session_id: String) -> String {
 #[napi]
 pub fn session_take_clipboard_file_events(session_id: String) -> String {
     let action = "session_take_clipboard_file_events";
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(action);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused(action, "unknown_session", &message),

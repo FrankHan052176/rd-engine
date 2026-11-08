@@ -390,13 +390,13 @@ impl OhosSurface {
     /// Blits the damaged region into a requested buffer and flushes it, which
     /// hands the buffer to the consumer. Call it from a blocking worker: the
     /// request waits inside the window and is not cancellable.
-    pub fn present(&mut self) -> Result<(), SurfaceError> {
+    pub fn present(&mut self) -> Result<bool, SurfaceError> {
         #[cfg(target_env = "ohos")]
         {
             let Some(damage) = self.fb.take_damage() else {
                 // Nothing was written, so there is nothing to show and no
                 // reason to move a buffer through the queue.
-                return Ok(());
+                return Ok(false);
             };
             let presented = self.window.present(&self.fb, damage);
             if presented.is_err() {
@@ -404,7 +404,7 @@ impl OhosSurface {
                 // present retries it instead of leaving a stale rectangle up.
                 self.fb.note(damage);
             }
-            presented
+            presented.map(|_| true)
         }
         #[cfg(not(target_env = "ohos"))]
         {

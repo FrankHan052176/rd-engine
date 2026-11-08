@@ -20,6 +20,8 @@ mod windows;
 mod linux;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_env = "ohos")]
+mod ohos;
 
 #[cfg(target_os = "android")]
 pub use android::init_account_storage;
@@ -32,6 +34,8 @@ use windows as backend;
 use linux as backend;
 #[cfg(target_os = "android")]
 use android as backend;
+#[cfg(target_env = "ohos")]
+use ohos as backend;
 
 pub(super) const MAX_TOKEN_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_USER_INFO_BYTES: usize = 4 * 1024 * 1024;
@@ -225,7 +229,8 @@ impl Store {
     pub(super) fn open() -> io::Result<Self> {
         if !cfg!(any(
             target_os = "macos", target_os = "ios", target_os = "windows",
-            target_os = "android", all(target_os = "linux", not(target_env = "ohos"))
+            target_os = "android", target_env = "ohos",
+            all(target_os = "linux", not(target_env = "ohos"))
         )) {
             return Err(io::Error::new(io::ErrorKind::Unsupported,
                 "Official account protected storage is unsupported on this target"));
@@ -541,20 +546,24 @@ impl Store {
 
 fn platform_load_key(root: &Path, namespace: &str) -> io::Result<Option<secretbox::Key>> {
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos"))))]
+        target_os = "android", target_env = "ohos",
+        all(target_os = "linux", not(target_env = "ohos"))))]
     { backend::load_key(root, namespace) }
     #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos")))))]
+        target_os = "android", target_env = "ohos",
+        all(target_os = "linux", not(target_env = "ohos")))))]
     { let _ = (root, namespace); Err(io::Error::new(io::ErrorKind::Unsupported,
         "Official account protected storage is unsupported on this target")) }
 }
 
 fn platform_create_key(root: &Path, namespace: &str, key: &secretbox::Key) -> io::Result<bool> {
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos"))))]
+        target_os = "android", target_env = "ohos",
+        all(target_os = "linux", not(target_env = "ohos"))))]
     { backend::create_key(root, namespace, key) }
     #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows",
-        target_os = "android", all(target_os = "linux", not(target_env = "ohos")))))]
+        target_os = "android", target_env = "ohos",
+        all(target_os = "linux", not(target_env = "ohos")))))]
     { let _ = (root, namespace, key); Err(io::Error::new(io::ErrorKind::Unsupported,
         "Official account protected storage is unsupported on this target")) }
 }

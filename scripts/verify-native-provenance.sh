@@ -602,13 +602,20 @@ if (secret.get('path') != 'vendor/secret-service' or secret.get('version') != '=
         or secret.get('optional') is not True):
     print('provenance: official account storage must select the pinned no-prompt Secret Service source owner', file=sys.stderr)
     failed = True
-for relative in ('native/frb/Cargo.toml', 'native/ohos_napi/Cargo.toml'):
+# Both bridges must consume the one shared core owner; only the FRB bridge must
+# select the official-account feature today. The OHOS NAPI bridge may select the
+# same feature for Resk, and a selected feature never proves a working account
+# implementation.
+for relative, requires_account in (('native/frb/Cargo.toml', True), ('native/ohos_napi/Cargo.toml', False)):
     with (root / relative).open('rb') as source:
         bridge = tomllib.load(source)
     dependency = bridge.get('dependencies', {}).get('rd-engine', {})
     features = dependency.get('features', [])
-    if dependency.get('path') != '../..' or ('official-account' in features) != ('/frb/' in relative):
-        print(f'provenance: {relative} does not preserve the FRB-only account owner selection', file=sys.stderr)
+    if dependency.get('path') != '../..':
+        print(f'provenance: {relative} must consume the shared rd-engine core owner at ../..', file=sys.stderr)
+        failed = True
+    if requires_account and 'official-account' not in features:
+        print('provenance: native/frb/Cargo.toml must select the shared official-account feature', file=sys.stderr)
         failed = True
 sys.exit(1 if failed else 0)
 PY

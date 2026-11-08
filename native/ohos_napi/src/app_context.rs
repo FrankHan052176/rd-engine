@@ -127,10 +127,32 @@ impl AppContext {
         Ok(())
     }
 
-    fn retire(&mut self) {
-        // Revoke the listener and peers synchronously; its own service still
-        // joins teardown off this thread and reports unconfirmed reclamation.
-        super::host_bridge::close_after_lifecycle_fence();
+    /// `close_host` is the *new* lifecycle state's own consent answer, never a
+    /// guess about the current one. A fence that keeps privacy consent retires
+    /// discovery, presence and the injection grant, and the consented
+    /// viewed-host run keeps its listener, its peers and its capture in the
+    /// background. A withdrawn consent (or a destroyed environment) closes that
+    /// run and keeps the existing request/join/unconfirmed-close semantics.
+    fn retire(&mut self, close_host: bool) {
+        if close_host {
+            // Opening system share can background the ability. Like the viewed
+            // host, an explicitly armed share survives while consent is kept.
+            super::share_bridge::request_close_after_lifecycle_fence();
+            // Revoke the listener and peers synchronously; its own service still
+            // joins teardown off this thread and reports unconfirmed reclamation.
+            super::host_bridge::request_host_close_after_lifecycle_fence();
+            // Withdrawn consent, detach and destroy also revoke pending official
+            // account work. This is only the core's lock-free fence: it takes no
+            // owner, network or storage lock under APP. A plain foreground=false
+            // with consent kept never reaches here, so a browser sign-in leg that
+            // backgrounds the app keeps its attempt.
+            super::account::revoke_after_lifecycle_fence();
+        }
+        // Injection authorization never survives a fence, whichever side of a
+        // foreground/background transition the new state is on: a backgrounded
+        // app must not keep a pre-run request, and a request that outlived its
+        // generation must not answer for a later one.
+        super::host_bridge::revoke_input_after_lifecycle_fence();
         // A presence query is cancelled and released even when no discovery
         // owner exists: the fence, not the worker, is what makes its in-flight
         // answer unusable, and its own generation can no longer be cancelled or
@@ -176,7 +198,8 @@ fn detach_environment(environment: usize) {
     // Clearing the environment is itself a fence even if the counter is spent.
     state.environment = None;
     let _ = state.advance();
-    state.retire();
+    // A destroyed environment has no consent left: the run must close.
+    state.retire(true);
 }
 
 fn error_text(previous: Option<String>, next: String) -> String {
@@ -442,18 +465,24 @@ impl Task for AppWork {
 }
 
 /// Every lifecycle update fences synchronously before its AsyncTask is queued,
-/// including a same-state privacy reread. No previous owner/scan is adopted.
+/// including a same-state privacy reread. No previous owner/scan is adopted, and
+/// the fence's own close decision is the new consent answer: with consent the
+/// viewed-host run keeps listening (and capturing) in the background, while
+/// discovery/presence and the injection grant are retired either way. Without
+/// consent the run is closed under the same request/join semantics as before.
 #[napi(ts_return_type = "Promise<string>")]
 pub fn app_set_lifecycle(env: Env, privacy_accepted: bool, foreground: bool) -> AsyncTask<AppWork> {
     let admitted = (|| -> Result<AppWork, String> {
         let mut state = app()?;
         attach_environment(&env, &mut state)?;
         // Fence before changing facts or returning the promise. Even a repeated
-        // true/true refresh has a fresh idle owner once retirement completes.
+        // true/true refresh has a fresh idle discovery owner once retirement
+        // completes; the consented host run is not part of that retirement.
         state.privacy_accepted = false;
         state.foreground = false;
         state.advance()?;
-        state.retire();
+        // The close decision is the *new* consent answer, not the old one.
+        state.retire(!privacy_accepted);
         state.privacy_accepted = privacy_accepted;
         state.foreground = foreground;
         Ok(AppWork {
@@ -550,6 +579,16 @@ pub(super) fn app_scope() -> Result<AppScope, String> {
 }
 
 impl AppScope {
+    /// Serialize share publication with APP retirement (APP -> SHARE).
+    pub(super) fn hold(&self) -> Result<IdAdmissionGuard, String> {
+        let state = app()?;
+        state.check(self.ticket)?;
+        state.require_allowed()?;
+        if state.root.as_deref() != Some(self.root.as_path()) {
+            return Err("native private root changed".to_string());
+        }
+        Ok(IdAdmissionGuard { _state: state })
+    }
     pub(super) fn root(&self) -> &Path {
         &self.root
     }
@@ -565,6 +604,74 @@ impl AppScope {
         }
         Ok(())
     }
+}
+
+/// Admission for the official account owner and its cloud address book.
+///
+/// Unlike `AppScope` it does not follow the foreground: the OAuth browser leg
+/// backgrounds this app on purpose and its attempt must survive that. It follows
+/// the three things that really end the right to the account owner instead:
+/// the native environment that was admitted, current privacy consent and the
+/// reserved private root. Withdrawn consent, detach and destroy additionally
+/// revoke pending work through the core's own revocation fence (see `retire`),
+/// so no app epoch is part of this grant.
+pub(super) struct AccountGrant {
+    ticket: Ticket,
+    root: PathBuf,
+}
+
+impl AccountGrant {
+    /// Root carrier for the bridge's private-store helpers. Its `check()` is the
+    /// strict foreground check and is never used for account work; the store
+    /// helpers only read its fixed root.
+    pub(super) fn store_scope(&self) -> AppScope {
+        AppScope {
+            ticket: self.ticket,
+            root: self.root.clone(),
+        }
+    }
+}
+
+/// Admits one account operation and captures `fence` (the core's revocation
+/// token) while APP is held. `retire(close_host)` revokes under the same lock,
+/// so an operation is either admitted before the revocation and sees its token
+/// go stale, or after it and is refused here. `fence` must be a lock-free read.
+pub(super) fn admit_account<T>(
+    environment: usize,
+    fence: impl FnOnce() -> T,
+) -> Result<(AccountGrant, T), String> {
+    let state = app()?;
+    if state.environment != Some(environment) {
+        return Err("native environment does not own the account owner".to_string());
+    }
+    if !state.privacy_accepted {
+        return Err("privacy consent is not current".to_string());
+    }
+    let root = state
+        .root
+        .clone()
+        .ok_or_else(|| "native private root is not reserved".to_string())?;
+    if state.local_id.is_none() {
+        return Err("native private storage is not ready".to_string());
+    }
+    let token = fence();
+    Ok((
+        AccountGrant {
+            ticket: state.ticket()?,
+            root,
+        },
+        token,
+    ))
+}
+
+/// Re-check at promise resolution. Together with the core's revocation token
+/// this decides whether a data answer may still be reported.
+pub(super) fn account_admitted(environment: usize) -> Result<(), String> {
+    let state = app()?;
+    if state.environment != Some(environment) || !state.privacy_accepted {
+        return Err("account admission was revoked".to_string());
+    }
+    Ok(())
 }
 
 /// One admitted presence query: the app generation and local ID it runs under,

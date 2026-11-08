@@ -12,9 +12,91 @@ use hbb_common::{
     sodiumoxide::{crypto::hash::sha256, randombytes},
     ResultType,
 };
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 static OWNER: LazyLock<Mutex<Owner>> = LazyLock::new(|| Mutex::new(Owner::default()));
+
+/// Monotonic privacy-revocation fence, deliberately outside the owner lock so
+/// an app-lock holder can raise it without disk, network or owner-lock work.
+/// Work admitted at value N is refused (begin_auth) or fails its owner-locked
+/// recheck (commit_oidc, attempt polling, cloud request admission) once the
+/// counter is no longer N. It never itself erases a credential that already won
+/// the owner lock; callers that must also forget it follow with a logout.
+static REVOCATION: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The admission of the `start_admitted` call executing on this thread, read
+    /// by `begin_auth` inside the owner lock. Strictly scoped by `AdmittedStart`.
+    static ADMITTED: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// Non-secret failure classes which bridges map to stable codes. Carried as the
+/// concrete `anyhow` error so every existing `ResultType` path stays unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountError {
+    /// Receipt malformed, superseded by a newer account/cache state, or its
+    /// operation/attempt has been retired.
+    StaleReceipt,
+    /// The native privacy fence was raised after this work was admitted.
+    Revoked,
+    /// Durable storage belongs to another server trust scope than the Config.
+    ScopeMismatch,
+    /// A previous revocation did not finish; only its logout/server retry may run.
+    IncompleteRevocation,
+    /// The account has no credential.
+    NotLoggedIn,
+}
+
+impl std::fmt::Display for AccountError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::StaleReceipt => "Account operation receipt is stale",
+            Self::Revoked => "Account work was revoked by a privacy withdrawal",
+            Self::ScopeMismatch => "Account storage belongs to a different server configuration",
+            Self::IncompleteRevocation =>
+                "Account revocation is incomplete; retry the original logout or server configuration",
+            Self::NotLoggedIn => "Account is not logged in",
+        })
+    }
+}
+
+impl std::error::Error for AccountError {}
+
+fn typed(error: AccountError) -> hbb_common::anyhow::Error {
+    hbb_common::anyhow::Error::new(error)
+}
+
+/// Current fence value. Capture it under the application lock that admits the
+/// operation and pass it to the service call.
+pub fn revocation() -> u64 {
+    REVOCATION.load(Ordering::SeqCst)
+}
+
+/// Raise the fence. Lock-free; safe to call while holding the application lock.
+/// Returns the new value.
+pub fn revoke_pending() -> u64 {
+    REVOCATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+pub(super) fn check_admitted(admission: u64) -> ResultType<()> {
+    if revocation() == admission { Ok(()) } else { Err(typed(AccountError::Revoked)) }
+}
+
+/// Run a sign-in start whose `begin_auth` linearizes against the fence: the
+/// owner-locked witness carries `admission`, so a withdrawal between admission
+/// and registration is refused, and a later one fences the attempt.
+pub(super) fn start_admitted<T>(admission: u64, start: impl FnOnce() -> ResultType<T>) -> ResultType<T> {
+    check_admitted(admission)?;
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) { ADMITTED.with(|admitted| admitted.set(None)); }
+    }
+    ADMITTED.with(|admitted| admitted.set(Some(admission)));
+    let _scope = Scope;
+    start()
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct Stamp {
@@ -41,6 +123,8 @@ struct AttemptWitness {
     serial: u64,
     receipt: String,
     committed_generation: Option<u64>,
+    /// Privacy fence value this attempt was admitted under (see REVOCATION).
+    revocation: u64,
 }
 
 /// A failed revocation keeps only its exact initiating receipt and permissible
@@ -119,8 +203,7 @@ impl Owner {
     {
         let stamp = Stamp::new(store, account);
         if let Some(failure) = &self.failure {
-            ensure!(!failure.permits(&stamp, account),
-                "Account revocation is incomplete; retry the original logout or server configuration");
+            if failure.permits(&stamp, account) { return Err(typed(AccountError::IncompleteRevocation)); }
             // A genuinely foreign account transition has already retired the
             // failed operation's account. Observe it without granting its old
             // receipt any authority over the new account.
@@ -129,7 +212,7 @@ impl Owner {
         }
         if account.scope != scope {
             self.retire()?;
-            bail!("Account storage belongs to a different server configuration");
+            return Err(typed(AccountError::ScopeMismatch));
         }
         let changed = self.observed.as_ref() != Some(&stamp)
             || self.context.as_ref().is_some_and(|context|
@@ -195,13 +278,24 @@ impl Owner {
 
     fn attempt_matches(&self, attempt: &AuthAttempt, receipt: &str) -> bool {
         let Some(witness) = &self.attempt else { return false; };
-        if witness.serial != attempt.generation || witness.origin != attempt.context || witness.receipt != receipt {
+        if witness.serial != attempt.generation || witness.origin != attempt.context || witness.receipt != receipt
+            || witness.revocation != revocation()
+        {
             return false;
         }
         match witness.committed_generation {
             Some(generation) => generation == self.generation && self.context.is_some(),
             None => self.context.as_ref() == Some(&attempt.context),
         }
+    }
+
+    fn admit_commit(&self, attempt: &AuthAttempt, receipt: &str) -> ResultType<u64> {
+        let witness = self.attempt.as_ref().ok_or_else(|| typed(AccountError::StaleReceipt))?;
+        if witness.revocation != revocation() { return Err(typed(AccountError::Revoked)); }
+        if !self.attempt_matches(attempt, receipt) || witness.committed_generation.is_some() {
+            return Err(typed(AccountError::StaleReceipt));
+        }
+        Ok(witness.revocation)
     }
 
     fn memory_cache(&self, kind: RecordKind) -> ResultType<&Option<SecretBytes>> {
@@ -230,10 +324,13 @@ fn receipt_prefix(kind: RecordKind) -> &'static str {
 }
 
 fn validate_receipt(receipt: &str, kind: RecordKind) -> ResultType<()> {
-    let suffix = receipt.strip_prefix(receipt_prefix(kind))
-        .ok_or_else(|| anyhow!("Malformed account operation receipt"))?;
-    ensure!(suffix.len() == 64 && suffix.bytes().all(|byte|
-        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)), "Malformed account operation receipt");
+    let malformed = || typed(AccountError::StaleReceipt);
+    let suffix = receipt.strip_prefix(receipt_prefix(kind)).ok_or_else(malformed)?;
+    if !(suffix.len() == 64 && suffix.bytes().all(|byte|
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        return Err(malformed());
+    }
     Ok(())
 }
 
@@ -275,8 +372,9 @@ fn with_current<T>(expected: Option<(RecordKind, &str)>,
         owner.synchronize(&store, &account, server, scope)?;
         owner.issue_account_receipt(&store, &account)?;
         if let Some((kind, receipt)) = expected {
-            ensure!(receipt == owner.receipt(&store, &account, kind)?,
-                "Account operation receipt is stale");
+            if receipt != owner.receipt(&store, &account, kind)? {
+                return Err(typed(AccountError::StaleReceipt));
+            }
         }
         operation(&mut owner, &mut store, &mut account)
     })();
@@ -457,13 +555,17 @@ fn logout_scoped(receipt: &str) -> ResultType<String> {
         };
         if recovery {
             let stamp = Stamp::new(&store, &account);
-            ensure!(owner.failure.as_ref().is_some_and(|failure|
-                failure.receipt.as_deref() == Some(receipt) && failure.permits(&stamp, &account)),
-                "Failed logout receipt cannot revoke a newer account");
+            if !owner.failure.as_ref().is_some_and(|failure|
+                failure.receipt.as_deref() == Some(receipt) && failure.permits(&stamp, &account))
+            {
+                return Err(typed(AccountError::StaleReceipt));
+            }
         } else {
             let scope = scope.ok_or_else(|| anyhow!("Account scope unavailable"))?;
             owner.synchronize(&store, &account, api::server(), scope)?;
-            ensure!(receipt == owner.issue_account_receipt(&store, &account)?, "Account operation receipt is stale");
+            if receipt != owner.issue_account_receipt(&store, &account)? {
+                return Err(typed(AccountError::StaleReceipt));
+            }
         }
         let old_scope = account.scope.clone();
         revoke(&mut owner, &mut store, &mut account, old_scope, Some(receipt.to_owned()))?;
@@ -481,7 +583,16 @@ fn logout_scoped(receipt: &str) -> ResultType<String> {
 }
 
 pub fn change_server_configuration<F: FnOnce()>(update: F) -> ResultType<()> {
+    change_server_configuration_inner(None, update)
+}
+
+pub(super) fn change_server_configuration_admitted<F: FnOnce()>(admission: u64, update: F) -> ResultType<()> {
+    change_server_configuration_inner(Some(admission), update)
+}
+
+fn change_server_configuration_inner<F: FnOnce()>(admission: Option<u64>, update: F) -> ResultType<()> {
     let mut owner = owner()?;
+    if let Some(admission) = admission { check_admitted(admission)?; }
     // The configuration closure is an explicit configuration mutation, not an
     // old credential snapshot. It always revokes the freshly read durable owner
     // under the same OS lock before changing the selected server/trust options.
@@ -536,13 +647,20 @@ pub fn change_server_configuration<F: FnOnce()>(update: F) -> ResultType<()> {
 }
 
 pub fn begin_auth(receipt: &str) -> ResultType<AuthAttempt> {
+    // Read before the owner lock; the comparison against the live fence happens
+    // inside it, so this registration linearizes with a privacy withdrawal.
+    let admitted = ADMITTED.with(Cell::get);
     with_current(Some((RecordKind::Account, receipt)), |owner, _, _| {
+        let revocation_value = match admitted {
+            Some(value) => { check_admitted(value)?; value }
+            None => revocation(),
+        };
         owner.auth_serial = owner.auth_serial.checked_add(1)
             .ok_or_else(|| anyhow!("Account authentication generation exhausted"))?;
         let context = owner.context()?;
         let generation = owner.auth_serial;
         owner.attempt = Some(AttemptWitness { origin: context.clone(), serial: generation,
-            receipt: receipt.to_owned(), committed_generation: None });
+            receipt: receipt.to_owned(), committed_generation: None, revocation: revocation_value });
         Ok(AuthAttempt { context, generation })
     })
 }
@@ -555,9 +673,11 @@ pub fn auth_is_current(attempt: &AuthAttempt) -> ResultType<bool> {
 
 pub fn cancel_auth(attempt: &AuthAttempt) -> ResultType<()> {
     let mut owner = owner()?;
-    ensure!(owner.attempt.as_ref().is_some_and(|value|
-        value.serial == attempt.generation && value.origin == attempt.context),
-        "OIDC authentication attempt is no longer current");
+    if !owner.attempt.as_ref().is_some_and(|value|
+        value.serial == attempt.generation && value.origin == attempt.context)
+    {
+        return Err(typed(AccountError::StaleReceipt));
+    }
     owner.attempt = None;
     Ok(())
 }
@@ -572,15 +692,137 @@ pub fn commit_oidc(attempt: &AuthAttempt, token: String, user_info: String,
     ensure!(user_info.bytes().len() <= MAX_USER_INFO_BYTES, "OIDC metadata exceeds its size bound");
     with_current(None, |owner, store, account| {
         let receipt = owner.receipt(store, account, RecordKind::Account)?;
-        ensure!(owner.attempt_matches(attempt, &receipt)
-            && owner.attempt.as_ref().is_some_and(|value| value.committed_generation.is_none()),
-            "OIDC authentication attempt is no longer current");
+        // Request/commit admission point: owner-locked witness and fence check,
+        // immediately before the irreversible durable account transition. A
+        // withdrawal that won its atomic bump first refuses this queued commit;
+        // a commit that won here is not claimed to be rolled back by withdrawal.
+        let admitted = owner.admit_commit(attempt, &receipt)?;
         replace_account(owner, store, account, token, user_info, remember_me, &receipt)?;
         let committed = owner.issue_account_receipt(store, account)?;
         owner.attempt = Some(AttemptWitness { origin: attempt.context.clone(), serial: attempt.generation,
-            receipt: committed.clone(), committed_generation: Some(owner.generation) });
+            receipt: committed.clone(), committed_generation: Some(owner.generation),
+            revocation: admitted });
         Ok(committed)
     })
+}
+
+/// Non-secret account projection built inside the owner without serializing the
+/// credential. `user` holds only the four profile fields the UI displays.
+pub struct PublicUser {
+    pub name: String,
+    pub display_name: String,
+    pub avatar: Option<String>,
+    pub status: Option<i64>,
+}
+
+pub struct PublicSnapshot {
+    pub receipt: String,
+    pub logged_in: bool,
+    pub user: Option<PublicUser>,
+}
+
+fn public_user(user_info: &[u8]) -> Option<PublicUser> {
+    let value: serde_json::Value = serde_json::from_slice(user_info).ok()?;
+    let object = value.as_object()?;
+    let text = |key: &str| object.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    let name = text("name")?;
+    Some(PublicUser {
+        display_name: text("display_name").filter(|value| !value.is_empty()).unwrap_or_else(|| name.clone()),
+        avatar: text("avatar").filter(|value| !value.is_empty()),
+        status: object.get("status").and_then(serde_json::Value::as_i64),
+        name,
+    })
+}
+
+pub fn public_snapshot(admission: u64) -> ResultType<PublicSnapshot> {
+    with_current(None, |owner, store, account| {
+        check_admitted(admission)?;
+        let receipt = owner.issue_account_receipt(store, account)?;
+        let logged_in = !owner.token(account).is_empty();
+        let user = if logged_in { public_user(owner.user_info(account)) } else { None };
+        Ok(PublicSnapshot { receipt, logged_in, user })
+    })
+}
+
+/// A credential lease for exactly one network operation. The token is native
+/// owned memory that is erased on drop; it is only ever placed in a request
+/// header by the cloud transport and never in a result.
+pub(super) struct RequestAccess {
+    pub(super) context: AccountContext,
+    pub(super) token: SecretBytes,
+}
+
+pub(super) fn begin_request(receipt: &str, admission: u64) -> ResultType<RequestAccess> {
+    with_current(Some((RecordKind::Account, receipt)), |owner, _, account| {
+        check_admitted(admission)?;
+        if owner.token(account).is_empty() { return Err(typed(AccountError::NotLoggedIn)); }
+        Ok(RequestAccess { context: owner.context()?, token: SecretBytes::from_slice(owner.token(account)) })
+    })
+}
+
+/// Same-owner context and admission check after a network round trip.
+pub(super) fn request_still_valid(context: &AccountContext, admission: u64) -> ResultType<()> {
+    check_admitted(admission)?;
+    if !context_is_current(context)? { return Err(typed(AccountError::StaleReceipt)); }
+    check_admitted(admission)
+}
+
+/// Apply a validated server profile. Unlike `change_server_configuration` this
+/// never discards a session whose trust scope is unchanged (so a repeated
+/// start-up bind keeps the login and its receipts); a different scope, or an
+/// unfinished earlier revocation, tombstones the old credentials and caches in
+/// the same owner/OS-lock transaction before the new scope is published.
+/// Returns whether the previous session was retained.
+///
+/// The store is opened (and the platform key checked) before the Config is
+/// touched, so an unavailable protected store changes nothing. After the closure
+/// ran, a failure leaves new Config with an older durable scope; the next
+/// `bind_server_configuration` (or any receipt-bearing call, which reports
+/// `ScopeMismatch`) never lets that credential reach the new server.
+pub fn bind_server_configuration<F: FnOnce() -> ResultType<()>>(update: F) -> ResultType<bool> {
+    let mut owner = owner()?;
+    let mut store = match Store::open() {
+        Ok(store) => store,
+        Err(error) => { owner.retire()?; return Err(error.into()); }
+    };
+    owner.initialize_incarnation();
+    let result = (|| {
+        if let Err(error) = update() {
+            owner.retire()?;
+            return Err(error);
+        }
+        let scope = api::scope()?;
+        let server = api::server();
+        let Some(mut account) = store.read_account()? else {
+            ensure!(!owner.observed.as_ref().is_some_and(|old| old.epoch != 0),
+                "Durable account generation record disappeared");
+            owner.retire()?;
+            return Ok(false);
+        };
+        if account.scope == scope && owner.failure.is_none() {
+            owner.synchronize(&store, &account, server, scope)?;
+            owner.issue_account_receipt(&store, &account)?;
+            return Ok(!owner.token(&account).is_empty());
+        }
+        let old_scope = account.scope.clone();
+        revoke(&mut owner, &mut store, &mut account, old_scope, None)?;
+        if account.scope != scope {
+            account.scope = scope.clone();
+            if let Some(failure) = owner.failure.as_mut() {
+                failure.uncertain_tombstone = Some(Stamp::new(&store, &account));
+            }
+            store.write_account(&account)?;
+            if let Some(failure) = owner.failure.as_mut() {
+                failure.owned = Some(Stamp::new(&store, &account));
+                failure.uncertain_tombstone = None;
+            }
+        }
+        owner.bind(&store, &account, server, scope);
+        owner.issue_account_receipt(&store, &account)?;
+        if let Some(failure) = owner.failure.as_mut() { failure.completed = true; }
+        Ok(false)
+    })();
+    finish(&mut owner, store, result)
 }
 
 pub(super) fn save_cache(receipt: &str, kind: RecordKind,

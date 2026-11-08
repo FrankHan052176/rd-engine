@@ -30,6 +30,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -244,6 +245,28 @@ pub trait VideoOwner: Send + Sync + 'static {
     fn video_phase(&self, phase: &'static str);
     /// Compressed units received from the peer, counted before admission.
     fn video_received(&self, units: u64);
+    /// A validated encoded record; observers must never wait on a downstream peer.
+    fn video_encoded(&self, _codec: VideoCodec, _geometry: Geometry, _frames: &[EncodedVideoFrame]) {}
+    /// This session's compressed-record path is instrumented from now on.
+    ///
+    /// Stated once, where the pipeline is built, so a stage with no samples yet
+    /// is a measured stage rather than an unmeasured one: a client can tell
+    /// "nothing admitted yet" from "this path is not instrumented". An owner that
+    /// publishes no diagnostics leaves the default, which is that absence.
+    fn video_timings_enabled(&self) {}
+    /// One record admission operation completed: validation passed, the slot and
+    /// byte permits were taken, and the record reached the feeder.
+    ///
+    /// It is an operation and not a scheduling wait — the interval contains this
+    /// path's own permit and channel work, never the peer's or the decoder's —
+    /// and a refusal or a cancellation is not an admission, so neither is
+    /// reported here.
+    fn video_record_admission(&self, _elapsed: Duration) {}
+    /// One access unit was accepted by the decoder, measured over the submit
+    /// itself. That submit waits for the decoder's own capacity when it is full,
+    /// so this is an operation too, not CPU time. A rejection is returned to the
+    /// feeder and is never reported here.
+    fn video_decoder_admission(&self, _elapsed: Duration) {}
     /// A decoder opened for `codec` at `geometry`; the session is now decoding.
     fn video_decoder_opened(
         &self,
@@ -289,6 +312,10 @@ pub fn pipeline<H: VideoOwner>(
     caps: Decoders,
     source: Geometry,
 ) -> (VideoAdmission<H>, VideoFeed<H>) {
+    // Both admission stages are instrumented from the moment this pipeline
+    // exists, so an empty aggregate later means nothing was admitted yet rather
+    // than that nothing was measured.
+    owner.video_timings_enabled();
     let (video, feed) = mpsc::channel(VIDEO_RECORDS);
     (
         VideoAdmission {
@@ -314,15 +341,10 @@ pub struct VideoAdmission<H: VideoOwner> {
 }
 
 impl<H: VideoOwner> VideoAdmission<H> {
-    /// Admits one record, waiting while the pipeline is full.
-    ///
-    /// The encoded units move into the record; nothing is copied here. A codec
-    /// this session did not advertise, a record from another display, or a
-    /// malformed or oversized record ends the session with its error.
-    pub async fn admit(&mut self, frame: VideoFrame) -> Result<Admitted, ViewerError> {
-        if frame.display != self.source.display {
-            return Err(ViewerError::InvalidPeerGeometry);
-        }
+    /// Decode and bound an encoded record without opening a decoder. The same
+    /// admission contract is used for an independently subscribed share display.
+    pub(crate) fn encoded_record(&self, frame: VideoFrame)
+        -> Result<(VideoCodec, Vec<EncodedVideoFrame>, usize), ViewerError> {
         let caps = self.caps;
         let (codec, frames) = match frame.union {
             Some(video_frame::Union::H264s(frames)) if caps.h264 => {
@@ -351,9 +373,6 @@ impl<H: VideoOwner> VideoAdmission<H> {
             }
             _ => return Err(ViewerError::UnsupportedCodec),
         };
-        if frames.is_empty() {
-            return Ok(Admitted::Empty);
-        }
         if frames.len() > MAX_UNITS_PER_RECORD || frames.iter().any(|f| f.data.is_empty()) {
             return Err(ViewerError::InvalidVideoRecord);
         }
@@ -364,8 +383,32 @@ impl<H: VideoOwner> VideoAdmission<H> {
         if length > VIDEO_BYTES {
             return Err(ViewerError::VideoRecordTooLarge);
         }
+        Ok((codec, frames, length))
+    }
+
+    pub(crate) fn source_display(&self) -> i32 { self.source.display }
+
+    /// Admits one record, waiting while the pipeline is full.
+    ///
+    /// The encoded units move into the record; nothing is copied here. A codec
+    /// this session did not advertise, a record from another display, or a
+    /// malformed or oversized record ends the session with its error.
+    pub async fn admit(&mut self, frame: VideoFrame) -> Result<Admitted, ViewerError> {
+        if frame.display != self.source.display {
+            return Err(ViewerError::InvalidPeerGeometry);
+        }
+        let (codec, frames, length) = self.encoded_record(frame)?;
+        if frames.is_empty() {
+            return Ok(Admitted::Empty);
+        }
+        self.owner.video_encoded(codec, self.source, &frames);
         self.owner.video_received(frames.len() as u64);
         let cancel = self.owner.cancellation();
+        // The admission operation, from the end of validation to the record
+        // reaching the feeder: the slot and byte permits, then the send. It is
+        // this path's own work and queue occupancy, which is what makes it an
+        // operation rather than a pure scheduling wait.
+        let admission = Instant::now();
         // Transport itself bounds the one not-yet-admitted RX record. Admitted
         // records INCLUDING the feeder's are byte+slot bound.
         let record = tokio::select! {
@@ -382,6 +425,7 @@ impl<H: VideoOwner> VideoAdmission<H> {
             _ = cancel.cancelled() => return Ok(Admitted::Cancelled),
             sent = self.video.send(record) => sent.map_err(|_| ViewerError::Closed)?,
         }
+        self.owner.video_record_admission(admission.elapsed());
         Ok(Admitted::Queued)
     }
 
@@ -520,6 +564,10 @@ async fn feed_loop<H: VideoOwner>(
                 owner.video_phase("opening_decoder");
             }
             let lease = lease.clone();
+            if let Some(presentation) = lease.local_presentation() {
+                presentation.bind_display(next.1.display)
+                    .map_err(|_| ViewerError::InvalidPeerGeometry)?;
+            }
             owner.reclamation_unconfirmed().store(true, Ordering::Release);
             let opened = tokio::task::spawn_blocking(move || {
                 SurfaceDecoder::open(
@@ -566,21 +614,77 @@ async fn feed_loop<H: VideoOwner>(
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            let pts_us = frame
-                .pts
-                .checked_mul(1000)
-                .ok_or(ViewerError::TimestampOverflow)?;
-            let unit = AccessUnit {
-                bytes: frame.data.to_vec(),
-                pts_us,
-                kind: AccessUnitKind::Frame { key: frame.key },
-            };
+            let unit = access_unit(frame)?;
+            // The decoder admission operation: the submit itself, including a
+            // wait for the decoder's own capacity when it is full. Only an
+            // accepted unit is a sample; a rejection returns below.
+            let admission = Instant::now();
             if let Err(rejected) = decoder.submit_cancellable(unit, cancel).await {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
                 return Err(ViewerError::Decoder(rejected.reason));
             }
+            owner.video_decoder_admission(admission.elapsed());
         }
+    }
+}
+
+fn access_unit(frame: EncodedVideoFrame) -> Result<AccessUnit, ViewerError> {
+    let pts_us = frame
+        .pts
+        .checked_mul(1000)
+        .ok_or(ViewerError::TimestampOverflow)?;
+    Ok(AccessUnit {
+        // Reuse uniquely owned payload storage instead of always copying it.
+        // Shared/static storage may still copy. Trim spare backing capacity so
+        // the AU retains only bytes charged to its existing admission quota.
+        bytes: Vec::from(frame.data).into_boxed_slice().into_vec(),
+        pts_us,
+        kind: AccessUnitKind::Frame { key: frame.key },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hbb_common::protobuf::Message as _;
+
+    #[test]
+    fn video_payload_reuses_owned_wire_bytes() {
+        let frame = EncodedVideoFrame {
+            data: vec![0x5a; 256].into(),
+            pts: 17,
+            key: true,
+            ..Default::default()
+        };
+        // The same slice-backed protobuf parse used by WireReader::decode,
+        // rather than assuming the wire's payload has reusable storage.
+        let wire = frame.write_to_bytes().unwrap();
+        let parsed = EncodedVideoFrame::parse_from_bytes(&wire).unwrap();
+        let payload = parsed.data.as_ptr();
+        let unit = access_unit(parsed).unwrap();
+        assert_eq!(unit.bytes.as_ptr(), payload, "no second payload allocation");
+        assert_eq!(unit.bytes, vec![0x5a; 256]);
+        assert_eq!(unit.bytes.capacity(), unit.bytes.len());
+        assert_eq!(unit.pts_us, 17_000);
+        assert_eq!(unit.kind, AccessUnitKind::Frame { key: true });
+    }
+
+    #[test]
+    fn video_payload_compacts_shared_slice_without_retaining_unbilled_bytes() {
+        let owner = bytes::Bytes::from(vec![0x7b; 4096]);
+        let frame = EncodedVideoFrame {
+            data: owner.slice(64..192),
+            pts: 18,
+            key: false,
+            ..Default::default()
+        };
+        let unit = access_unit(frame).unwrap();
+        assert_eq!(unit.bytes, vec![0x7b; 128]);
+        assert_eq!(unit.bytes.capacity(), 128, "retain only charged AU bytes");
+        assert_eq!(owner.as_ref(), &[0x7b; 4096]);
+        assert_eq!(unit.pts_us, 18_000);
+        assert_eq!(unit.kind, AccessUnitKind::Frame { key: false });
     }
 }

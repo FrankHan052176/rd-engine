@@ -17,6 +17,8 @@ param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $CMakePath,
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $CMakeToolchainFile,
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $LibvpxPrefix,
+    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $MagnumOpusRoot,
+    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $LibclangPath,
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $EngineDll
 )
 
@@ -306,6 +308,8 @@ try {
     $CMakePath = Get-WindowsPath $CMakePath 'CMakePath'
     $CMakeToolchainFile = Get-WindowsPath $CMakeToolchainFile 'CMakeToolchainFile'
     $LibvpxPrefix = Get-WindowsPath $LibvpxPrefix 'LibvpxPrefix'
+    $MagnumOpusRoot = Get-WindowsPath $MagnumOpusRoot 'MagnumOpusRoot'
+    $LibclangPath = Get-WindowsPath $LibclangPath 'LibclangPath'
     $EngineDll = Get-WindowsPath $EngineDll 'EngineDll'
     if ($RustToolchain -cnotmatch '^1\.95(?:\.0)?-x86_64-pc-windows-msvc$') {
         throw 'RustToolchain must name the installed 1.95/1.95.0 x86_64-pc-windows-msvc toolchain.'
@@ -417,12 +421,41 @@ try {
         throw 'Dependency wrapper does not select the actual requested installed prefix/toolchain.'
     }
     Require-File $vcpkgToolchain
+    # magnum-opus links Opus from the directory its own build.rs derives only
+    # from VCPKG_ROOT: <VCPKG_ROOT>/installed/x64-windows-static/lib for
+    # x86_64-pc-windows-msvc. The declared dependency ABI here is
+    # x64-windows-static-md, so only the verified static Opus library and its
+    # headers are mirrored into a tree this build owns. The supplied installed
+    # prefix is read, never written, and no other library or triplet choice is
+    # replaced: LIBVPX_PREFIX, ZLIB_ROOT and the CMake toolchain keep pointing
+    # at the actual static-md install.
+    if ($MagnumOpusRoot -ieq $LibvpxPrefix -or
+        $MagnumOpusRoot.StartsWith("$LibvpxPrefix/", [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'MagnumOpusRoot must be its own directory, never the supplied read-only dependency prefix.'
+    }
+    $opusLibrary = "$LibvpxPrefix/lib/opus.lib"
+    $opusHeader = "$LibvpxPrefix/include/opus/opus_multistream.h"
+    Require-File $opusLibrary
+    Require-File $opusHeader
+    $magnumTarget = "$MagnumOpusRoot/installed/x64-windows-static"
+    [void][IO.Directory]::CreateDirectory("$magnumTarget/lib")
+    [void][IO.Directory]::CreateDirectory("$magnumTarget/include")
+    Copy-Item -LiteralPath $opusLibrary -Destination "$magnumTarget/lib/opus.lib" -Force
+    Copy-Item -LiteralPath "$LibvpxPrefix/include/opus" -Destination "$magnumTarget/include" -Recurse -Force
+    # The mirror has to be the verified static-md bytes, not a stale copy from
+    # an earlier run of this directory.
+    Require-Hash "$magnumTarget/lib/opus.lib" (Get-Hash $opusLibrary)
+    Require-Hash "$magnumTarget/include/opus/opus_multistream.h" (Get-Hash $opusHeader)
+    # bindgen dlopen()s libclang's shared library; clang.exe is not that DLL.
+    Require-File "$LibclangPath/libclang.dll"
     Write-Host "Flutter 3.24.5 / Dart 3.5.4: $FlutterRoot"
     Write-Host "Rust/cargo 1.95.0 ($RustToolchain): $rustc ; $cargo"
     Write-Host "VS2022 x64 MSVC $compilerVersion`: $compiler ; linker: $linker"
     Write-Host "CMake 3.31.6-msvc6: $CMakePath"
     Write-Host "libvpx 1.15.2 / Zlib 1.3.2 static-md: $LibvpxPrefix"
     Write-Host "Dependency wrapper: $CMakeToolchainFile ; installed root: $installedRoot ; include: $vcpkgToolchain"
+    Write-Host "magnum-opus VCPKG_ROOT (isolated, Opus only): $MagnumOpusRoot ; library: $magnumTarget/lib/opus.lib"
+    Write-Host "bindgen libclang: $LibclangPath/libclang.dll"
 
     switch ($Stage) {
         'preflight' {
@@ -436,6 +469,11 @@ try {
                 throw 'Kernel requires a fresh bridge/target. Retain the failed tree and stage a new isolated build; nothing was deleted.'
             }
             Clear-NativeDependencyEnvironment
+            # Only this run's mirrored Opus bytes may satisfy magnum-opus; the
+            # tree is re-read here because the kernel is a separate process from
+            # the preflight that created it.
+            Require-File "$magnumTarget/lib/opus.lib"
+            Require-File "$magnumTarget/include/opus/opus_multistream.h"
             $env:CMAKE = $CMakePath
             $env:CMAKE_GENERATOR = $generator
             $env:CMAKE_GENERATOR_INSTANCE = $VisualStudioRoot
@@ -444,6 +482,8 @@ try {
             $env:CMAKE_TOOLCHAIN_FILE = $CMakeToolchainFile
             $env:LIBVPX_PREFIX = $LibvpxPrefix
             $env:ZLIB_ROOT = $LibvpxPrefix
+            $env:VCPKG_ROOT = $MagnumOpusRoot
+            $env:LIBCLANG_PATH = $LibclangPath
             $env:RUSTUP_TOOLCHAIN = $RustToolchain
             $env:RUSTC = $rustc
             $env:CARGO_BUILD_RUSTC = $rustc

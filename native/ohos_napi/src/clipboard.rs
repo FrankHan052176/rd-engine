@@ -50,6 +50,19 @@ fn active_viewer(session_id: &str) -> Result<std::sync::Arc<Viewer>, String> {
     crate::active_keyboard_viewer(session_id)
 }
 
+/// A shared (B→C) view has no clipboard in either direction.
+///
+/// Neither the peer's updates nor this side's payloads are part of what a share
+/// grants, and the refusal is made before any session lookup so no mailbox,
+/// reservation or writer queue is touched.
+fn shared_refusal(action: &str) -> String {
+    refused_message(
+        action,
+        "not_allowed",
+        "a shared view has no clipboard: neither direction is part of what the share grants",
+    )
+}
+
 /// Sends one format set through the viewer, and answers with what was queued.
 ///
 /// The engine decides whether this peer can receive it at all: a peer without
@@ -134,6 +147,9 @@ fn refused_message(action: &str, reason: &'static str, message: &str) -> String 
 /// update is produced.
 #[napi]
 pub fn session_send_clipboard(session_id: String, content: String) -> String {
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(SEND_TEXT_ACTION);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused_message(SEND_TEXT_ACTION, "unknown_session", &message),
@@ -165,6 +181,9 @@ pub fn session_send_clipboard_image(session_id: String, image: Uint8Array) -> St
             "sessionSendClipboardImage image is over the clipboard bound",
         );
     }
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(SEND_IMAGE_ACTION);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused_message(SEND_IMAGE_ACTION, "unknown_session", &message),
@@ -185,6 +204,9 @@ pub fn session_send_clipboard_image(session_id: String, image: Uint8Array) -> St
 /// pasteboard mapping is reported rather than silently dropped.
 #[napi]
 pub fn session_take_clipboard(session_id: String) -> String {
+    if crate::is_shared_session(&session_id) {
+        return shared_refusal(TAKE_ACTION);
+    }
     let viewer = match active_viewer(&session_id) {
         Ok(viewer) => viewer,
         Err(message) => return refused_message(TAKE_ACTION, "unknown_session", &message),
@@ -202,6 +224,8 @@ pub fn session_take_clipboard(session_id: String) -> String {
 /// image.
 #[napi]
 pub fn session_take_clipboard_image(session_id: String) -> Uint8Array {
+    // A shared view reserves nothing, so there is nothing to hand out: the empty
+    // array is the same answer this call already gives for an unheld image.
     let Ok(viewer) = active_viewer(&session_id) else {
         return Uint8Array::new(Vec::new());
     };

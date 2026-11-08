@@ -23,7 +23,7 @@
 
 当前所有权以 [`AGENTS.md`](../AGENTS.md) 和 [`README.md`](../README.md) 为准；HAR 接口见 [`docs/OHRS_SURFACE.md`](OHRS_SURFACE.md)。`HANDOVER.md`、`PARITY.md`、`PROTOCOL_EXTENSIONS.md` 保留历史记录，其中的测试数、产物路径和旧构建结果不代表本次核查已重新验证。
 
-Resk 账号登录/云地址簿不支持，以及远程摄像头、文字聊天、语音通话的产品排除，不属于本轮发布链缺口，不应为“发布就绪”而重新加入。
+Resk 账号登录与云地址簿当前均尚不支持，但两者都已不是产品排除项：按 `AGENTS.md` 的准入决定，账号 core 位于 `rd-engine::official_account`，Resk 可经 OHOS NAPI 接入同一实现；云地址簿同样按此准入允许经该共享 core 和真实 OHOS NAPI 导出提供，不再由固定官方 Dart 消费者独占，官方 Flutter 现有 Dart 实现继续保留，不在本轮删除或重写。OHOS NAPI 目前既未选择该 feature 也没有账号或地址簿导出，Resk 侧的账号登录、OAuth 与云地址簿操作均未经构建和真机验证，因此这里只陈述当前未支持状态，不构成永久排除。凭据隔离不变：`access_token`、secret 与原始请求体不交给 ArkTS，也不另建账号 owner。远程摄像头、文字聊天、语音通话以及其余产品裁剪仍是排除项，不属于本轮发布链缺口，不应为“发布就绪”而重新加入。
 
 ## 就绪矩阵
 

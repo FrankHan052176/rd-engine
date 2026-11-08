@@ -195,7 +195,9 @@ pub struct RegistrationConfig {
     /// Explicit, independently trusted relay server endpoint. Only this relay may receive
     /// `licence_key` for relay routes. Forwarded controller hints are refused if unapproved.
     pub relay_server: Option<String>,
-    /// Exact licence/public key wire value. Never logged.
+    /// The key written to the approved hbbr join (`RequestRelay.licence_key`). On the
+    /// host this is its only use: hbbs `RegisterPk` carries no licence. This is
+    /// the same single server Key the controller sends to hbbs/hbbr. Never logged.
     pub licence_key: String,
     /// Total registration run window. BoundedCeiling: worker stops cleanly at deadline.
     pub deadline: Duration,
@@ -376,7 +378,7 @@ pub async fn run_host_registration(
         || config
             .licence_key
             .chars()
-            .any(|c| c.is_control() || c.is_whitespace())
+            .any(char::is_control)
         || config.deadline.is_zero()
         || config.deadline > MAX_REGISTRATION_WINDOW
     {

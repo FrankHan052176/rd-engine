@@ -106,12 +106,12 @@ fabricated values.
 | `queryDecoderCapabilities` | `AsyncTask` query of `media_capability::query_h264_hardware_decoder` and `query_hevc_hardware_decoder`; returns advertised metadata or per-query errors off the ArkTS UI thread, never measured throughput/HDR or a codec instance |
 | `appSetLifecycle` | synchronously fences consent/foreground and app epoch, requests old-owner close even after revocation, then waits for owned LAN cleanup and admitted bootstrap I/O in an `AsyncTask`; foreground never starts a scan |
 | `appInit` | serializes private `filesDir/rustdesk` bootstrap, sets official `APP_DIR`/`APP_HOME_DIR`, initializes crypto and obtains official `Config::get_id` off UI before publishing ready |
-| `validateServerProfile` | pure shared endpoint and STANDARD-base64 Ed25519-key validation; no Config, DNS, socket, save or approval |
+| `validateServerProfile` | pure effective endpoint and single-Key-update validation; no Config, DNS, socket, save or approval |
 | `lanScanStart` | memory-only generation admission → `rd_engine::lan::LanOwner::start`, then worker-side actual cache snapshot; only explicit calls scan |
 | `lanPeersQuery` | generation/scan-fenced worker-side `LanOwner::query_blocking`, with another epoch/scan/revision check at promise resolution |
 | `lanScanStop` | exact scan admission → `request_stop`, then off-UI `LanCompletion::wait_blocking` and actual cache query |
 | `lanPeerRemove` | exact owner/scan admission → core-owned removal gate and `request_remove`, then off-UI completion and actual cache query |
-| `sessionAdd` | captures a direct target or owned v2 explicit-save ID route and initialized local ID; no dial/Config/persistence; refuses existing ids and a full 256-record registry without eviction |
+| `sessionAdd` | captures a direct target or owned v2 manual-edit ID route (legacy explicit-save readable) and initialized local ID; no dial/Config/persistence; refuses existing ids and a full 256-record registry without eviction |
 | `sessionStart` | captured ID route → existing strict `Viewer::start_rendezvous`; direct RustDesk/VNC/authenticated RDP → unchanged `Viewer::start` |
 | `sessionLogin` | records a password only on a nonterminal/nonclosing record; a live unauthenticated viewer returns `restart_required`, requiring close → final poll → ACK → new registration/start, not same-viewer reauthentication |
 | `sessionSend2fa` | admits one six-digit code only while this same RustDesk authentication is waiting; `queued:true` is not authorization. A peer challenge revision makes repeated Wrong replies observable; `trustThisDevice:true` is explicitly refused until enrollment has a real owner |
@@ -122,7 +122,7 @@ fabricated values.
 | `sessionRefresh` | `Viewer::request_keyframe` |
 | `sessionCancelJob` | always answers `unsupported:true` with `record_removed:false`: no transfer-job owner is wired here, and no `actId` (including `0`) closes a viewer, releases a Surface or ACKs a receipt |
 | `sessionSetCommon` | `view-only` and `fps` are acted on; every other pair is recorded and not applied |
-| `sessionSetCustomFps` | applies to the next `sessionStart`; a running viewer keeps its rate |
+| `sessionSetCustomFps` | RustDesk desktop: queues the FPS-only option on the live viewer's existing writer, or saves it for the next login when no viewer exists; `applied:false` because there is no peer-applied ACK |
 | `sessionSetViewOnly` | `Viewer::set_input_policy`; closes admission independently of input-queue capacity, retires the old generation, and wakes the writer to release its holds; acceptance is not release completion |
 | `sessionSetUnverifiedInputAccepted` | changes only the operator's input-consent policy for an encrypted but unverified RustDesk peer; never sets `peer_verified` or overrides authentication, view-only, or the peer's keyboard grant |
 | `sessionSendMouse` | `Viewer::send_mouse`; converts compact client button codes to the wire bits and requires coordinates on absolute moves (or a prior absolute position for button transitions) |
@@ -130,7 +130,7 @@ fabricated values.
 | `sessionInputString` | `Viewer::send_rustdesk_key` with the text sequence |
 | `sessionGetFrameRateSnapshot` | cumulative counters from `Viewer::snapshot()` |
 | `runtimeGetServerConfig` | reads this bridge's own saved `server-profile.json`; `approved:false`/`config:null` when nothing was saved, a read failure is an error rather than an empty profile |
-| `runtimeSetServerConfig` | the explicit save: same admission as `validateServerProfile`, atomic private write under the reserved root, answers `approvedProfile` (`schemaVersion` 2, `approval:"explicit-save"`, new `revision`) and `committed`; not a reachability claim |
+| `runtimeSetServerConfig` | raw `draftOnly` Asset-backed editor commit or validated effective commit; serialized/fenced native writes; effective answers v2 `manual-edit` approval and `committed`, never reachability |
 | `runtimeTestServerConfig` | one bounded TCP connect per configured endpoint (two addresses, 2.5 s each); transport observation only, saves nothing |
 | `runtimeListRecentPeers` | engine-owned device directory rows; `ok:true, exists:false` means no store yet and `ok:false` is a read failure with no rows |
 | `runtimeListFavorites` | the same store's favorite targets, in insertion order |
@@ -220,7 +220,7 @@ acceptance item; no silent truncation is added.
 ID (`address=None`) consumes `options.approvedServerProfile`:
 
 ```json
-{"schemaVersion":2,"approval":"explicit-save","revision":1,"mode":"official","idServer":"","relayServer":"","key":""}
+{"schemaVersion":2,"approval":"manual-edit","revision":1,"mode":"official","idServer":"<pinned official endpoint>","relayServer":"","key":"<pinned public Key>","keyKind":"official","keyConfigured":false,"keyVersion":0}
 ```
 `options.rustdeskIdOnly` is an optional boolean. LAN-sourced connection attempts
 set it to `true` and retain that intent through retry, password replacement and
@@ -231,32 +231,52 @@ refused. Absent/false preserves manually entered direct-address routing. No
 numeric-ID whitelist or LAN-derived server trust is introduced.
 
 
-The revision must be a positive safe integer. Missing/legacy records and editable
-drafts are not approved. The approved source is now this bridge's own save:
-`runtimeSetServerConfig` validates the profile with the same rules as
-`validateServerProfile`, writes it atomically under the fixed private root and
-answers `approvedProfile` (`schemaVersion` 2, `approval:"explicit-save"`, the new
-`revision`) together with `committed`; `runtimeGetServerConfig` re-reads that
-store and answers `approved:false`/`config:null` when nothing was saved, a read
-failure being an error rather than an empty profile. The earlier Resk Preferences
-approval candidate was never applied, so nothing here claims a Preferences flush
-or a real UI pairing.
-Official mode ignores residual custom fields and uses only pinned
-`RENDEZVOUS_SERVERS[0]` and `RS_PUB_KEY`, matching the upstream `PUBLIC_SERVER`
-branch, never mutable Config server getters. Custom mode requires an explicit
-valid ID endpoint, optional valid relay and a STANDARD-base64 key decoding to
-exactly 32 Ed25519 bytes, without a default-key fallback. Validation returns
-`{ok, normalizedProfile?:{mode,idServer,relayServer,key}, error?}`; it neither saves,
-approves nor network-tests that profile.
+The revision must be a positive safe integer. Editable drafts are not approved.
+`runtimeSetServerConfig` accepts one Key update (`keep`, `set` with text, or
+`clear`) and returns a v2 `manual-edit` approval only after a successful native
+commit. Legacy `explicit-save` documents remain readable. `runtimeGetServerConfig`
+returns the committed route and the separate raw editor `draft`; failure is not
+an empty profile. The caller never serializes the editor as a session route.
 
-The record owns canonical peer ID, normalized endpoints, original raw wire key,
-decoded signer key and initialized local ID. `sessionStart` constructs only from
-that snapshot, requiring its current admission generation; it does not reread
-editable config. Connect, retry and password replacement must preserve the same
-captured connection attempt in ArkTS. Targets, handoffs, and LAN metadata cannot
-override the server/key. No `apiServer`, force-relay, UDP/KCP or account activation
-is added. The existing direct connectors and their identity/security policy stay
-unchanged, and unverified input acceptance still starts false.
+The same set export with `draftOnly:true` persists raw, even incomplete/invalid,
+address text and protects entered Key text in the existing HarmonyOS Asset store.
+The private draft JSON contains only a reference and its original destination
+scope. `keep` with `draftRevision` can consume only the current native draft;
+it cannot carry that stored Key to different hbbs/hbbr destinations. Draft and
+effective writes share one serialized, sequenced native owner. The optional
+nonsecret `editToken` is echoed as `draftEditToken` only to reconcile the public
+address fallback after an interrupted wait; it grants no routing/Key authority.
+Asset add precedes
+atomic JSON replacement, and unreferenced old records are removed afterwards.
+There is no plaintext Key in profile JSON, Preferences, account Config or replies.
+
+Official mode uses pinned `RENDEZVOUS_SERVERS[0]` and `RS_PUB_KEY`. Custom mode
+requires a valid ID endpoint and an optional valid relay. STANDARD base64 decoding
+to exactly 32 bytes is a public Key and requires verified peer identity and
+transport encryption; failed/missing signatures refuse the connection. Other
+explicit nonempty Key text is a shared licence: the same original text is sent
+to hbbs and the independently configured hbbr, with original unverified/plain
+compatibility and a warning before connection/password entry. Empty custom Key
+uses the pinned default public Key, never a silent trust downgrade. Legacy dual
+public/shared Key records are a visible conflict until explicitly replaced or
+cleared, without deleting the old Asset first.
+
+Each registered session owns the normalized route, Key decision and initialized
+local ID. Start/password retry does not reread an editable profile. Targets,
+handoffs and LAN metadata cannot override this snapshot. Direct connectors keep
+their existing policy. Host shared compatibility belongs only to that routed
+registration epoch: secure requests still require encryption, direct ingress is
+unchanged, and profile change/privacy revocation closes the old shared epoch.
+Host peer snapshots report the actual encryption decision separately from
+password/local approval; encryption alone does not verify a controlling peer ID.
+
+`apiServer` is a separate account destination. The account projection carries
+only public Key material plus nonsecret `keyKind`, never shared licence text.
+Shared accounts use a distinct no-public-key HTTPS scope, not `RS_PUB_KEY` as a
+pretend identity. The existing Config mirror holds only that classification.
+Shared mode refuses an explicitly selected signed-public-key raw-TCP proxy;
+normal real HTTPS account/OIDC paths, owner/admission and cancellation rules remain.
+A custom API failure never falls back to the official account server.
 
 These are source contracts, not runtime acceptance. Bootstrap/revocation races,
 environment teardown, storage failures, stale command isolation, real broadcast
@@ -278,7 +298,7 @@ instead of a fabricated success when that scope is unavailable.
   missing file is "no store yet", which callers report separately from a read
   failure.
 - Server profile: `app_profile.rs` (`server-profile.json`, 16 KiB cap, bounded
-  request JSON). `runtimeSetServerConfig` is the explicit save and increments the
+  request JSON). `runtimeSetServerConfig` commits manual edits and increments the
   stored revision up to the safe-integer bound; `runtimeGetServerConfig` reports
   `approved`/`config`/`approvedProfile`/`revision` or that no profile was saved;
   `runtimeTestServerConfig` saves nothing and reports one bounded TCP connection
@@ -367,11 +387,65 @@ Known limits of this path (recorded, being repaired; not to be read as guarantee
   from those counters (`FrameRateTelemetry`); this layer never invents an
   average it did not measure. `status` forwards `ViewerSnapshot.phase`, including
   pre-media and terminal states; ArkTS admits the current engine lifecycle
-  vocabulary while redacting unknown status strings. Remaining Audit A8 limits
-  are unchanged: wait fields are zero on this path and RFB does not update these
-  video counters.
+  vocabulary while redacting unknown status strings. RFB does not update these
+  video counters. `desiredFps` is the last accepted request, not a peer-confirmed
+  effective cap; neither it nor the frame counters proves display scanout.
   Confirmed terminal snapshots and their elapsed sample time are retained until
   ACK, so dropping the registry's Viewer does not relabel telemetry as never-started.
+
+### Native pipeline timings (version 1)
+
+The same snapshot includes positive `frameWidth`/`frameHeight` when known, or
+`null`, and `pipelineTimings: {version: 1, ...}` with these named stages:
+
+| Stage | Measured interval |
+| --- | --- |
+| `recordAdmission` | After a valid encoded record passes validation, through slot/byte admission and successful feeder-queue send |
+| `decoderAdmission` | `submit_cancellable` entry through successful admission, including backpressure |
+| `inputWait` | `max(0, input-callback entry - AU acceptance)`; a buffer already returned before acceptance contributes a real zero |
+| `inputDispatch` | Worker start of input processing minus `max(AU acceptance, input-callback entry)` |
+| `pushApi` | Only `OH_VideoDecoder_PushInputBuffer` call duration |
+| `renderApi` | Only `OH_VideoDecoder_RenderOutputBufferAtTime` call duration |
+
+Each stage is `null` when uninstrumented, otherwise
+`{samples, totalNs, peakNs, over8Ms}`. OHOS enables all six; an enabled aggregate
+with zero samples is not `null`, but has no observed mean yet. The integers are
+cumulative for the viewer, merging live snapshots and closed decoders without
+double counting; sums saturate and peaks merge by maximum. `over8Ms` counts
+durations strictly greater than 8,000,000 ns. The SDK-call stages include failed
+calls without counting those failures as successful pushed/submitted frames.
+
+For one unchanged stream identity and geometry, a window mean is
+`delta(totalNs) / delta(samples)` and its slow-call count is `delta(over8Ms)`.
+`peakNs` is the session peak, not the window maximum or a percentile. These
+intervals can overlap and must not be added into an end-to-end latency.
+The existing `renderNs`/`renderCalls` still measure post-Push to successful
+Surface-submission residence, not pure hardware-decode work or scanout.
+The formerly unmeasured generic queue fields `queueCalls`, `queueNs` and
+`busyFrames` are now `null`, with `queueTimingAvailable:false`; do not turn them
+into proof of zero waiting. The named stages above carry the measured waits.
+
+### Current reader checkpoint
+
+`readerProgress` is `null` before the RustDesk reader publishes a checkpoint
+(and for other protocols), otherwise `{phase, ageMs}`. The closed phase set is
+`wire_wait`, `wire_decode`, `video_dispatch`, `cursor_dispatch`,
+`transfer_dispatch`, `cliprdr_dispatch`, `control_dispatch`, `other_dispatch`
+and `stopped`. No message body, path or peer address enters these labels.
+
+`ageMs` is monotonic time since entering the current stage, not CPU time,
+per-frame latency, an aggregate or proof of a particular bottleneck. `stopped`
+measures time since this reader ended at the instant the snapshot was taken;
+retained terminal snapshots do not keep ticking. `wire_wait` awaits a complete
+framed record and can include partial-record arrival, transport delay and task
+scheduling: it does not prove that the peer stopped producing frames.
+
+The reader updates an independent short-lock checkpoint before decrypt/parse
+or dispatch, including before session locks and bounded queue waits. The full
+`Viewer::snapshot` still takes `State.inner`, so this API cannot bypass a held
+session lock; delayed snapshot delivery is not evidence of a zero reader wait.
+This is one current checkpoint, with no second reader, history queue or change
+to `pipelineTimings.version`.
 
 ## Polling: snapshot-derived, no `ViewerEvent` queue
 
@@ -542,7 +616,7 @@ event and does not route to it.
 | Target form | Status |
 | --- | --- |
 | RustDesk direct address | Registered and dialled by `session_add`/`session_start` → `Viewer::start`. The direct connector is unverified: trust comes from the socket unless `start_verified` is used. |
-| RustDesk peer id | Requires initialized foreground consent and a v2 explicit-save approved profile at registration. The record owns its resolved route and local identity; `sessionStart` uses the existing strict `Viewer::start_rendezvous` with matching canonical username/config ID, original wire key and decoded server key. Missing/unapproved/stale routes fail closed; there is no default-profile activation or unverified direct fallback. |
+| RustDesk peer id | Requires initialized foreground consent and a v2 native-committed profile (manual-edit or legacy explicit-save) at registration. The record owns its route/local identity/Key decision. Official/default/public Key routes are strict; only an explicit custom shared-text Key opts into the original unverified/plain routed branch, after a UI warning. No profile-wide direct/invite fallback is added. |
 | VNC | Driver exists (`run_rfb`) and the late-binding/reclamation repair is in place: RFB authenticates before the ArkTS XComponent surface exists and publishes the actual geometry and authentication fact (`State::desktop_geometry` plus `ViewerSnapshot::authenticated`; RFB carries no platform, version or security evidence, so those stay empty rather than being guessed), waits for a nonzero lease at phase `awaiting_surface` with the same `SURFACE_WAIT`/`SURFACE_POLL` budget as the encoded path, then opens at `opening_surface`. The blocking `Sink::open` is joined even when cancellation wins the race, `resources_unconfirmed` is raised before native ownership starts, and a sink close only clears it when the platform confirmed the release (`close_sink`), so `Viewer::close` reports `ReclamationUnconfirmed` instead of `Ok` while native creation or surface release is unproven. |
 | RDP | The engine has a maintained IronRDP session driver through `ViewerTarget::Rdp`; the HAR target parser must preserve that route rather than restore the historical blanket refusal. TLS/NLA, presentation, input permission and reclamation remain engine-owned. A HAR build is not device or real-peer RDP acceptance. |
 

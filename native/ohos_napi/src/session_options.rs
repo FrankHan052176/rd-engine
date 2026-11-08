@@ -26,10 +26,11 @@
 //!
 //! Not served here, deliberately: `sessionSetSize` takes the local renderer's
 //! size and has no wire message, so it must not be answered as a remote
-//! resolution change; and this engine has no audio renderer, so
-//! `sessionGetRemoteAudioState` reports the option state and states that no
-//! frame is played rather than reporting a renderer that does not exist.
-use super::{error_json, mutable_snapshot, with_sessions};
+//! resolution change. `sessionGetRemoteAudioState` is served, but not from this
+//! module's own option store: it reads the session's audio owner
+//! (`ViewerSnapshot::audio`) for what really became of the peer's audio, and
+//! keeps that apart from the local `disable-audio` request.
+use super::{error_json, mutable_snapshot, with_sessions, SessionRecord};
 use base::message_proto::{supported_decoding::PreferCodec, ImageQuality};
 use napi_derive_ohos::napi;
 use rd_engine::session_options::{SessionOptionChange, SessionOptions};
@@ -38,7 +39,7 @@ use serde_json::{json, Value};
 
 /// Which session the answer is about: the one running now, or the next dial.
 #[derive(Clone, Copy)]
-enum OptionScope {
+pub(super) enum OptionScope {
     /// A viewer is running; the change was queued for its single writer.
     Session,
     /// No viewer is running; the change is held for the next `session_start`.
@@ -46,18 +47,17 @@ enum OptionScope {
 }
 
 impl OptionScope {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Session => "session",
             Self::NextSession => "next_session",
         }
     }
 
-    fn note(self) -> &'static str {
+    pub(super) fn note(self) -> &'static str {
         match self {
             Self::Session => {
-                "queued for this session's single writer; the peer's application is not \
-                 confirmed, and a quality level has no peer echo so the answer is the requested one"
+                "queued for this session's single writer; the peer's application is not confirmed"
             }
             Self::NextSession => {
                 "recorded for the next session_start: no viewer is running, so nothing has \
@@ -99,6 +99,60 @@ fn options_answer(action: &str, requested: &SessionOptions, scope: OptionScope) 
         "note": scope.note(),
     })
     .to_string()
+}
+
+/// The shared FPS path for the dedicated setter and the legacy common key.
+/// Callers first check `mutable_snapshot`; a refusal never changes the last
+/// accepted request. FPS stays outside `SessionOptions`, as it does at login.
+pub(super) fn request_custom_fps(
+    record: &mut SessionRecord,
+    fps: u32,
+) -> Result<OptionScope, String> {
+    if !(1..=240).contains(&fps) {
+        return Err("fps must be between 1 and 240".to_string());
+    }
+    if record.viewer_target.protocol() != rd_engine::protocol::Protocol::RustDesk
+        || record.mode != rd_engine::session::SessionMode::Desktop
+    {
+        return Err("custom fps requires a RustDesk desktop session".to_string());
+    }
+    let scope = match record.viewer.as_ref() {
+        Some(viewer) => {
+            viewer
+                .set_custom_fps(fps)
+                .map_err(|error| format!("sessionSetCustomFps refused: {error:?}"))?;
+            OptionScope::Session
+        }
+        None => OptionScope::NextSession,
+    };
+    record.fps = fps;
+    Ok(scope)
+}
+
+/// Success means queued on the running writer or held for the next login,
+/// never that the peer applied this rate or can reach it.
+#[napi]
+pub fn session_set_custom_fps(session_id: String, fps: u32) -> String {
+    with_sessions(|sessions| {
+        let Some(record) = sessions.get_mut(&session_id) else {
+            return error_json("unknown session");
+        };
+        if let Err(message) = mutable_snapshot(record) {
+            return error_json(message);
+        }
+        match request_custom_fps(record, fps) {
+            Ok(scope) => json!({
+                "ok": true,
+                "action": "sessionSetCustomFps",
+                "scope": scope.name(),
+                "requested_fps": fps,
+                "applied": false,
+                "note": scope.note(),
+            })
+            .to_string(),
+            Err(message) => error_json(&message),
+        }
+    })
 }
 
 /// Applies one typed change to the session the caller named.
@@ -269,6 +323,12 @@ pub fn session_set_show_remote_cursor(session_id: String, enabled: bool) -> Stri
 
 #[napi]
 pub fn session_switch_display(session_id: String, displays_json: String) -> String {
+    // A shared view has one forwarded display and no way to select another: the
+    // peer behind the share is a forward host, so a SwitchDisplay would either be
+    // refused there or tear the session down.
+    if crate::is_shared_session(&session_id) {
+        return error_json("a shared view has no display to switch: it publishes one forwarded display");
+    }
     match first_display(&displays_json) {
         Ok(display) => apply(&session_id, "sessionSwitchDisplay", move |_| {
             Ok(SessionOptionChange::SwitchDisplay(display))
@@ -289,6 +349,11 @@ pub fn session_change_resolution(
     width: i32,
     height: i32,
 ) -> String {
+    // The forwarded source is one fixed geometry: a resolution request has no
+    // owner on B's forward host and would end that session instead of resizing it.
+    if crate::is_shared_session(&session_id) {
+        return error_json("a shared view has a fixed forwarded geometry; it takes no resolution request");
+    }
     apply(&session_id, "sessionChangeResolution", move |_| {
         Ok(SessionOptionChange::ChangeResolution {
             display,
@@ -336,12 +401,54 @@ pub fn session_toggle_option(session_id: String, option: String) -> String {
     })
 }
 
-/// The audio option this session asked for, without claiming a renderer.
+/// One audio owner's own reading, in the shape the client reads beside
+/// `available`, `muted`, `rendererActive` and `errorText`.
 ///
-/// `available` and `rendererActive` are false because this engine really has no
-/// desktop audio output; `muted` is the requested disable-audio state, which is a
-/// real wire option. A client that reads this sees the option it set and the
-/// reason no sound follows, rather than a renderer that does not exist.
+/// Every value here is the audio core's: the counters it kept, the generation it
+/// stamped, and the format the peer declared for that generation. `generation` is
+/// a string because it is a `u64` a JavaScript number cannot hold exactly. The
+/// owner's `last_error` is not repeated here — it is the `errorText` beside these
+/// fields, so one fact keeps one name.
+fn audio_facts(audio: &rd_engine::audio::AudioSnapshot) -> Value {
+    json!({
+        "allowed": audio.allowed,
+        "generation": audio.generation.to_string(),
+        "active": audio.active,
+        "format": audio.format.as_ref().map(|format| json!({
+            "sample_rate": format.sample_rate,
+            "channels": format.channels,
+        })),
+        "received_packets": audio.received_packets,
+        "decoded_packets": audio.decoded_packets,
+        "dropped_packets": audio.dropped_packets,
+        "stale_packets": audio.stale_packets,
+        "rejected_packets": audio.rejected_packets,
+        "queued_samples": audio.queued_samples,
+        "played_samples": audio.played_samples,
+        "resources_unconfirmed": audio.resources_unconfirmed,
+    })
+}
+
+/// The peer's audio, as this session's own audio owner measures it.
+///
+/// Four answers are kept apart on purpose, because each is a different fact:
+///
+///  * `available` is whether this session holds a receiving audio owner at all
+///    (`ViewerSnapshot::audio` carries an `AudioSnapshot`), not whether a device
+///    happened to open for it;
+///  * `muted` is only this session's own request (`disable-audio`), never the
+///    peer's grant — a peer that refuses audio is not a local mute;
+///  * `rendererActive` is the audio core's own `active`: the platform sink was
+///    confirmed started and has not failed or closed since;
+///  * `errorText` is the audio core's real `last_error`, empty when there is
+///    none, so a client shows a device's own refusal instead of a guess made
+///    here.
+///
+/// The counters beside them are the audio core's own too, and `generation` is a
+/// string because it is a `u64` that a JavaScript number cannot hold exactly. A
+/// session with no audio owner reports neither availability nor activity: that is
+/// a fact about this session, and it is not answered as "audio is not
+/// implemented".
 #[napi]
 pub fn session_get_remote_audio_state(session_id: String) -> String {
     with_sessions(|sessions| match sessions.get(&session_id) {
@@ -350,17 +457,42 @@ pub fn session_get_remote_audio_state(session_id: String) -> String {
                 Some(viewer) => viewer.session_options_snapshot(),
                 None => record.session_options.clone(),
             };
+            // The audio owner's own reading, and only when this session has one:
+            // a session that never dialled, a file session or a session without
+            // audio has nothing to report, so nothing is invented for it.
+            let audio = record
+                .viewer
+                .as_ref()
+                .and_then(|viewer| viewer.snapshot().audio);
+            let mut state = json!({
+                "available": audio.is_some(),
+                "muted": !requested.audio_enabled(),
+                "rendererActive": audio.as_ref().is_some_and(|audio| audio.active),
+                "errorText": audio.as_ref()
+                    .and_then(|audio| audio.last_error.as_deref())
+                    .unwrap_or_default(),
+            });
+            // The counters are this owner's own reading and are added only when
+            // an owner exists, so a session without one reports the four answers
+            // it can really give and no invented zeroes.
+            if let Some(audio) = &audio {
+                if let (Some(fields), Value::Object(facts)) =
+                    (state.as_object_mut(), audio_facts(audio))
+                {
+                    fields.extend(facts);
+                }
+            }
             json!({
                 "ok": true,
                 "action": "sessionGetRemoteAudioState",
-                "audio": {
-                    "available": false,
-                    "muted": !requested.audio_enabled(),
-                    "rendererActive": false,
-                    "errorText": "this engine has no desktop audio renderer: the option tells \
-                                  the peer whether to send audio, and no frame is played",
-                },
+                "audio": state,
                 "requested": requested_json(&requested),
+                "note": match &audio {
+                    Some(_) => "the audio fields are this session's audio owner's own reading",
+                    None => {
+                        "this session has no audio owner, so nothing receives the peer's audio"
+                    }
+                },
             })
             .to_string()
         }
